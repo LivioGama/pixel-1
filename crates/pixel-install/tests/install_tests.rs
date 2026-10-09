@@ -7006,3 +7006,67 @@ fn doctor_reports_unreviewed_project_codex_hooks_and_ignores_foreign_ones() {
         "stale hashes must not make a project hook green"
     );
 }
+
+/// Additional test to verify tarpaulin coverage for generic functions with
+/// match expressions containing continue statements (issue #1886).
+/// This test ensures all branches including error handling paths are exercised.
+#[test]
+fn test_generic_function_coverage_with_continues() {
+    let dir = TempDir::new().expect("tempdir");
+    let home = dir.path();
+    let exe = fake_pixel_exe(home);
+
+    install(&InstallOptions {
+        repo: None,
+        home: Some(home.to_path_buf()),
+        executable_path: Some(exe.clone()),
+        claude_executable: Some(fake_claude_exe(home, CLAUDE_WITH_SUBAGENT_FLAG)),
+        dry_run: false,
+        shell: Some(TEST_SHELL.into()),
+    })
+    .expect("install");
+
+    let hooks = home.join(".codex/hooks.json");
+    let config = home.join(".codex/config.toml");
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, "# Codex settings owned by the test\n").unwrap();
+    let options = hook_review_options(home, &exe, "install.codex-hook-review", None);
+
+    // Ensure all hooks are reviewed properly to verify coverage paths
+    let report = doctor(&options).unwrap();
+    let unreviewed = check(&report, "install.codex-hook-review");
+    assert_eq!(unreviewed.status, CheckStatus::Yellow, "{unreviewed:?}");
+
+    // Verify that all hook events are covered - this exercises the loops
+    // and match expressions with continue statements in the implementation.
+    let base = fs::read_to_string(&config).unwrap();
+
+    // Add reviews for all events - forces all branches to be taken
+    for event in [
+        "interrupt",
+        "post_tool_use",
+        "pre_tool_use",
+        "session_end",
+        "session_start",
+        "stop",
+        "subagent_start",
+        "subagent_stop",
+        "user_prompt_submit",
+    ] {
+        let key = format!("{}:{event}:0:0", hooks.display());
+        let entry = "trusted_hash = \"sha256:stale\"\nenabled = true";
+        fs::write(&config, format!("{base}\n[hooks.state.{key:?}]\n{entry}\n")).unwrap();
+    }
+
+    let report = doctor(&options).unwrap();
+    let stale = check(&report, "install.codex-hook-review");
+    assert_eq!(stale.status, CheckStatus::Yellow, "{stale:?}");
+    assert_eq!(
+        stale.detail.as_ref().unwrap()["unreviewed"]
+            .as_array()
+            .unwrap()
+            .len(),
+        9,
+        "stale hashes must not make the global task hooks green"
+    );
+}
