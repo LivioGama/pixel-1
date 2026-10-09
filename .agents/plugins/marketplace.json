@@ -11,6 +11,12 @@
       "description": "Code-graph retrieval protocol: impact, scope-task, plan, find-code, dig-history.",
       "source": "./",
       "category": "productivity"
+    },
+    {
+      "name": "marketplace",
+      "description": "Agent plugin marketplace integration for sharing and discovering tools.",
+      "source": "./marketplace",
+      "category": "integration"
     }
   ]
 }

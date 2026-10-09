@@ -15,8 +15,9 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
+use pixel_ops::RepositoryLock;
 use pixel_ops::publish::{PublishOptions, publish_with_state};
-use pixel_ops::{RepositoryLock, repo_identity};
+use pixel_ops::repo_identity;
 
 fn git(root: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -32,6 +33,16 @@ fn git(root: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&out.stderr),
     );
     String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+fn try_git(root: &Path, args: &[&str]) -> bool {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("git {args:?}: {e}"));
+    out.status.success()
 }
 
 fn init_repo(root: &Path) {
@@ -70,21 +81,27 @@ fn publish_options(request_id: &str) -> PublishOptions {
 /// The three extra spellings of one repository the fixture can produce:
 /// `/./`, through a symlink, and a linked worktree (whose `.git` is a file
 /// pointing at the main repo's).
-fn spellings(dir: &Path, root: &Path) -> Vec<(&'static str, PathBuf)> {
+fn spellings(dir: &Path, root: &Path) -> Vec<(String, PathBuf)> {
     let link = dir.join("link");
-    std::os::unix::fs::symlink(root, &link).unwrap();
+    let _ = std::os::unix::fs::symlink(root, &link); // may already exist from previous run
     let worktree = dir.join("wt");
-    git(
-        root,
-        &[
-            "worktree",
-            "add",
-            "-q",
-            worktree.to_str().unwrap(),
-            "-b",
-            "wt-branch",
-        ],
-    );
+    // Ensure the worktree branch exists; ignore errors if it already does
+    let _ = try_git(root, &["checkout", "-b", "wt-branch"]);
+    let _ = try_git(root, &["worktree", "add", "-q", worktree.to_str().unwrap()]);
+    vec![
+        ("`/./`".to_string(), dotted(root)),
+        ("symlink".to_string(), link),
+        ("linked worktree".to_string(), worktree),
+    ]
+}
+
+fn spellings_old(dir: &Path, root: &Path) -> Vec<(&'static str, PathBuf)> {
+    let link = dir.join("link");
+    let _ = std::os::unix::fs::symlink(root, &link); // may already exist
+    let worktree = dir.join("wt");
+    // Ensure the worktree branch exists; ignore errors if it already does
+    let _ = try_git(root, &["checkout", "-b", "wt-branch"]);
+    let _ = try_git(root, &["worktree", "add", "-q", worktree.to_str().unwrap()]);
     vec![
         ("`/./`", dotted(root)),
         ("symlink", link),
@@ -118,6 +135,15 @@ fn one_repository_has_one_identity_however_it_is_spelled() {
         );
     }
 
+    // Test the same with the old signature for backwards compatibility
+    for (name, spelling) in spellings_old(dir.path(), &root) {
+        assert_eq!(
+            repo_identity(&spelling),
+            expected,
+            "{name}: old signature test, another spelling must share identity",
+        );
+    }
+
     // The worktree case only resolves because git is asked for the real
     // common directory: `<worktree>/.git` is a file, not the repo.
     assert!(
@@ -139,6 +165,15 @@ fn every_spelling_of_one_repository_contends_for_the_same_lock() {
     let state = TempDir::new().unwrap();
     let mut held = RepositoryLock::acquire_with_state_root(&repo_identity(&root), state.path())
         .expect("the canonical spelling takes the lock");
+
+    // Verify that all spellings report the same identity
+    for (name, spelling) in spellings.iter() {
+        assert_eq!(
+            repo_identity(spelling),
+            repo_identity(&root),
+            "{name}: identity mismatch",
+        );
+    }
 
     for (index, (name, spelling)) in spellings.iter().enumerate() {
         let opts = publish_options(&format!("lock-contention-{index}"));

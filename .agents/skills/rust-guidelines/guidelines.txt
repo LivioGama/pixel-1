@@ -191,7 +191,7 @@ application-level error types.
 
 Libraries (crates used by more than one crate) should always follow [M-ERRORS-CANONICAL-STRUCTS] instead.
 
-[M-ERRORS-CANONICAL-STRUCTS]: ../libs/ux/#M-ERRORS-CANONICAL-STRUCTS
+[M-ERRORS-CANONICAL-STRUCTS]: ./#M-ERRORS-CANONICAL-STRUCTS
 
 
 
@@ -608,7 +608,7 @@ This does not apply to `std` or 3rd party types; these should always be re-expor
 >
 > The `#[doc(inline)]` trick above does not change [M-NO-GLOB-REEXPORTS]; you generally should not re-export items via wildcards.
 
-[M-NO-GLOB-REEXPORTS]: ../libs/resilience/#M-NO-GLOB-REEXPORTS
+[M-NO-GLOB-REEXPORTS]: ../resilience/#M-NO-GLOB-REEXPORTS
 
 
 
@@ -2002,12 +2002,12 @@ exceptions, life cycle issues should likewise not be made the subject of some ma
 way they are needed, their disposal is governed by `Drop`, and only `Drop`.
 
 Regarding factories, at least the term should be avoided. While the concept `FooFactory` has its use, its canonical
-Rust name is `Builder` (compare [M-INIT-BUILDER](../libs/ux/#M-INIT-BUILDER)). A builder that can produce items repeatedly is still a builder.
+Rust name is `Builder` (compare [M-INIT-BUILDER](./#M-INIT-BUILDER)). A builder that can produce items repeatedly is still a builder.
 
 In addition, accepting factories (builders) as parameters is an unidiomatic import of OO concepts into Rust. If
 repeatable instantiation is required, functions should ask for an `impl Fn() -> Foo` over a `FooBuilder` or
 similar. In contrast, standalone builders have their use, but primarily to reduce parametric permutation complexity
-around optional values (again, [M-INIT-BUILDER](../libs/ux/#M-INIT-BUILDER)).
+around optional values (again, [M-INIT-BUILDER](./#M-INIT-BUILDER)).
 
 
 ---
@@ -2655,7 +2655,7 @@ impl Library {
 }
 ```
 
-[M-RUNTIME-ABSTRACTED]: ../ux/#M-RUNTIME-ABSTRACTED
+[M-RUNTIME-ABSTRACTED]: ./#M-RUNTIME-ABSTRACTED
 
 
 
@@ -2793,7 +2793,7 @@ impl HttpClient {
 
 Functions should be declared `async fn foo()` over `fn foo() -> impl Future` when both are viable.
 
-Functions marked `async` are more idiomatic and easier to read. An explicit `Future`-returning signature should only be used when required, for example inside traits or for _hot 'n heavy_ async functions, compare [M-ASYNC-STACK-SIZE](../../performance/#M-ASYNC-STACK-SIZE).
+Functions marked `async` are more idiomatic and easier to read. An explicit `Future`-returning signature should only be used when required, for example inside traits or for _hot 'n heavy_ async functions, compare [M-ASYNC-STACK-SIZE](../performance/#M-ASYNC-STACK-SIZE).
 
 ```rust,ignore
 impl Foo {
@@ -2958,7 +2958,7 @@ async fn read_database(x: &DataAccess) { ... }
 ```
 
 [M-AVOID-WRAPPERS]: ./#M-AVOID-WRAPPERS
-[M-MOCKABLE-SYSCALLS]: ../resilience/#M-MOCKABLE-SYSCALLS
+[M-MOCKABLE-SYSCALLS]: ./#M-MOCKABLE-SYSCALLS
 [M-ABSTRACTIONS-DONT-NEST]: ./#M-ABSTRACTIONS-DONT-NEST
 
 
@@ -3238,7 +3238,7 @@ This pattern allows for convenient usage:
 - `Foo::builder((logger, config))` - when both parameters are needed
 - `Foo::builder(FooDeps { logger, config })` - explicit struct construction
 
-Alternatively, you can use [`fundle`](https://docs.rs/fundle) to simplify the creation of `FooDeps`:
+The preferred approach is to use [`fundle`](https://docs.rs/fundle) which automatically generates all necessary `AsRef` and `From` implementations for convenient construction:
 
 ```rust, ignore
 #[derive(Debug, Clone)]
@@ -3249,7 +3249,13 @@ pub struct FooDeps {
 }
 ```
 
-This pattern enables "dependency injection", see [these docs](https://docs.rs/fundle/latest/fundle/attr.deps.html) for more details.
+The `deps` macro generates `AsRef<Logger>` and `AsRef<Config>` implementations for `FooDeps`, enabling the following convenient usage patterns:
+
+- `Foo::builder(logger)` - when only the logger is needed
+- `Foo::builder((logger, config))` - when both parameters are needed (via tuple `Into`)
+- `Foo::builder(FooDeps { logger, config })` - explicit struct construction
+
+See [fundle documentation](https://docs.rs/fundle/latest/fundle/attr.deps.html) for more details.
 
 ### Runtime-Specific Builders
 

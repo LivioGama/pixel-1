@@ -32,6 +32,7 @@ import sys
 VERSIONED = re.compile(
     r"crates/[^/]+/Cargo\.toml|Cargo\.lock|plugin\.yaml|package\.json"
     r"|gemini-extension\.json|\.(claude|codex|devin|qoder)-plugin/plugin\.json"
+    r"|scripts/[^/]+"
 )
 VERSION_LINE = re.compile(r'\s*"?version"?\s*[=:]\s*"?\d+\.\d+\.\d+"?,?\s*')
 FRAGMENT = re.compile(r"changelog\.d/[^/]+\.md")

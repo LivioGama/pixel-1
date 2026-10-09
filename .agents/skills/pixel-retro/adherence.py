@@ -344,7 +344,7 @@ def indexed(cwd):
 
 
 def summarize(sessions):
-    """Adherence counts over (events) lists of one host."""
+    """Adherence counts over (events) lists of one host. Updated for v2."""
     s = {"sessions": len(sessions), "pixel_calls": 0, "native_searches": 0, "sessions_with_search": 0,
          "sessions_with_pixel": 0, "first_search_pixel": 0, "pixel_then_native": 0, "reads": 0, "unbounded_reads": 0, "wide_reads": 0,
          "reads_after_pixel": 0, "unbounded_after_pixel": 0, "wide_after_pixel": 0,

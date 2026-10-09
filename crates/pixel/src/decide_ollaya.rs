@@ -33,6 +33,7 @@
 //! this Mac's runtime, so `deterministic()` stays `false` until it is.
 
 use crate::classify::Spec;
+use pixel_task::yes;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::time::Duration;

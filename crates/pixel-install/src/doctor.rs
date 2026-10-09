@@ -60,7 +60,12 @@ const fn entry(id: &'static str, fix: Option<&'static str>) -> CheckSpec {
 /// Command that rewrites everything `pixel install` deploys in the home.
 const FIX_INSTALL: Option<&str> = Some("pixel install");
 /// Command that rewrites the repo-local enforcement files.
-const FIX_REPO_INSTALL: Option<&str> = Some("pixel install --repo {root}");
+/// Also used for routing provider setup.
+pub const FIX_REPO_INSTALL: Option<&str> = Some("pixel install --repo {root}");
+/// Command that rewrites the repo-local enforcement files with routing
+/// for a specific provider. `{provider}` is the routing provider id.
+pub const FIX_REPO_INSTALL_ROUTING: Option<&str> =
+    Some("pixel install --repo {root} --provider {provider}");
 /// Command that builds the text index and the graph, and warms the daemon.
 const FIX_PREPARE: Option<&str> = Some("pixel prepare-repo {root}");
 
@@ -82,6 +87,9 @@ pub const CHECKS: &[CheckSpec] = &[
     entry("install.antigravity", FIX_INSTALL),
     entry("install.claude-hooks", FIX_INSTALL),
     entry("install.devin-hooks", FIX_INSTALL),
+    // Routing checks are grouped by provider; "install.routing" is a composite
+    // entry for documentation. The actual checks run under the provider IDs.
+    entry("install.routing", FIX_REPO_INSTALL_ROUTING),
     // The removal command names the orphaned file, so the outcome carries it.
     entry("install.rtk-backup", None),
     entry("install.legacy-wrappers", FIX_INSTALL),

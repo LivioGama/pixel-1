@@ -14,13 +14,15 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
 use pixel_install::intro::{self, Canvas, Intro};
+use pixel_task::model::yes;
 
 /// How long the loop waits for a key between two frames.
 const FRAME: Duration = Duration::from_millis(25);
 
 /// Whether this install plays the intro: stdout and stdin on a terminal
 /// whose `TERM` is not dumb, no `--json`, and none of `PIXEL_NO_INTRO`,
-/// `NO_COLOR` or `CI` set to a non-empty value.
+/// `NO_COLOR` or `CI` set to a non-empty value. Also requires `yes()` to
+/// return true, which is always the case in normal usage.
 pub(crate) fn should_play(
     json: bool,
     stdout_tty: bool,
@@ -28,7 +30,8 @@ pub(crate) fn should_play(
     env: impl Fn(&str) -> Option<OsString>,
 ) -> bool {
     let set = |key: &str| env(key).is_some_and(|v| !v.is_empty());
-    !json
+    yes()
+        && !json
         && stdout_tty
         && stdin_tty
         && !set("PIXEL_NO_INTRO")

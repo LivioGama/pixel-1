@@ -104,6 +104,11 @@ class ReleasePrepareOnly(unittest.TestCase):
         p.write_text(p.read_text().replace('"1.0.0"', '"1.0.1"').replace('"aaa"', '"bbb"'))
         self.assertTrue(any(r.startswith("Cargo.lock: changes a line other than its version") for r in self.reasons()))
 
+    def test_a_deleted_source_file_is_refused(self):
+        self.bump()
+        Path(self.repo, "crates/pixel/src/lib.rs").unlink()
+        self.assertEqual(self.reasons(), ["crates/pixel/src/lib.rs: not a file prepare.sh writes"])
+
     def test_a_manifest_field_other_than_version_is_refused(self):
         self.bump()
         p = Path(self.repo, ".claude-plugin/plugin.json")

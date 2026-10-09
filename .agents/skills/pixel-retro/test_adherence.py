@@ -96,6 +96,28 @@ class ShellClassification(unittest.TestCase):
         self.assertEqual(ad.exec_script_events(script),
                          [("search", "rg"), ("edit", None), ("pixel", "impact")])
 
+    def test_exec_script_events_handles_tool_patch_with_code(self):
+        # Code in apply_patch should not be parsed as search/read
+        script = ('await tools.exec_command({"cmd": "rg -n foo src"});\n'
+                  'await tools.apply_patch("@@ -1,5 +1,6 @@\n1\n2\n3\n4\n5\n+6", \
+'
+                  '  "diff": "@@ -1,5 +1,6 @@\n1\n2\n3\n4\n5\n+6"});\n'
+                  'await tools.exec_command({"cmd": "pixel impact Test"});')
+        self.assertEqual(ad.exec_script_events(script),
+                         [("search", "rg"), ("edit", None), ("pixel", "impact")])
+
+    def test_exec_script_events_handles_empty_exec_command(self):
+        script = 'await tools.exec_command({"cmd": ""});\n'
+        self.assertEqual(ad.exec_script_events(script), [])
+
+    def test_exec_script_events_handles_no_code(self):
+        script = 'await tools.apply_patch("some patch text");\n'
+        self.assertEqual(ad.exec_script_events(script), [("edit", None)])
+
+    def test_exec_script_events_handles_only_text_code(self):
+        script = 'await tools.apply_patch("text: something", "text_code": "text: other");\n'
+        self.assertEqual(ad.exec_script_events(script), [("edit", None)])
+
 
 class Summary(unittest.TestCase):
     def test_counts_per_session_stream(self):

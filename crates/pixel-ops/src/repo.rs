@@ -26,12 +26,20 @@ use pixel_git::GitRunner;
 /// on this value, so every spelling of one repository contends for one
 /// lock and shares one journal.
 pub fn repo_identity(root: &Path) -> String {
-    let common_dir = git_common_dir(root).unwrap_or_else(|| root.join(".git"));
-    common_dir
-        .canonicalize()
-        .unwrap_or(common_dir)
-        .display()
-        .to_string()
+    // Use the canonicalized common dir directly; if canonicalization fails, fall back to git_common_dir, root (".git") as a last resort.
+    if let Some(common_dir) = git_common_dir(root) {
+        common_dir
+            .canonicalize()
+            .unwrap_or(common_dir)
+            .display()
+            .to_string()
+    } else {
+        root.join(".git")
+            .canonicalize()
+            .unwrap_or_else(|_| root.join(".git"))
+            .display()
+            .to_string()
+    }
 }
 
 /// `git rev-parse --path-format=absolute --git-common-dir`, trimmed.

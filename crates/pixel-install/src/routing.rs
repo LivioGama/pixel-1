@@ -11,7 +11,7 @@ use std::{
 
 use serde_json::{Map, Value, json};
 
-use crate::{InstallError, config, install};
+use crate::{InstallError, config, install, repo_git};
 
 pub(crate) const RTK_BACKUP: &str = ".claude/pixel-rtk-hooks.json";
 /// Claude Code's team-shared project settings, usually committed.
@@ -1063,6 +1063,26 @@ pub(crate) fn install_project_codex_at(
     exe: &Path,
     dry_run: bool,
 ) -> crate::Result<install::InstallStep> {
+    // Skip install if the hooks file is already tracked by git.
+    // The path is expected to be repo/.codex/hooks.json, so we derive repo from it.
+    let hooks_relative = ".codex/hooks.json";
+    let repo_path = path
+        .strip_suffix(hooks_relative)
+        .ok()
+        .and_then(|p| p.parent());
+    if let Some(repo) = repo_path {
+        if repo_git::is_tracked(repo, hooks_relative) {
+            return Ok(install::InstallStep {
+                id: "hooks.codex".into(),
+                status: install::CheckStatus::Yellow,
+                summary: install::dry_run_summary(
+                    dry_run,
+                    "codex project guard not installed: .codex/hooks.json is tracked by git",
+                ),
+                detail: Some(path.display().to_string()),
+            });
+        }
+    }
     if paths_resolve_to_same_file(global_hooks_path, path) {
         return Ok(install::InstallStep {
             id: "hooks.codex".into(),
@@ -1297,6 +1317,18 @@ pub(crate) fn install_project_claude_at(
     exe: &Path,
     dry_run: bool,
 ) -> crate::Result<install::InstallStep> {
+    // Skip install if the local settings file is already tracked by git.
+    if repo_git::is_tracked(repo, CLAUDE_LOCAL_SETTINGS) {
+        return Ok(install::InstallStep {
+            id: "hooks.claude".into(),
+            status: install::CheckStatus::Yellow,
+            summary: install::dry_run_summary(
+                dry_run,
+                "claude project guard not installed: .claude/settings.local.json is tracked by git",
+            ),
+            detail: None,
+        });
+    }
     let shared = repo.join(CLAUDE_SHARED_SETTINGS);
     let (_, migrated) = remove_pre_tool_use_guard(&shared, exe, dry_run)?;
     let mut step = install_at_scoped(

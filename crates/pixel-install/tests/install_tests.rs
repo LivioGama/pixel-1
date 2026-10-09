@@ -6089,6 +6089,131 @@ fn repo_install_should_not_duplicate_a_global_pixel_callback() {
     );
 }
 
+/// Test that `install --repo` skips codex guards when hooks file is git-tracked.
+#[test]
+#[cfg(unix)]
+fn repo_install_skips_codex_hooks_when_git_tracked() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path().join("home");
+    let repo = dir.path().join("repo");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(repo.join(".codex")).unwrap();
+    git(&repo, &["init", "-q"]);
+
+    // Create a hooks file that will be tracked by git.
+    let codex_hooks = repo.join(".codex/hooks.json");
+    fs::write(
+        &codex_hooks,
+        serde_json::to_string_pretty(
+            &serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "custom-hook"}]}]}}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    // Track the hooks file in git.
+    git(&repo, &["add", "--", ".codex/hooks.json"]);
+
+    let exe = fake_pixel_exe(&home);
+    let report =
+        install(&repo_install_options(&repo, &home).executable_path(Some(exe.clone()))).unwrap();
+
+    // The codex step should be yellow with a git-tracked summary.
+    let step = report.steps.iter().find(|s| s.id == "hooks.codex").unwrap();
+    assert_eq!(step.status, StepStatus::Yellow);
+    assert!(step.summary.contains("tracked by git"));
+    assert!(step.summary.contains("codex project guard"));
+
+    // The hooks file should remain unchanged.
+    let content = fs::read_to_string(&codex_hooks).unwrap();
+    assert!(content.contains("custom-hook"));
+}
+
+/// Test that `install --repo` skips claude guard when local settings is git-tracked.
+#[test]
+#[cfg(unix)]
+fn repo_install_skips_claude_hooks_when_git_tracked() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path().join("home");
+    let repo = dir.path().join("repo");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(repo.join(".claude")).unwrap();
+    git(&repo, &["init", "-q"]);
+
+    // Create a local settings file that will be tracked by git.
+    let local = repo.join(".claude/settings.local.json");
+    fs::write(
+        &local,
+        serde_json::to_string_pretty(
+            &serde_json::json!({"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "custom-guard"}]}]}}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+
+    // Track the local settings in git.
+    git(&repo, &["add", "--", ".claude/settings.local.json"]);
+
+    let exe = fake_pixel_exe(&home);
+    let report =
+        install(&repo_install_options(&repo, &home).executable_path(Some(exe.clone()))).unwrap();
+
+    // The claude step should be yellow with a git-tracked summary.
+    let step = report
+        .steps
+        .iter()
+        .find(|s| s.id == "hooks.claude")
+        .unwrap();
+    assert_eq!(step.status, StepStatus::Yellow);
+    assert!(step.summary.contains("tracked by git"));
+    assert!(step.summary.contains("claude project guard"));
+
+    // The local settings should remain unchanged.
+    let content = fs::read_to_string(&local).unwrap();
+    assert!(content.contains("custom-guard"));
+}
+
+/// Test that `install --repo` removes antigravity hooks during global sweep.
+#[test]
+#[cfg(unix)]
+fn repo_install_removes_antigravity_global_hooks() {
+    let dir = TempDir::new().unwrap();
+    let home = dir.path().join("home");
+    let repo = dir.path().join("repo");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(repo.join(".claude")).unwrap();
+    git(&repo, &["init", "-q"]);
+
+    // Create a global settings with an antigravity-style hook.
+    let global = home.join(".claude/settings.json");
+    let antigravity_hook = serde_json::json!({
+        "matcher": "Bash",
+        "hooks": [{"type": "command", "command": "antigravity hook"}]
+    });
+    let settings = serde_json::json!({
+        "hooks": {"PreToolUse": [antigravity_hook.clone()]}
+    });
+    fs::write(&global, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+
+    let exe = fake_pixel_exe(&home);
+    let report =
+        install(&repo_install_options(&repo, &home).executable_path(Some(exe.clone()))).unwrap();
+
+    // Antigravity hooks should be removed, replaced by proper task hooks.
+    let global = read_json(&global);
+    assert!(
+        !global["hooks"]["PreToolUse"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["hooks"].as_array().unwrap()[0]["command"]
+                .as_str()
+                .unwrap()
+                .contains("antigravity")),
+        "antigravity hooks should be removed"
+    );
+}
+
 /// Doctor reports a healthy native-default repo even when global hooks are
 /// present; it makes no claim that a repo retrieval callback is active.
 #[test]

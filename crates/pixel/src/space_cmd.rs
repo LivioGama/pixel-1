@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use pixel_daemon::api::GRAPH_DB_FILE;
 use pixel_index::delta::DELTA_FILE;
 use pixel_index::index::{SHARD_DIR, SHARD_FILE};
+use pixel_task::yes;
+
 use serde_json::json;
 
 /// Directory names we never descend into while hunting shards. None of them

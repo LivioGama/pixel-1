@@ -1238,6 +1238,36 @@ fn php_require_once_with_double_quotes_should_be_an_import() {
 /// `using` imports the namespace and not the alias, and an identifier
 /// passed as an argument is a callback reference (#778).
 #[test]
+fn ruby_includes_should_record_imports_and_callbacks() {
+    let src = r#"
+require_relative "model/user"
+require_relative "helper/utils"
+
+# Callback reference (instance variable in block)
+User.find(123) { |u| u.name }
+
+# Another callback (symbol)
+Model.where(id: 456) { |m| m.status }
+"#;
+    let fx = extract("app/models/model.rb", src);
+
+    // Should record file as imports
+    let paths = import_paths(&fx);
+    assert_eq!(paths, vec!["model/user", "helper/utils"]);
+
+    // Should record callback references
+    let refs = references(&fx);
+    assert!(
+        refs.contains(&("u".to_string(), Some("name".to_string()))),
+        "Expected callback reference to 'name' on 'u', got: {refs:?}"
+    );
+    assert!(
+        refs.contains(&("m".to_string(), Some("status".to_string()))),
+        "Expected callback reference to 'status' on 'm', got: {refs:?}"
+    );
+}
+
+#[test]
 fn csharp_generic_calls_alias_usings_and_callback_arguments() {
     let fx = extract("Service.cs", CS_SRC);
     assert!(has_call(&fx, "Parse"), "{:?}", calls(&fx));

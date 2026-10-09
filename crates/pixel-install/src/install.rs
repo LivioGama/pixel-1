@@ -219,6 +219,9 @@ pub fn install(options: &InstallOptions) -> Result<InstallReport> {
         // The Antigravity brief hook: PreInvocation in the global
         // hooks.json, written after the removal sweep so a stale copy the
         // sweep just deleted is not re-added before removal runs.
+        steps.push(crate::antigravity::remove_global_hooks(
+            &home, &exe, dry_run,
+        )?);
         steps.push(crate::antigravity::install_antigravity_brief(
             &home, &exe, dry_run,
         )?);
@@ -301,25 +304,13 @@ fn install_project(
     let retired_codex_instructions =
         crate::codex_config::remove_developer_instructions(&codex_dir, dry_run)?;
     let retired_pixel_first_rules = crate::pixel_first::uninstall_rules(repo, dry_run)?;
-    let codex_step = if crate::repo_git::is_tracked(repo, CODEX_PROJECT_HOOKS) {
-        InstallStep {
-            id: "hooks.codex".into(),
-            status: CheckStatus::Yellow,
-            summary: dry_run_summary(
-                dry_run,
-                "codex project guard not installed: .codex/hooks.json is tracked by git, and the guard would carry this machine's pixel path into every clone",
-            ),
-            detail: Some(codex_hooks.display().to_string()),
-        }
-    } else {
-        crate::routing::install_project_codex_at(
-            home,
-            &codex_home.join(crate::codex_config::HOOKS_FILE),
-            &codex_hooks,
-            exe,
-            dry_run,
-        )?
-    };
+    let codex_step = crate::routing::install_project_codex_at(
+        home,
+        &codex_home.join(crate::codex_config::HOOKS_FILE),
+        &codex_hooks,
+        exe,
+        dry_run,
+    )?;
     let steps = vec![
         crate::routing::install_project_claude_at(repo, home, exe, dry_run)?,
         retired_codex_instructions,

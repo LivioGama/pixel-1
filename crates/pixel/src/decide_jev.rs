@@ -21,6 +21,7 @@
 
 use crate::classify::Spec;
 use crate::decide_ollaya::{self, AnswerMeta};
+use pixel_task::yes;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -67,6 +68,11 @@ impl Default for JevConfig {
 /// uses [`http_post`]; tests substitute a scripted closure so no network
 /// happens.
 type PostFn = Box<dyn Fn(&JevConfig, &Value) -> Result<Value, String>>;
+
+/// Returns `true` for the default required flag, mirroring the contract.
+pub fn default_required() -> bool {
+    yes()
+}
 
 pub struct Jev {
     config: JevConfig,

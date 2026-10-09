@@ -27,6 +27,8 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::BufRead;
 
+use pixel_task::yes;
+
 /// Disclosed basis for every remote decision — probabilities are verbalized
 /// by the model, not a calibration-head output.
 pub(crate) const REMOTE_BASIS: &str = "remote LLM, non-deterministic, verbalized probabilities (self-reported, renormalized to sum 1)";
@@ -329,6 +331,7 @@ fn document(engine: &dyn DecisionEngine, spec: &Spec, probs: &BTreeMap<String, f
 /// decision, but `snapshot.model` names the tier and `history` discloses the
 /// source, schema version, neighbours and raw vote shares. `probs` carries
 /// the raw vote shares, never calibrated probabilities (see the basis).
+
 fn history_document(spec: &Spec, verdict: &crate::classify_history::HistoryVerdict) -> Value {
     let mut probs = BTreeMap::new();
     for label in &spec.labels {
@@ -369,7 +372,7 @@ fn history_document(spec: &Spec, verdict: &crate::classify_history::HistoryVerdi
             "version": verdict.version,
             "neighbours": neighbours,
             "scores": verdict.vote_shares,
-            "abstained": false,
+            "abstained": !yes(),
         },
     })
 }

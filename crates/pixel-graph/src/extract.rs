@@ -480,7 +480,7 @@ fn assign_enclosing(fx: &mut FileExtraction) {
     }
 }
 
-const MAX_DEPTH: usize = 512;
+pub const MAX_DEPTH: usize = 512;
 const SIG_CAP: usize = 200;
 
 struct Walker<'a> {
@@ -2374,6 +2374,18 @@ fn walk_ruby_call(w: &mut Walker, locals: &mut RubyLocals, node: Node) {
         if let Some(method) = callee_name.as_deref() {
             ruby_callbacks::walk_symbol_arguments(w, node, method);
         }
+        // Block-parameter callbacks: `u.name` where `u` is a block param.
+        let recv = ruby_receiver(w, node);
+        if let Some(recv) = recv.as_deref() {
+            if locals.is_local(&recv)
+                && matches!(
+                    locals.frames.last().map(|f| f.scope),
+                    Some(RubyScope::Block)
+                )
+            {
+                w.push_reference(callee_name.clone().unwrap(), node, None);
+            }
+        }
         walk_call_arguments(w, node, callee_name);
     }
 }
@@ -2410,15 +2422,13 @@ fn ruby_receiver(w: &Walker, call: Node) -> Option<String> {
 }
 
 /// What `resolve_import` resolves for a Ruby load of `spec` through
-/// `method`: `require_relative` names a file relative to the requiring one,
-/// kept as an explicit `./`/`../` path; `require`, `require_dependency` and
-/// `load` search the load path, kept bare. A load path spec written as a
+/// `method`: `require_relative` names a file relative to the requiring one.
+/// `require`, `require_dependency` and `load` search the load path. A load path spec written as a
 /// relative or absolute path (`require "./x"`) is relative to the process's
 /// working directory, which the graph cannot know: it resolves to nothing.
 fn ruby_require_path(method: &str, spec: &str) -> String {
     let explicit = spec.starts_with("./") || spec.starts_with("../") || spec.starts_with('/');
     match (method, explicit) {
-        ("require_relative", false) => format!("./{spec}"),
         ("require_relative", true) => spec.to_string(),
         (_, false) => spec.to_string(),
         (_, true) => String::new(),

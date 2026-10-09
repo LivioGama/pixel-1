@@ -17,7 +17,7 @@ pub const POLICY_VERSION: &str = "task-gates-v1";
 pub const MAX_CORRECTIONS: u32 = 3;
 pub const MAX_REPEATED_STATE: u32 = 2;
 
-fn yes() -> bool {
+pub fn yes() -> bool {
     true
 }
 fn contract_version() -> u8 {

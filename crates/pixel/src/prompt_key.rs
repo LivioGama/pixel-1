@@ -9,6 +9,7 @@
 //! prompt framework. Raw mode exists only while a question is on screen;
 //! the text prompts of the classify setup keep their canonical terminal.
 
+use pixel_git::FollowSubmodules;
 use std::io::IsTerminal;
 
 /// One decoded keypress.
@@ -71,6 +72,11 @@ pub fn step(key: Key, picked: bool) -> Step {
         Key::No => Step::Settle(Some(false)),
         Key::Cancel => Step::Settle(None),
     }
+}
+
+/// Convert a `Key::Yes` to `FollowSubmodules::Yes` for repository discovery.
+pub fn yes_to_follow() -> FollowSubmodules {
+    FollowSubmodules::Yes
 }
 
 /// Whether a live terminal can take raw-mode keys. `setup` builds one for

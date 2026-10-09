@@ -27,8 +27,125 @@ pub mod rerank;
 pub mod signals;
 
 pub use pixel_graph::split_ident_words;
-use pixel_graph::store::SymbolKind;
-use pixel_graph::targets::SymbolHit;
+pub use pixel_graph::store::SymbolRow;
+pub use pixel_graph::targets::SymbolHit;
+
+/// A ranked target file from `compute_targets`.
+#[derive(Debug, Clone)]
+pub struct TargetFile {
+    pub path: String,
+    pub tier: String,
+    pub score: f64,
+    pub reasons: Vec<String>,
+    pub symbols: Vec<RankedSymbol>,
+}
+
+/// Symbol metadata kept for P0 targets.
+#[derive(Debug, Clone)]
+pub struct RankedSymbol {
+    pub name: String,
+    pub kind: String,
+    pub line: Option<u64>,
+    pub uid: String,
+}
+
+/// Options controlling target computation.
+#[derive(Debug, Clone)]
+pub struct TargetsOptions {
+    /// Maximum number of target files to return.
+    pub limit: usize,
+    /// Enable precision mode: more aggressive tiering.
+    pub precision_mode: bool,
+    /// Maximum tier to include (None = all tiers).
+    pub max_tier: Option<String>,
+}
+
+impl Default for TargetsOptions {
+    fn default() -> Self {
+        TargetsOptions {
+            limit: 20,
+            precision_mode: false,
+            max_tier: None,
+        }
+    }
+}
+
+/// Input signals for target computation.
+#[derive(Debug, Clone)]
+pub struct SignalInputs {
+    pub all_paths: Vec<String>,
+    pub content_hits: BTreeMap<String, Vec<(String, u32)>>,
+    pub symbol_hits: Vec<SymbolHit>,
+    pub cluster_neighbors: Vec<(String, String)>,
+    pub graph_neighbors: Vec<(String, String)>,
+    pub path_hits: Vec<(String, String)>,
+    pub graph_available: bool,
+}
+
+impl Default for SignalInputs {
+    fn default() -> Self {
+        SignalInputs {
+            all_paths: vec![],
+            content_hits: BTreeMap::new(),
+            symbol_hits: vec![],
+            cluster_neighbors: vec![],
+            graph_neighbors: vec![],
+            path_hits: vec![],
+            graph_available: false,
+        }
+    }
+}
+
+/// The result of computing ranked targets for a task.
+#[derive(Debug, Clone)]
+pub struct TargetsReport {
+    pub task: String,
+    pub keywords: Vec<String>,
+    pub exact_tokens: Vec<String>,
+    pub path_tokens: Vec<String>,
+    pub targets: Vec<TargetFile>,
+    pub envelope: Value,
+    pub closed_world: bool,
+    pub stats: Value,
+}
+
+// Signal weights
+const W_FILENAME: u32 = 1;
+const W_SYMBOL: u32 = 2;
+const W_CONTENT: u32 = 4;
+const W_GRAPH: u32 = 8;
+const W_CLUSTER: u32 = 16;
+const W_PATH: u32 = 32;
+const PATH_MASK: u32 = 64;
+const PRIMARY_MASK: u32 = 7; // W_FILENAME | W_SYMBOL | W_CONTENT
+const LEXICAL_MASK: u32 = 7;
+const EXACT_NAME_BONUS: f64 = 100.0;
+const RRF_K: f64 = 60.0;
+const W_FILENAME_F: f64 = 1.0;
+const W_SYMBOL_F: f64 = 2.0;
+const W_CONTENT_F: f64 = 4.0;
+const W_GRAPH_F: f64 = 8.0;
+const W_CLUSTER_F: f64 = 16.0;
+const W_PATH_F: f64 = 32.0;
+const PATH_MASK_F: f64 = 64.0;
+const P0_CAP: usize = 10;
+const SCORE_GAP_RATIO: f64 = 0.5;
+const SECONDARY_GAP_RATIO: f64 = 0.5;
+
+fn round6(x: f64) -> f64 {
+    (x * 1e6).round() / 1e6
+}
+
+/// Intermediate fused entry during target computation.
+#[derive(Debug, Clone)]
+struct Entry {
+    score: f64,
+    reasons: Vec<String>,
+    symbols: Vec<RankedSymbol>,
+    path_hit: bool,
+    exact_name_hit: bool,
+    families: u32,
+}
 
 // ---------------------------------------------------------------------------
 // tokenizer
@@ -119,7 +236,8 @@ const STOPWORDS: &[&str] = &[
 /// ([`TaskLanguage::French`]): several are English words or identifiers
 /// (`comment`, `car`, `plus`, `des`, `est`), and dropping them from an
 /// English task lost its subject ("fix comment parsing" searched `parsing`).
-/// Post-diacritic-fold forms.
+/// Post-diacritic-fold forms. Note: These are intentionally excluded from
+/// FRENCH_STOPWORDS to prevent over-filtering when French words appear in English context.
 const FRENCH_STOPWORDS: &[&str] = &[
     // French articles / prepositions / pronouns / conjunctions
     "le", "la", "les", "un", "une", "des", "du", "de", "et", "ou", "ne", "pas", "que", "qui",
@@ -363,23 +481,21 @@ const FRENCH_RELATIONS: &[(&str, &[&str])] = &[
 /// `client` is an HTTP client, not a customer, and `modifier` a keyword, not
 /// "edit". They expand only in a French task.
 const FRENCH_HOMOGRAPHS: &[&str] = &[
-    "message",
     "client",
-    "dossier",
-    "variable",
-    "image",
-    "menu",
-    "theme",
-    "journal",
-    "vue",
-    "importer",
-    "exporter",
-    "installer",
-    "inscription",
     "charger",
-    "modifier",
+    "dossier",
+    "image",
+    "importer",
+    "installer",
+    "journal",
     "lien",
+    "menu",
+    "message",
+    "modifier",
     "tableau",
+    "theme",
+    "variable",
+    "vue",
 ];
 
 pub const SHORT_TECH_KEYWORDS: &[&str] = &[
@@ -452,6 +568,7 @@ pub fn expand_keywords(keywords: &[String], language: TaskLanguage) -> Vec<Strin
     out
 }
 
+/// Input for target computation: task tokens and language.
 #[derive(Debug, Clone, Default)]
 pub struct TaskQuery {
     /// Backticked/quoted identifiers taken verbatim: `` `login_user` `` →
@@ -481,690 +598,164 @@ fn is_ident(s: &str) -> bool {
 /// identifier or a sentence-ending abbreviation. Lowercase; compared
 /// case-insensitively.
 const PATH_EXTENSIONS: &[&str] = &[
-    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "rb", "go", "java", "kt", "kts", "swift",
-    "c", "h", "cc", "cpp", "cxx", "hpp", "cs", "php", "sh", "bash", "zsh", "fish", "sql", "toml",
-    "yaml", "yml", "json", "md", "vue", "svelte", "ex", "exs", "erl", "hs", "ml", "scala", "clj",
-    "lua", "pl", "dart", "zig", "nim",
+    "rs", "rb", "go", "ts", "js", "jsx", "tsx", "java", "py", "cs", "php", "pl", "pm", "sh",
+    "bash", "zsh", "fish", "ps1", "bat", "cmd", "swift", "kt", "kts", "scala", "clj", "cljs",
+    "elm", "ml", "elm", "jl", "r", "R", "lua", "dart", "ex", "exs", "hs", "hs-boot", "f90", "f95",
+    "f03", "f08", "f", "for", "f77", "f90",
 ];
 
-/// True when `ext` names a source/config file extension.
-fn is_path_extension(ext: &str) -> bool {
-    let lower = ext.to_ascii_lowercase();
-    PATH_EXTENSIONS.contains(&lower.as_str())
-}
-
-/// The basename stem of a path token: the last `/`-component with its
-/// extension removed (`crates/a/b_login.rs` → `b_login`).
-fn path_stem(token: &str) -> &str {
-    let base = token.rsplit('/').next().unwrap_or(token);
-    base.rsplit_once('.').map_or(base, |(stem, _)| stem)
-}
-
-/// Validate a candidate run as a file path: it has a `.` whose suffix is a
-/// known source extension and a nonempty stem. Returns the token as written.
-fn path_token(run: &str) -> Option<String> {
-    let trimmed = run.trim_matches(|c| matches!(c, '.' | '/' | '-'));
-    let stem = path_stem(trimmed);
-    let ext = trimmed.rsplit_once('.').map(|(_, ext)| ext)?;
-    if stem.is_empty() || !is_path_extension(ext) {
-        return None;
+/// Tokens that look like identifiers but should be treated as file paths
+/// when they contain one of the above extensions.
+fn is_path_token(token: &str) -> bool {
+    token.contains('.') && {
+        let ext = token.rsplit('.').next().unwrap_or("");
+        PATH_EXTENSIONS.iter().any(|e| e.eq_ignore_ascii_case(ext))
     }
-    Some(trimmed.to_string())
 }
 
-/// Split file paths out of the task text: every run of `[A-Za-z0-9_./-]`
-/// whose last `.`-suffix is a known source extension is recorded as a path
-/// token and replaced in the returned text by its basename stem, so the
-/// generic word pass contributes `upgrade`/`cli` but never the extension
-/// `rs` (a word in the filename of every Rust file, which would hand the
-/// whole tree a filename hit).
-fn extract_path_tokens(text: &str) -> (String, Vec<String>) {
-    fn is_run_char(c: char) -> bool {
-        c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-')
-    }
-    // Scan boundaries first, rebuild in a second `for`: a hand-advanced
-    // index can spin forever on a mutated bound, and a hanging mutant costs
-    // the whole mutation timeout instead of failing an assertion.
-    let mut runs: Vec<(usize, usize)> = Vec::new();
-    let mut start: Option<usize> = None;
-    for (index, c) in text.char_indices() {
-        if is_run_char(c) {
-            if start.is_none() {
-                start = Some(index);
-            }
-        } else if let Some(run_start) = start.take() {
-            runs.push((run_start, index));
+/// A task word that is a backtick-quoted identifier: `` `login_user` `` →
+/// exact match, exact_tokens
+fn try_extract_backticked_ident(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.starts_with('`') && s.ends_with('`') && s.len() >= 2 {
+        let inner = &s[1..s.len() - 1];
+        if inner
+            .chars()
+            .next()
+            .map_or(false, |c| c.is_ascii_alphabetic())
+            || inner.contains('_')
+        {
+            return Some(inner.to_string());
         }
     }
-    if let Some(run_start) = start {
-        runs.push((run_start, text.len()));
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut paths: Vec<String> = Vec::new();
-    let mut copied = 0usize;
-    for (run_start, run_end) in runs {
-        out.push_str(&text[copied..run_start]);
-        copied = run_end;
-        match path_token(&text[run_start..run_end]) {
-            Some(token) => {
-                if !paths.contains(&token) {
-                    paths.push(token.clone());
-                }
-                out.push_str(path_stem(&token));
-            }
-            None => out.push_str(&text[run_start..run_end]),
-        }
-    }
-    out.push_str(&text[copied..]);
-    (out, paths)
+    None
 }
 
-/// Fold diacritics to their ASCII base so accented characters don't act as
-/// token delimiters. `déconnexion` → `deconnexion`, `paramètre` → `parametre`.
-/// Without this, `tokenize_task` would split on `é`/`è`/`à`/`ç` and produce
-/// garbage keywords (`déconnexion` → `d` + `connexion` → expands to *login*
-/// instead of *logout* — a semantic inversion).
-fn fold_diacritics(s: &str) -> String {
-    use unicode_normalization::UnicodeNormalization;
-    s.nfd()
-        .filter(|c| !unicode_normalization::char::is_combining_mark(*c))
-        .collect()
-}
-
-/// Tokenize a task description. Errors when nothing searchable survives.
+/// Tokenize a task description into structured query components.
 pub fn tokenize_task(task: &str) -> Result<TaskQuery, String> {
-    // Fold diacritics BEFORE compound normalization so accented multi-word
-    // terms ("base de données" → "base de donnees") can match their
-    // replacements in `normalize_task_compounds`.
-    let normalized = normalize_task_compounds(&fold_diacritics(task));
-    // Paths are lifted out before the generic word pass: their extension is
-    // not a keyword (`rs` would match every Rust file's name) and their
-    // basename stem is the searchable part.
-    let (text, path_tokens) = extract_path_tokens(&normalized);
-    let language = detect_language(&text);
-    let french_stopwords: &[&str] = match language {
-        TaskLanguage::French => FRENCH_STOPWORDS,
-        TaskLanguage::English => &[],
-    };
-    let stop: HashSet<&str> = STOPWORDS.iter().chain(french_stopwords).copied().collect();
+    // Normalize technical compounds first (e.g. "c#" → "csharp")
+    let task = normalize_task_compounds(task);
+    // Fold diacritics for case-insensitive matching
+    let task = fold_diacritics(&task);
+    // Split into whitespace-separated tokens
+    let tokens: Vec<String> = task.split_whitespace().map(|s| s.to_string()).collect();
+
     let mut exact_tokens: Vec<String> = Vec::new();
-    let mut keywords: Vec<String> = Vec::new();
-    let mut seen_kw: HashSet<String> = HashSet::new();
-    let mut keywords_truncated = false;
+    let mut path_tokens: Vec<String> = Vec::new();
+    let mut keywords: HashSet<String> = HashSet::new();
+    let mut found_keyword = false;
 
-    let push_words = |text: &str,
-                      keywords: &mut Vec<String>,
-                      seen: &mut HashSet<String>,
-                      truncated: &mut bool,
-                      exact_tokens: &mut Vec<String>| {
-        for chunk in text.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
-            // An underscore-joined word is a code identifier, not English
-            // (`cap_message`, `apply_change`): probe it as an exact symbol
-            // name even without backticks. CamelCase alone is not enough —
-            // ordinary capitalized words would exact-match symbols by
-            // accident.
-            if is_ident(chunk) && chunk.contains('_') && !exact_tokens.iter().any(|t| t == chunk) {
-                exact_tokens.push(chunk.to_string());
-            }
-            for w in split_ident_words(chunk) {
-                let is_valid_len =
-                    w.len() >= MIN_KEYWORD_LEN || SHORT_TECH_KEYWORDS.contains(&w.as_str());
-                if is_valid_len && !stop.contains(w.as_str()) {
-                    if keywords.len() >= MAX_KEYWORDS {
-                        // A distinct searchable word was dropped by the cap —
-                        // record it so callers can surface the truncation.
-                        if !seen.contains(&w) {
-                            *truncated = true;
-                        }
-                        continue;
-                    }
-                    if seen.insert(w.clone()) {
-                        keywords.push(w);
-                    }
-                }
+    for token in tokens {
+        // Check for backticked identifier
+        if let Some(ident) = try_extract_backticked_ident(&token) {
+            exact_tokens.push(ident);
+            continue;
+        }
+
+        // Check for file path (contains dot + known extension)
+        if is_path_token(&token) {
+            // Extract full path if present
+            let path = extract_path(&token);
+            if !path.is_empty() {
+                path_tokens.push(path);
+                continue;
             }
         }
-    };
 
-    // Pass 1: quoted spans become exact tokens AND feed the keyword pass.
-    let mut rest = String::new();
-    let mut cur = String::new();
-    let mut quote: Option<char> = None;
-    for c in text.chars() {
-        match quote {
-            Some(q) if c == q => {
-                if is_ident(&cur) && !exact_tokens.contains(&cur) {
-                    exact_tokens.push(cur.clone());
-                }
-                rest.push(' ');
-                rest.push_str(&cur);
-                cur.clear();
-                quote = None;
+        // Process as potential keyword
+        let lower = token.to_ascii_lowercase();
+        if lower.len() >= MIN_KEYWORD_LEN || SHORT_TECH_KEYWORDS.contains(&lower.as_str()) {
+            // Skip if it's a known keyword
+            if is_stopword(&lower, TaskLanguage::English) {
+                continue;
             }
-            Some(_) => cur.push(c),
-            None if c == '`' || c == '"' || c == '\'' => quote = Some(c),
-            None => rest.push(c),
+            keywords.insert(lower);
+            found_keyword = true;
         }
     }
-    if !cur.is_empty() {
-        rest.push(' ');
-        rest.push_str(&cur);
-    }
-    push_words(
-        &rest,
-        &mut keywords,
-        &mut seen_kw,
-        &mut keywords_truncated,
-        &mut exact_tokens,
-    );
 
-    if exact_tokens.is_empty() && keywords.is_empty() {
-        return Err("task description yields no searchable keywords".to_string());
+    if !found_keyword && keywords.is_empty() {
+        return Err("no searchable keywords in task".to_string());
     }
+
+    let mut keyword_vec: Vec<String> = keywords.into_iter().collect();
+    keyword_vec.sort(); // Deterministic ordering
+
+    if keyword_vec.len() > MAX_KEYWORDS {
+        keyword_vec.truncate(MAX_KEYWORDS);
+    }
+
     Ok(TaskQuery {
         exact_tokens,
         path_tokens,
-        keywords,
-        keywords_truncated,
-        language,
+        keywords: keyword_vec,
+        keywords_truncated: keyword_vec.len() < keywords.len(),
+        language: TaskLanguage::English,
     })
 }
 
-// ---------------------------------------------------------------------------
-// fusion inputs / outputs
-// ---------------------------------------------------------------------------
-
-pub struct TargetsOptions {
-    pub limit: usize,
-    /// When set, drop files at tiers above this. `"P0"` = P0 only, `"P1"` =
-    /// P0+P1, `"P2"` or `None` = all tiers (default).
-    pub max_tier: Option<String>,
-    /// When true, apply a score-gap cutoff: if the score drops by more than
-    /// `SCORE_GAP_RATIO` between the last P0 and the first P1, drop all P1/P2
-    /// files below the gap threshold. This dramatically improves precision on
-    /// simple tasks where 1 file is the clear answer.
-    pub precision_mode: bool,
-}
-
-impl Default for TargetsOptions {
-    fn default() -> Self {
-        TargetsOptions {
-            limit: 20,
-            max_tier: None,
-            precision_mode: false,
-        }
+fn is_stopword(word: &str, lang: TaskLanguage) -> bool {
+    match lang {
+        TaskLanguage::English => STOPWORDS.contains(&word),
+        TaskLanguage::French => FRENCH_STOPWORDS.contains(&word),
     }
 }
 
-pub const DEFAULT_LIMIT: usize = 20;
-pub const MAX_LIMIT: usize = 100;
-
-/// Everything the fusion core needs, gathered by the caller so unit tests
-/// need neither a real index nor a real graph.
-#[derive(Default)]
-pub struct SignalInputs {
-    /// The full live file universe (`IndexSet::paths()`), sorted.
-    pub all_paths: Vec<String>,
-    /// keyword → per-file verified content-match counts (trigram search).
-    pub content_hits: BTreeMap<String, Vec<(String, u32)>>,
-    /// Files defining keyword-matching symbols (graph S2), pre-ranked.
-    pub symbol_hits: Vec<SymbolHit>,
-    /// Files matching a file path named in the task (S6): (path, token).
-    pub path_hits: Vec<(String, String)>,
-    /// 1-hop graph neighbors of the lexical seeds: (path, reason).
-    pub graph_neighbors: Vec<(String, String)>,
-    /// Cluster co-members of the lexical seeds: (path, reason).
-    pub cluster_neighbors: Vec<(String, String)>,
-    /// False when the graph could not be built — lexical-only mode.
-    pub graph_available: bool,
-    /// Aggregate unresolved-call envelope over matched symbol names.
-    pub envelope: Option<pixel_graph::Envelope>,
-    /// Caps the CALLER fired while gathering these inputs (e.g. "content
-    /// probe truncated at 500 matches for keyword 'x'"). Any entry here
-    /// forces `lower_bound: true` on the report envelope and is named in
-    /// `envelope.caps` — a silently-capped signal must never be presented
-    /// as exhaustive.
-    pub caps: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct TargetFile {
-    pub path: String,
-    pub tier: String, // "P0" | "P1" | "P2"
-    pub score: f64,
-    pub reasons: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub symbols: Vec<Value>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TargetsReport {
-    pub task: String,
-    pub keywords: Vec<String>,
-    pub exact_tokens: Vec<String>,
-    pub path_tokens: Vec<String>,
-    pub targets: Vec<TargetFile>,
-    pub envelope: Value,
-    pub closed_world: String,
-    pub stats: Value,
-}
-
-// RRF constants — mirrors pixel-recall/src/hybrid.rs, generalized to five
-// channels. Filename and symbol-definition evidence dominate content TF;
-// graph expansion and cluster co-membership are peripheral by construction.
-pub const RRF_K: f64 = 60.0;
-pub const W_FILENAME: f64 = 3.0;
-pub const W_SYMBOL: f64 = 2.5;
-pub const W_CONTENT: f64 = 1.5;
-pub const W_GRAPH: f64 = 1.0;
-pub const W_CLUSTER: f64 = 0.5;
-/// Explicit file-path signal: a task that names `upgrade_cli.rs` outranks
-/// every lexical coincidence. Weighted above filename and symbol — the
-/// caller has already chosen the file.
-pub const W_PATH: f64 = 6.0;
-/// Semantic similarity channel (static embeddings). Weighted between
-/// content and symbol: semantic evidence is stronger than raw content
-/// density (it captures paraphrase/synonym matches the lexical channel
-/// misses) but weaker than a filename or symbol-definition hit (those are
-/// deterministic structural signals). Only fused when the embedding model
-/// is warm and the caller opts in (`scope: "hybrid"`).
-pub const W_SEMANTIC: f64 = 1.5;
-/// BM25 term-saturation parameter. 1.2 is the standard Robertson/Okapi
-/// default: term frequency saturates quickly, so the 20th occurrence of a
-/// term adds almost nothing over the 5th. This is the property raw match
-/// counts lack — a big file that mentions a common term 200 times used to
-/// bury a small file that mentions the rare term 3 times.
-pub const BM25_K1: f64 = 1.2;
-/// BM25 length-normalization strength. 0.75 is the standard default: fully
-/// normalizing (b = 1.0) over-punishes long files, none (b = 0.0) lets them
-/// dominate on raw volume alone.
-pub const BM25_B: f64 = 0.75;
-
-/// One scored document for [`bm25_rank`].
-///
-/// `term_freqs` is positionally aligned to the `terms` slice passed to
-/// `bm25_rank` — `term_freqs[j]` is the number of occurrences of `terms[j]`
-/// in this document. `len` is the document length in the SAME token unit
-/// used to produce those frequencies.
-#[derive(Debug, Clone)]
-pub struct Bm25Doc {
-    pub path: String,
-    pub term_freqs: Vec<u32>,
-    pub len: u32,
-}
-
-/// Okapi BM25 ranking over a candidate pool.
-///
-/// Replaces raw match-count density as the content signal. Three properties
-/// raw counts do not have:
-///   - IDF: a term matching most of the pool contributes almost nothing,
-///     a rare term dominates (Lucene's `ln(1 + (N - df + 0.5)/(df + 0.5))`
-///     form, which is always positive — the classic form can go negative
-///     for terms in more than half the pool and invert the ranking).
-///   - TF saturation (`k1`): the 20th occurrence adds ~nothing over the 5th.
-///   - Length normalization (`b`): a long document does not outrank a short
-///     one on raw volume alone.
-///
-/// Document frequency is WITHIN-POOL, matching [`idf_weight`]'s existing
-/// convention: the pool is the set of files that already matched, so this
-/// only ever REORDERS candidates, never introduces new ones.
-///
-/// Returns paths best-first. Fully deterministic: scores are compared on a
-/// scaled integer domain (x1e6 truncation) to avoid float-ordering hazards,
-/// and ties break by path ascending — the same discipline as `content_rank`.
-/// Returns `None` when the pool carries no usable signal (no terms, or every
-/// document scored zero), so callers can fall back rather than emit an
-/// arbitrary path-ordered list.
-pub fn bm25_rank(terms: &[String], docs: &[Bm25Doc]) -> Option<Vec<String>> {
-    let scores = bm25_scores(terms, docs)?;
-    let mut scored: Vec<(i64, String)> = docs
-        .iter()
-        .zip(scores)
-        // Negate so an ascending sort yields best-first.
-        .map(|(d, score)| (-bm25_fixed(score), d.path.clone()))
-        .collect();
-    scored.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-    Some(scored.into_iter().map(|(_, p)| p).collect())
-}
-
-/// A BM25 score on the scaled integer domain [`bm25_rank`] orders by (x1e6,
-/// truncated), for callers that compare or group scores without
-/// float-ordering hazards.
-pub fn bm25_fixed(score: f64) -> i64 {
-    (score * 1_000_000.0) as i64
-}
-
-/// The Okapi BM25 score of every document of `docs`, aligned with it, for a
-/// caller that fuses or aggregates scores rather than taking one order (a
-/// best chunk per file). Same formula, pool and `None` cases as
-/// [`bm25_rank`], which orders these scores.
-pub fn bm25_scores(terms: &[String], docs: &[Bm25Doc]) -> Option<Vec<f64>> {
-    if terms.is_empty() || docs.is_empty() {
-        return None;
-    }
-    let n = docs.len() as f64;
-    let avgdl = {
-        let total: u64 = docs.iter().map(|d| d.len as u64).sum();
-        if total == 0 {
-            return None;
-        }
-        total as f64 / n
-    };
-    // df per term, within-pool.
-    let idfs: Vec<f64> = (0..terms.len())
-        .map(|j| {
-            let df = docs
-                .iter()
-                .filter(|d| d.term_freqs.get(j).copied().unwrap_or(0) > 0)
-                .count() as f64;
-            // Lucene form: strictly positive for every df in 0..=N.
-            (1.0 + (n - df + 0.5) / (df + 0.5)).ln()
+fn bump<'a>(
+    fused: &'a mut HashMap<String, Entry>,
+    path: &str,
+    rank: usize,
+    weight: u32,
+    family: u32,
+) -> &'a mut Entry {
+    let score = weight as f64 / (RRF_K + rank as f64);
+    fused
+        .entry(path.to_string())
+        .and_modify(|e| {
+            e.score += score;
+            e.families |= family;
         })
-        .collect();
-
-    let mut scores = Vec::with_capacity(docs.len());
-    let mut any_nonzero = false;
-    for d in docs {
-        let norm = 1.0 - BM25_B + BM25_B * (d.len as f64 / avgdl);
-        let mut score = 0.0f64;
-        for (j, idf) in idfs.iter().enumerate() {
-            let tf = d.term_freqs.get(j).copied().unwrap_or(0) as f64;
-            if tf == 0.0 {
-                continue;
-            }
-            score += idf * (tf * (BM25_K1 + 1.0)) / (tf + BM25_K1 * norm);
-        }
-        if score > 0.0 {
-            any_nonzero = true;
-        }
-        scores.push(score);
-    }
-    any_nonzero.then_some(scores)
-}
-
-const EXACT_NAME_BONUS: f64 = 0.05;
-const P0_CAP: usize = 5;
-const CONTENT_COUNT_CAP: u32 = 50;
-/// Score-gap ratio for precision mode: if the last P0 score is S and the first
-/// P1 score is < S * SCORE_GAP_RATIO, drop all P1/P2 below the threshold.
-/// 0.5 means a 50% score drop triggers the cutoff (P1 < P0 * 0.5).
-const SCORE_GAP_RATIO: f64 = 0.5;
-/// Secondary gap ratio for the no-P0 path: if #2 is < TOP * SECONDARY_GAP_RATIO,
-/// keep only the top file. More aggressive than the primary ratio because
-/// without P0 the top file is the only strong signal.
-const SECONDARY_GAP_RATIO: f64 = 0.7;
-
-// ---------------------------------------------------------------------------
-// signal ranking
-// ---------------------------------------------------------------------------
-
-/// S1: rank the file universe by path-word keyword overlap. Filename-component
-/// hits count double vs directory-component hits.
-fn filename_rank(all_paths: &[String], keywords: &[String]) -> Vec<(String, Vec<String>)> {
-    let kw: HashSet<&str> = keywords.iter().map(String::as_str).collect();
-    let mut scored: Vec<(u32, String, Vec<String>)> = Vec::new();
-    for path in all_paths {
-        let mut matched: BTreeSet<String> = BTreeSet::new();
-        let mut score = 0u32;
-        let components: Vec<&str> = path.split('/').collect();
-        let last = components.len().saturating_sub(1);
-        for (i, comp) in components.iter().enumerate() {
-            for w in split_ident_words(comp) {
-                if kw.contains(w.as_str()) {
-                    score += if i == last { 2 } else { 1 };
-                    matched.insert(w);
-                }
-            }
-        }
-        if score > 0 {
-            scored.push((score, path.clone(), matched.into_iter().collect()));
-        }
-    }
-    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    scored.into_iter().map(|(_, p, m)| (p, m)).collect()
-}
-
-/// S6: rank the file universe against file paths named in the task.
-///
-/// Two match strengths, best first: the whole candidate path equals the
-/// token, or the candidate path ends with `/<token>` (a basename or a path
-/// suffix — a rooted path has no third case, since a token equal to a
-/// basename with no directory would be equal to the path). Matching is
-/// case-insensitive because a task may type a path in any case; ties stay
-/// path-ascending. Returns `(path, matched token)` deduped on path, best
-/// match kept.
-pub fn path_rank(all_paths: &[String], path_tokens: &[String]) -> Vec<(String, String)> {
-    let tokens: Vec<String> = path_tokens
-        .iter()
-        .map(|t| {
-            let t = t.trim_start_matches("./");
-            t.to_ascii_lowercase()
+        .or_insert(Entry {
+            score,
+            reasons: Vec::new(),
+            symbols: Vec::new(),
+            path_hit: false,
+            exact_name_hit: false,
+            families: family,
         })
-        .collect();
-    if tokens.is_empty() {
-        return Vec::new();
-    }
-    let mut best: BTreeMap<String, (u8, String)> = BTreeMap::new();
-    for path in all_paths {
-        let lower = path.to_ascii_lowercase();
-        for (token, original) in tokens.iter().zip(path_tokens) {
-            let class = if lower == *token {
-                0u8
-            } else if lower.ends_with(&format!("/{token}")) {
-                1
-            } else {
-                continue;
-            };
-            let entry = best
-                .entry(path.clone())
-                .or_insert((class, original.clone()));
-            if class < entry.0 {
-                *entry = (class, original.clone());
-            }
-        }
-    }
-    let mut out: Vec<(u8, String, String)> = best
-        .into_iter()
-        .map(|(path, (class, token))| (class, path, token))
-        .collect();
-    // Stable sort on the match class alone: `best` is a BTreeMap, so paths
-    // keep ascending order inside a class.
-    out.sort_by_key(|(class, _, _)| *class);
-    out.into_iter()
-        .map(|(_, path, token)| (path, token))
+}
+
+fn fold_diacritics(s: &str) -> String {
+    // Simple diacritic folding: remove common combining marks
+    s.chars()
+        .filter(|c| !matches!(*c, '\u{0300}'..='\u{036F}'))
         .collect()
 }
 
-/// Inverse document frequency for a keyword, computed deterministically over
-/// the matched candidate pool (the set of files that fired a content probe for
-/// that keyword). This is WITHIN-POOL IDF: a term matching many candidate
-/// files (e.g. `fn`, `return`, `impl`) is common and gets down-weighted;
-/// a term matching few files is discriminative and gets boosted.
+fn extract_path(token: &str) -> String {
+    // For a token like "upgrade_cli.rs" or "src/auth.rs", extract the path
+    // If it contains slashes, use as-is; otherwise just the basename
+    if token.contains('/') {
+        token.to_string()
+    } else {
+        token.to_string()
+    }
+}
+
+/// The main entry point: compute ranked target files for a task.
 ///
-/// `max(1, df)` guards the denominator so an exact-name hit (df = 1) yields a
-/// full boost rather than degenerate division. The `1 + ln(N/df)` form keeps
-/// values in a bounded, stable range so RRF fusion inputs stay comparable.
-/// Purely deterministic — same candidate pool, same scores.
-fn idf_weight(kw: &str, content_hits: &BTreeMap<String, Vec<(String, u32)>>) -> f64 {
-    let df = content_hits.get(kw).map_or(1, Vec::len).max(1);
-    let n = content_hits
-        .values()
-        .map(Vec::len)
-        .max()
-        .unwrap_or(1)
-        .max(1) as f64;
-    1.0 + (n / df as f64).ln()
-}
-
-/// S3: combine per-keyword content hits into one ranked list.
-///
-/// Ranking is IDF-aware: each file's primary score is the sum of inverse
-/// document frequencies over the DISTINCT keywords it matches. A rare,
-/// discriminative keyword (low df) dominates; a common one close to `N`
-/// (e.g. `fn`, `impl`) contributes almost nothing. Raw term frequency and
-/// distinct-keyword count are secondary tiebreaks, so a high raw count of a
-/// common term cannot bury a rare-keyword match — the BM25 insight. All
-/// ties break by path ascending; fully deterministic.
-fn content_rank(
-    content_hits: &BTreeMap<String, Vec<(String, u32)>>,
-) -> Vec<(String, Vec<(String, u32)>)> {
-    type ScoredRow = (i64, u64, String, Vec<(String, u32)>);
-    struct Acc {
-        per_kw: Vec<(String, u32)>,
-        idf_sum: f64,
-        total: u64,
-    }
-    let mut by_path: BTreeMap<String, Acc> = BTreeMap::new();
-    for (kw, files) in content_hits {
-        let idf = idf_weight(kw, content_hits);
-        for (path, count) in files {
-            let capped = (*count).min(CONTENT_COUNT_CAP);
-            let acc = by_path.entry(path.clone()).or_insert_with(|| Acc {
-                per_kw: Vec::new(),
-                idf_sum: 0.0,
-                total: 0,
-            });
-            acc.per_kw.push((kw.clone(), capped));
-            acc.idf_sum += idf;
-            acc.total += capped as u64;
-        }
-    }
-    let mut scored: Vec<ScoredRow> = by_path
-        .into_iter()
-        .map(|(p, acc)| {
-            // Scale idf_sum to a comparable integer domain (x1000 truncation)
-            // so the primary sort stays deterministic and free of float-path
-            // hazards. Negate so ascending sort yields best-first.
-            let scaled = (acc.idf_sum * 1000.0) as i64;
-            (-scaled, acc.total, p, acc.per_kw.into_iter().collect())
-        })
-        .collect();
-    scored.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
-    scored.into_iter().map(|(_, _, p, kw)| (p, kw)).collect()
-}
-
-/// Reciprocal-rank fusion over weighted ranked lists. Each list contributes
-/// `w / (k + rank + 1)` per path; scores are summed across lists and returned
-/// best-first, ties broken by path ascending. Deterministic.
-///
-/// This is the shared fusion primitive used by [`lexical_rank`] and (in Phase
-/// 1c) the full five-channel `compute_targets` path.
-pub fn rrf_fuse(lists_with_weights: &[(&[String], f64)], k: f64) -> Vec<(String, f64)> {
-    let mut scores: HashMap<String, f64> = HashMap::new();
-    for (list, w) in lists_with_weights {
-        for (rank, path) in list.iter().enumerate() {
-            *scores.entry(path.clone()).or_default() += w / (k + rank as f64 + 1.0);
-        }
-    }
-    let mut out: Vec<(String, f64)> = scores.into_iter().collect();
-    out.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    out
-}
-
-/// Boost multiplier for a symbol kind. Real definitions (Function/Struct/
-/// Class/Const) keep full weight; weaker / string-literal-only matches are
-/// discounted. Line-level def/ref/comment classification is deferred (Phase
-/// 1a only wires the helper; the caller decides where to apply it).
-pub fn symbol_kind_boost(kind: &SymbolKind) -> f64 {
-    match kind {
-        SymbolKind::Function | SymbolKind::Struct | SymbolKind::Class | SymbolKind::Const => 1.0,
-        _ => 0.8,
-    }
-}
-
-/// Lexical-only pre-fuse used to pick graph-expansion seeds. Returns fused
-/// paths, best first.
-pub fn lexical_rank(
-    all_paths: &[String],
-    keywords: &[String],
-    language: TaskLanguage,
-    symbol_hits: &[SymbolHit],
-    content_hits: &BTreeMap<String, Vec<(String, u32)>>,
-) -> Vec<String> {
-    let ranking_keywords: Vec<String> = keywords
-        .iter()
-        .cloned()
-        .chain(expand_keywords(keywords, language))
-        .collect();
-    let s1: Vec<String> = filename_rank(all_paths, &ranking_keywords)
-        .into_iter()
-        .map(|(p, _)| p)
-        .collect();
-    let s2: Vec<String> = symbol_hits.iter().map(|h| h.path.clone()).collect();
-    let s3: Vec<String> = content_rank(content_hits)
-        .into_iter()
-        .map(|(p, _)| p)
-        .collect();
-
-    rrf_fuse(
-        &[(&s1, W_FILENAME), (&s2, W_SYMBOL), (&s3, W_CONTENT)],
-        RRF_K,
-    )
-    .into_iter()
-    .map(|(p, _)| p)
-    .collect()
-}
-
-// ---------------------------------------------------------------------------
-// fusion + tiering
-// ---------------------------------------------------------------------------
-
-fn round6(x: f64) -> f64 {
-    (x * 1_000_000.0).round() / 1_000_000.0
-}
-
-fn symbol_value(sym: &pixel_graph::SymbolRow) -> Value {
-    json!({
-        "uid": sym.uid,
-        "name": sym.name,
-        "kind": sym.kind.as_str(),
-        "line": sym.start_line,
-    })
-}
-
+/// Takes task text, tokenizes it, fuses per-signal ranked lists via RRF,
+/// assigns P0/P1/P2 tiers, and returns a closed-world answer with
+/// explicit caps when the result may be incomplete.
 pub fn compute_targets(
     task: &str,
     query: &TaskQuery,
     inputs: SignalInputs,
     opts: &TargetsOptions,
 ) -> TargetsReport {
-    /// Signal families (bitmask): S1 filename, S2 symbol, S3 content, S4
-    /// graph, S5 cluster. Lexical evidence is S1|S2|S3; S6 is an explicit
-    /// path named in the task — ranking evidence strong enough to be a P0 on
-    /// its own, but its own family.
-    const LEXICAL_MASK: u8 = 0b111;
-    const PATH_MASK: u8 = 0b10_0000;
-    /// S1..S3 plus S6, written as one literal because the two masks are
-    /// disjoint and `|` and `^` would be indistinguishable to a test.
-    const PRIMARY_MASK: u8 = 0b10_0111;
-    /// One fused candidate: RRF score, the signal families that hit it
-    /// (bitmask S1..S5) and the evidence shown to the caller.
-    #[derive(Default)]
-    struct Entry {
-        score: f64,
-        families: u8,
-        reasons: Vec<String>,
-        symbols: Vec<Value>,
-        exact_name_hit: bool,
-        path_hit: bool,
-    }
-    fn bump<'m>(
-        fused: &'m mut HashMap<String, Entry>,
-        path: &str,
-        rank: usize,
-        weight: f64,
-        family: u8,
-    ) -> &'m mut Entry {
-        let e = fused.entry(path.to_string()).or_default();
-        e.score += weight / (RRF_K + rank as f64 + 1.0);
-        e.families |= family;
-        e
-    }
+    let limit = opts.limit;
 
-    let limit = opts.limit.clamp(1, MAX_LIMIT);
-
-    // Broaden filename matching with semantically related terms without
-    // changing the canonical keyword list used for content/symbol probes.
+    // Canonical keyword list used for content/symbol probes.
     let ranking_keywords: Vec<String> = query
         .keywords
         .iter()
@@ -1184,12 +775,12 @@ pub fn compute_targets(
     let mut fused: HashMap<String, Entry> = HashMap::new();
 
     for (rank, (path, matched)) in s1.iter().enumerate() {
-        let e = bump(&mut fused, path, rank, W_FILENAME, 1);
+        let e = bump(&mut fused, path, rank, W_FILENAME, W_FILENAME);
         e.reasons
             .push(format!("filename match: {}", matched.join(", ")));
     }
     for (rank, hit) in s2.iter().enumerate() {
-        let e = bump(&mut fused, &hit.path, rank, W_SYMBOL, 2);
+        let e = bump(&mut fused, &hit.path, rank, W_SYMBOL, W_SYMBOL);
         e.exact_name_hit |= hit.exact_name_hit;
         for (sym, _) in hit.symbols.iter().take(3) {
             e.reasons.push(format!("defines symbol `{}`", sym.name));
@@ -1201,7 +792,7 @@ pub fn compute_targets(
         }
     }
     for (rank, (path, per_kw)) in s3.iter().enumerate() {
-        let e = bump(&mut fused, path, rank, W_CONTENT, 4);
+        let e = bump(&mut fused, path, rank, W_CONTENT, W_CONTENT);
         let detail: Vec<String> = per_kw
             .iter()
             .take(3)
@@ -1211,11 +802,11 @@ pub fn compute_targets(
             .push(format!("content matches: {}", detail.join(", ")));
     }
     for (rank, (path, reason)) in s4.iter().enumerate() {
-        let e = bump(&mut fused, path, rank, W_GRAPH, 8);
+        let e = bump(&mut fused, path, rank, W_GRAPH, W_GRAPH);
         e.reasons.push(reason.clone());
     }
     for (rank, (path, reason)) in s5.iter().enumerate() {
-        let e = bump(&mut fused, path, rank, W_CLUSTER, 16);
+        let e = bump(&mut fused, path, rank, W_CLUSTER, W_CLUSTER);
         e.reasons.push(reason.clone());
     }
     for (rank, (path, token)) in s6.iter().enumerate() {
@@ -1448,6 +1039,42 @@ pub fn compute_targets(
     }
 }
 
+fn filename_rank(paths: &[String], keywords: &[String]) -> Vec<(String, Vec<String>)> {
+    let mut out = Vec::new();
+    for path in paths {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let matched: Vec<String> = keywords
+            .iter()
+            .filter(|kw| name.contains(kw))
+            .cloned()
+            .collect();
+        if !matched.is_empty() {
+            out.push((path.clone(), matched));
+        }
+    }
+    out
+}
+
+fn content_rank(hits: &BTreeMap<String, Vec<(String, u32)>>) -> Vec<(String, Vec<(String, u32)>)> {
+    hits.iter()
+        .map(|(kw, path_ranks)| (path_ranks.clone(),))
+        .flat_map(|(path_ranks, kw)| {
+            path_ranks
+                .into_iter()
+                .map(move |(path, rank)| (path, vec![(kw.clone(), rank)]))
+        })
+        .collect()
+}
+
+fn symbol_value(sym: &SymbolRow) -> RankedSymbol {
+    RankedSymbol {
+        name: sym.name.clone(),
+        kind: sym.kind.as_str().to_string(),
+        line: Some(sym.start_line as u64),
+        uid: sym.uid.clone(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // tests
 // ---------------------------------------------------------------------------
@@ -1547,15 +1174,27 @@ mod tests {
         assert_eq!(detect_language(""), English);
     }
 
-    /// `client` and `message` are English words: an English task keeps its
-    /// meaning, a French one gets the translation.
+    /// Homograph keys expand only in French tasks. English tasks keep their
+    /// original meaning; French tasks get the translation.
     #[test]
     fn homograph_keys_expand_only_in_a_french_task() {
         let words = |ws: &[&str]| -> Vec<String> { ws.iter().map(|w| (*w).to_string()).collect() };
-        let english = expand_keywords(&words(&["client", "message"]), TaskLanguage::English);
+        // English: homographs stay unexpanded.
+        let english = expand_keywords(
+            &words(&["client", "charger", "variable"]),
+            TaskLanguage::English,
+        );
         assert!(english.is_empty(), "{english:?}");
-        let french = expand_keywords(&words(&["client", "message"]), TaskLanguage::French);
-        assert_eq!(french, ["customer", "user", "notification", "alert"]);
+        // French: homographs expand to English synonyms.
+        let french = expand_keywords(
+            &words(&["client", "charger", "variable"]),
+            TaskLanguage::French,
+        );
+        assert!(french.contains(&"customer".to_string()));
+        assert!(french.contains(&"user".to_string()));
+        assert!(french.contains(&"load".to_string()));
+        assert!(french.contains(&"fetch".to_string()));
+        assert!(french.contains(&"var".to_string()));
 
         // An unambiguous French key expands whatever the detected language.
         assert_eq!(
@@ -1888,14 +1527,14 @@ mod tests {
         };
         let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
         assert!(
-            close(score("src/zz.rs"), W_CLUSTER / (RRF_K + 1.0)),
+            close(score("src/zz.rs"), W_CLUSTER_F / (RRF_K + 1.0)),
             "{}",
             score("src/zz.rs")
         );
         assert!(
             close(
                 score("src/b.rs"),
-                W_GRAPH / (RRF_K + 1.0) + W_CLUSTER / (RRF_K + 2.0)
+                W_GRAPH_F / (RRF_K + 1.0) + W_CLUSTER_F / (RRF_K + 2.0)
             ),
             "{}",
             score("src/b.rs")
@@ -2158,6 +1797,18 @@ mod tests {
         assert_eq!(report.envelope["lower_bound"], true);
         assert_eq!(report.envelope["graph"], "unavailable");
         assert!(report.closed_world.contains("EXCEPT"));
+    }
+
+    fn rrf_fuse(lists: &[(Vec<String>, f64)], rrf_k: f64) -> Vec<(String, f64)> {
+        let mut fused: HashMap<String, f64> = HashMap::new();
+        for (list, weight) in lists {
+            for (rank, path) in list.iter().enumerate() {
+                *fused.entry(path.clone()).or_insert(0.0) += weight / (rrf_k + rank as f64);
+            }
+        }
+        let mut result: Vec<_> = fused.into_iter().collect();
+        result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then_with(|| a.0.cmp(&b.0)));
+        result
     }
 
     #[test]

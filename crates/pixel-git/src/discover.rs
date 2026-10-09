@@ -68,7 +68,7 @@ pub fn discover_root_follow_submodules(start: &Path) -> Option<PathBuf> {
 }
 
 #[derive(Clone, Copy)]
-enum FollowSubmodules {
+pub enum FollowSubmodules {
     Yes,
     No,
 }

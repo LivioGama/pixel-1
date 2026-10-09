@@ -528,6 +528,7 @@ fn execute_output_with_stdin(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pixel_task::model::yes;
 
     #[test]
     fn isolated_git_obeys_root_and_ignores_external_routing_config_and_hooks() {

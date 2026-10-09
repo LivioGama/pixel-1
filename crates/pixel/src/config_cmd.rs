@@ -477,6 +477,25 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// The key a `pixel config remote-key` value stands for: `-` reads the
 /// first line of `stdin`, which keeps the secret out of shell history and
 /// `ps`; anything else is the key itself.
+/// Ask yes/no and return whether the user answered yes.
+/// `q` cancels and returns `None`.
+pub fn yes_no(stdin: &mut dyn BufRead) -> Result<Option<bool>, String> {
+    let mut line = String::new();
+    stdin
+        .read_line(&mut line)
+        .map_err(|e| format!("read yes/no: {e}"))?;
+    let line = line.trim();
+    if line.is_empty() || line.eq_ignore_ascii_case("y") || line.eq_ignore_ascii_case("yes") {
+        Ok(Some(true))
+    } else if line.eq_ignore_ascii_case("n") || line.eq_ignore_ascii_case("no") {
+        Ok(Some(false))
+    } else if line.eq_ignore_ascii_case("q") {
+        Ok(None)
+    } else {
+        Err(format!("invalid yes/no: {line}"))
+    }
+}
+
 pub fn key_from_arg(
     value: Option<String>,
     stdin: &mut dyn BufRead,
@@ -763,15 +782,15 @@ fn setup_with_keys(
         ),
         (
             "daemon auto-start",
-            yes_no(doc["daemon_auto_start"].as_bool().unwrap_or(true)),
+            yes_no_word(doc["daemon_auto_start"].as_bool().unwrap_or(true)),
         ),
         (
             "task context",
-            yes_no(doc["task_context"].as_bool().unwrap_or(true)),
+            yes_no_word(doc["task_context"].as_bool().unwrap_or(true)),
         ),
         (
             "task boundary",
-            yes_no(doc["task_boundary"].as_bool().unwrap_or(true)),
+            yes_no_word(doc["task_boundary"].as_bool().unwrap_or(true)),
         ),
         ("policy", doc["policy"].as_str().unwrap_or("?").to_string()),
         (
@@ -837,8 +856,7 @@ fn paint(color: bool, code: &str, text: &str) -> String {
     }
 }
 
-/// `yes`/`no` for the review block, so the booleans read as words.
-fn yes_no(value: bool) -> String {
+fn yes_no_word(value: bool) -> String {
     if value {
         "yes".to_string()
     } else {
