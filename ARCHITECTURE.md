@@ -163,7 +163,7 @@ Per repository, under `.pixel/` (git-ignored):
 | `history.db` (+ `-wal`, `-shm`, `history.db.lock`) | `pixel-facts` | SQLite: commit facts, diff text, lifecycle, FTS5 trigram indexes. Populated by `pixel build-index --history` or the daemon ingest thread on the first history query; capped by the window and budget above, with `auto_vacuum = INCREMENTAL` so an eviction shrinks the file. Schema version `FACTS_SCHEMA_VERSION` (3) in `PRAGMA user_version`: another version is rebuilt, except 2 (`UPGRADES_IN_PLACE_FROM`), whose dates are repaired in place. |
 | `code-vectors/` (`manifest.json`, `seg-*.vec`, `lock`) | `pixel-recall` | `search-meaning` chunk vectors, keyed by the xxh3-128 hash of the chunk text seeded with the model id, embedder revision and `CHUNKER_VERSION`; stored as the model's `f32`s. Written only when the search root carries `base.shard` and is not `$HOME`, never by the daemon's semantic fallback. `flock` on `lock` (shared to read, exclusive to write), segments immutable, the manifest replaced by rename; rewritten with the live rows once unreachable ones exceed a quarter of them. |
 | `actions.jsonl` | `pixel-actionlog` | One line per invocation, with the route and phase timings of each request it served (`serve`). |
-| `brief-decisions.jsonl` | CLI `brief` (`execution_brief/decision_log.rs`) | One JSON line per prompt the prompt-submit brief judged, or declined for being about nothing: time, signal (`strong`, `weak`, `prose`), gate (`open`, `closed`, `denied`, `unjudged`, `declined`) and its reason, the gate's tier (`high`, `low`, `off`), score and model source, the best file and the features the score read, the intent judge's verdict, ops, bytes and milliseconds spent, the evidence route (`daemon` or `local`) and what the daemon start the prompt gave came to (`launched`, `running`, `skipped: …`, `launch failed`), the typed text (never a pasted block, credential shapes masked, cut at 600 characters) and its SHA-256. The last 500 lines, mode 0600, never creates `.pixel/`; `PIXEL_BRIEF_LOG=0\|false\|off` writes nothing. `pixel brief --json` prints the same record beside the brief. |
+| `brief-decisions.jsonl` | CLI `brief` (`execution_brief/decision_log.rs`) | One JSON line per prompt the prompt-submit brief judged, or declined for being about nothing: time, signal (`strong`, `weak`, `prose`), gate (`open`, `closed`, `denied`, `unjudged`, `declined`) and its reason, the gate's tier (`high`, `low`, `off`), score and model source, the best file and the features the score read, the intent judge's verdict, ops, bytes (and whether it carried the search receipt and answer excerpts, with the excerpt bytes) and milliseconds spent, the evidence route (`daemon` or `local`) and what the daemon start the prompt gave came to (`launched`, `running`, `skipped: …`, `launch failed`), the typed text (never a pasted block, credential shapes masked, cut at 600 characters) and its SHA-256. The last 500 lines, mode 0600, never creates `.pixel/`; `PIXEL_BRIEF_LOG=0\|false\|off` writes nothing. `pixel brief --json` prints the same record beside the brief. |
 | `reconcile-conflict.json`, `env-snapshots/` | `pixel-ops` | Conflict marker `reconcile` writes and clears (no hook reads it), and the pre-mutation copies `env` takes. |
 | `calls.json` | CLI | Circuit breaker counters for repeated identical calls. |
 | `task-runtime.json` | CLI `task-state show/reset` and Claude hooks | Existing bounded Claude context packets; independent of completion evidence. |
@@ -694,10 +694,66 @@ version-15 daemon honours, so the hook can never be the request that opens
 the facts warmer. A repository without an index yields no brief. A missing or
 stale graph still yields the text evidence (`files:`), with the reason under
 `unresolved:` (`the graph is not built`, `the graph is stale`) and no callers.
-Output is capped at 2 KiB (`BRIEF_BYTES`; `PROSE_BRIEF_BYTES` for plain
-language) and says how many ops answered (`coverage: n/m`, `packet partial`
-when the budget cut short). Every decision, a refusal included, is one line of
-`.pixel/brief-decisions.jsonl` (see "On-disk state").
+Output is capped at 2 KiB (`BRIEF_BYTES`) and says how many ops answered
+(`coverage: n/m`, `packet partial` when the budget cut short). A confident
+(high-tier) brief of a plain-language or weak prompt, whose packet is
+complete, is meant to be answered from without a tool call: it opens with a
+search receipt (`searched: content+symbols+paths for <probed terms> (<n>
+terms, <files> files)`, ` · meaning search returned <n> chunks` only when
+that search answered, `ignored (too common)`, and the `result:` line that
+tells the agent to verify the matches below) and gathers answer-sized
+excerpts (`execution_brief/answer.rs`), shown after the confidence line as
+`answer <path>:<line>:` only for the ZERO step below, otherwise used to fix
+the ranges to read.
+The excerpt is the signature, the first doc-comment line and six lines of the
+densest keyword region of a chunk, up to three chunks (`Evidence::lines_at`,
+a bounded read outside the op count, refused for a credential-shaped path),
+preceded by the routed kind's own block when its data is in: the Flow hops
+(or, with one endpoint, the callers) with site and first line, the tests that
+mention the target with their first assertion, the config constant line with
+its default and where the environment reads it (only lines that carry a
+probed term). The generic excerpt is chunk-first: the candidates are the meaning
+search's chunks from the five best fused files plus the declaration around
+each lexical hit; each is scored by the reciprocal-rank fusion of its own
+retriever's rank and the rank of its count of distinct probed keywords; the
+best chunk of the file the list ranks first leads, then the best of each
+other file; tests, docs and changelogs are
+excluded unless the question asks about them, as are `#[cfg(test)]` modules
+and test-named symbols. The ranked `files:` list puts tests, docs, `eval/` and changelog files after the code files (a stable demotion, nothing dropped) unless the question asks about them. A plain-language flow or tests question borrows its
+symbol anchor from the best non-test chunk. A confident (high-tier) or maybe (low-tier) brief of such a prompt always
+ends on one concrete instruction. ZERO: the excerpt is shown, `confidence:
+high` is kept and the last line is "Answer from these lines; open a file only
+if they don't answer", only when a strict rule holds (`answer::ZERO_RULE`:
+the top chunk is the meaning search's best, in the lexical probe's best
+co-file, with at least two probed keywords inside). No rule tried on the dev
+split of `eval/brief-gate/answer_spans.jsonl` kept span precision at 0.9 with
+two firings, so `ZERO_RULE` is `None` and ZERO never fires (`PIXEL_BRIEF_ZERO=0`
+would switch it off if one is set). ONE READ, otherwise: the excerpts are
+hidden, the confidence is medium, and the tail is `read: <path>:<first>-<last>
+— <symbol>` for the best function-level chunk of the first fused file, up to
+two `also:` lines for the next two fused files, and "Read these ranges (in
+parallel, one turn) before any search. If they don't answer, search as usual." Each
+file is cut into function-level chunks (items, merged up to 45 lines), scored
+by BM25 over the file's own chunks for the probed keywords (a tie goes to the
+meaning search's chunk, which also gets half the best score on top), and
+capped at 60 lines around the densest keyword region; tests and docs are
+skipped unless asked. A code-shaped prompt that resolved `defined:` reads the
+definition's range, then its callers' declarations, then the best chunk of the
+top fused files. Its ZERO step (one unambiguous definition of at most 40 lines shown as the answer, `answer::STRONG_ZERO`) is off: 1 of 2 firings was right on dev. The typed text loses its links (`strip_urls`) before the signal is decided, so a pasted `utm_source` is not a code identifier. Ranges come from lines actually read at HEAD, never from a
+credential-shaped path.
+`scripts/bench-brief-excerpt.py` measures excerpt@1 and `scripts/bench-brief-spans.py` the
+ZERO precision and the share of gold spans inside the `read:` ranges. A packet cut by the budget carries neither receipt nor excerpt; one with only an unresolved note keeps them but never the directive. A rationale question gets no excerpt. Config routing needs an
+explicit cue (config, setting, env, flag, option, default), not `install` or
+`hook`. That
+block's cap is `PROSE_BRIEF_BYTES` (3584, under Pi's 4000-byte extension
+cap; `PLAIN_PROSE_BRIEF_BYTES`, 2 KiB, without answer evidence); over the
+cap the last excerpt block's lines go first, then the block before it, the
+first block last, never the receipt. Strong and low-tier briefs carry
+neither, nor does one the budget cut or the window ended before it finished.
+`PIXEL_BRIEF_RECEIPT=0|false|off` and `PIXEL_BRIEF_ANSWER=0|false|off` remove
+the receipt and the excerpts. Every decision, a refusal included, is one line
+of `.pixel/brief-decisions.jsonl` (see "On-disk state"), with `receipt`,
+`answer` and `excerpt_bytes` for what the block carried.
 `PIXEL_BRIEF=0|false|off` or `brief: false` in `.pixel/config.yaml`
 switches the brief off.
 

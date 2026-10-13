@@ -67,6 +67,12 @@ pub(crate) struct Record {
     pub(crate) answered: usize,
     /// Bytes of the brief that was rendered; `0` when none was.
     pub(crate) bytes: usize,
+    /// The block carried the search receipt.
+    pub(crate) receipt: bool,
+    /// The block carried answer excerpts.
+    pub(crate) answer: bool,
+    /// Bytes of those excerpts.
+    pub(crate) excerpt_bytes: usize,
     pub(crate) elapsed_ms: u64,
     /// Where the evidence came from: `daemon` or `local`.
     pub(crate) route: Option<&'static str>,
@@ -175,6 +181,9 @@ impl Record {
             "ops": self.ops,
             "answered": self.answered,
             "bytes": self.bytes,
+            "receipt": self.receipt,
+            "answer": self.answer,
+            "excerpt_bytes": self.excerpt_bytes,
             "elapsed_ms": self.elapsed_ms,
             "route": self.route,
             "daemon": self.daemon,
@@ -189,8 +198,9 @@ impl Record {
     }
 }
 
-/// Whether the environment value leaves the log on.
-fn enabled(value: Option<&str>) -> bool {
+/// Whether an environment value leaves a feature on (this log, the brief's
+/// receipt and excerpts): only an explicit off word turns it off.
+pub(crate) fn enabled(value: Option<&str>) -> bool {
     !matches!(value, Some("0" | "false" | "off"))
 }
 
@@ -295,6 +305,9 @@ mod tests {
             ops: 3,
             answered: 2,
             bytes: 412,
+            receipt: true,
+            answer: true,
+            excerpt_bytes: 1300,
             elapsed_ms: 188,
             route: Some("daemon"),
             daemon: Some("running"),
@@ -345,6 +358,9 @@ mod tests {
                 "ops": 3,
                 "answered": 2,
                 "bytes": 412,
+                "receipt": true,
+                "answer": true,
+                "excerpt_bytes": 1300,
                 "elapsed_ms": 188,
                 "route": "daemon",
                 "daemon": "running",
