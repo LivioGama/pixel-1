@@ -163,6 +163,7 @@ Per repository, under `.pixel/` (git-ignored):
 | `history.db` (+ `-wal`, `-shm`, `history.db.lock`) | `pixel-facts` | SQLite: commit facts, diff text, lifecycle, FTS5 trigram indexes. Populated by `pixel build-index --history` or the daemon ingest thread on the first history query; capped by the window and budget above, with `auto_vacuum = INCREMENTAL` so an eviction shrinks the file. Schema version `FACTS_SCHEMA_VERSION` (3) in `PRAGMA user_version`: another version is rebuilt, except 2 (`UPGRADES_IN_PLACE_FROM`), whose dates are repaired in place. |
 | `code-vectors/` (`manifest.json`, `seg-*.vec`, `lock`) | `pixel-recall` | `search-meaning` chunk vectors, keyed by the xxh3-128 hash of the chunk text seeded with the model id, embedder revision and `CHUNKER_VERSION`; stored as the model's `f32`s. Written only when the search root carries `base.shard` and is not `$HOME`, never by the daemon's semantic fallback; the daemon's `meaning` build (below) reads it and, for its first build only, writes it, so the two share vectors. `flock` on `lock` (shared to read, exclusive to write), segments immutable, the manifest replaced by rename; rewritten with the live rows once unreachable ones exceed a quarter of them. |
 | `actions.jsonl` | `pixel-actionlog` | One line per invocation, with the route and phase timings of each request it served (`serve`). |
+| `brief-decisions.jsonl` | CLI `brief` (`execution_brief/decision_log.rs`) | One JSON line per prompt the prompt-submit brief judged, or declined for being about nothing: time, signal (`strong`, `weak`, `prose`), gate (`open`, `closed`, `denied`, `unjudged`, `declined`) and its reason, the gate's tier (`high`, `low`, `off`), score and model source, the best file and the features the score read, the intent judge's verdict, ops, bytes and milliseconds spent, the evidence route (`daemon` or `local`) and what the daemon start the prompt gave came to (`launched`, `running`, `skipped: …`, `launch failed`), the typed text (never a pasted block, credential shapes masked, cut at 600 characters) and its SHA-256. The last 500 lines, mode 0600, never creates `.pixel/`; `PIXEL_BRIEF_LOG=0\|false\|off` writes nothing. `pixel brief --json` prints the same record beside the brief. |
 | `reconcile-conflict.json`, `env-snapshots/` | `pixel-ops` | Conflict marker `reconcile` writes and clears (no hook reads it), and the pre-mutation copies `env` takes. |
 | `calls.json` | CLI | Circuit breaker counters for repeated identical calls. |
 | `task-runtime.json` | CLI `task-state show/reset` and Claude hooks | Existing bounded Claude context packets; independent of completion evidence. |
@@ -230,7 +231,8 @@ Once it is live, `Corpus::watch_ready` re-reads every path `git status`
 lists, every path the index overlay held (an edit discarded meanwhile leaves
 `git status` clean) and every path a HEAD move since the open changed, since
 edits made meanwhile raised no event. The daemon exits after
-thirty minutes idle.
+thirty minutes idle; the brief's hooks start it again when they find none
+(see "Agent integration").
 
 Two version numbers exist and must not be conflated:
 
@@ -369,7 +371,10 @@ text do not accumulate for the daemon's lifetime.
    `pixel daemon start <root> --foreground` in the background and polls the
    socket for up to five seconds. A daemon on a newer protocol is left alone
    and the command runs in process. `PIXEL_DAEMON_AUTO_START=0`, or
-   `daemon_auto_start: false` in the config, disables the spawn.
+   `daemon_auto_start: false` in the config, disables the spawn. One function
+   (`spawn_daemon`) spells that spawn for this path, `pixel daemon start` and
+   the hooks, and `--warm-meaning` (hidden; background start only) makes the
+   start process ask the new daemon one `meaning` question once it answers.
 3. If the daemon path fails, the CLI opens `Service` in-process and calls
    `handle` directly. Both paths return the same `Envelope`.
 4. `unwrap_response` turns a failure envelope into an `Err(message)` that
@@ -574,10 +579,11 @@ releases deployed, then handles each agent through its own extension point:
   plugin ships no skill and registers no hooks.
 - **Pi**: when Pi's agent directory (`$PI_CODING_AGENT_DIR`, else
   `~/.pi/agent`) exists or `pi` is on `PATH`, a local Pi package under
-  `~/.local/share/pixel/pi-package/` (`package.json` and
+  `~/.local/share/pixel/pi-package/` (`package.json`,
   `extensions/pixel-impact.ts`, which registers the explicit
-  `/pixel-impact <symbol>` command) and its absolute path in the `packages`
-  list of Pi's `settings.json`, which keeps every other key and package. A
+  `/pixel-impact <symbol>` command, and `extensions/pixel-brief.ts`, whose
+  `before_agent_start` hook runs `pixel brief`) and its absolute path in the
+  `packages` list of Pi's `settings.json`, which keeps every other key and package. A
   managed copy an earlier release wrote to `extensions/pixel-impact.ts` is
   removed so Pi does not register the command twice; a foreign file there is
   left and reported yellow. A settings file that does not parse, or an agent
@@ -589,15 +595,22 @@ releases deployed, then handles each agent through its own extension point:
   them into context, as a second Pixel-owned package
   (`~/.local/share/pixel/pi-classify/`, declared in the same `packages` list).
   Uninstall removes both packages and their entries.
-- **OpenCode, Devin, Antigravity, zcode, Cursor, Copilot CLI**: nothing is
-  written. Install removes what earlier releases wrote when it is still there:
-  the OpenCode `AGENTS.md` block and `plugins/pixel.js` guard (in
-  `~/.config/opencode`, `$XDG_CONFIG_HOME` honoured), Devin's hooks in
-  `~/.config/devin/config.json`, the Antigravity plugin, its config entry and
-  the global `pixel-guard` in `~/.gemini/config/hooks.json` (a user-defined
-  hook under that name is kept), the zcode guard in
-  `~/.zcode/cli/config.json`, `~/.cursor/hooks.json` and
-  `~/.copilot/hooks/pixel.json`. `doctor` reports a leftover as red.
+- **Gemini CLI, OpenCode, Devin, Antigravity**: the prompt brief and nothing
+  else, each only where its configuration already exists. Gemini: a
+  `BeforeAgent` hook in `~/.gemini/settings.json`. OpenCode:
+  `plugins/pixel-brief.js` in `~/.config/opencode` (`$XDG_CONFIG_HOME`
+  honoured), whose `chat.message` hook runs `pixel brief`. Devin: the task
+  events in its hooks file, `prompt-submit` among them. Antigravity: a
+  `pixel-brief` entry in `~/.gemini/config/hooks.json` running on
+  `PreInvocation`. Install also removes what earlier releases wrote when it
+  is still there: the OpenCode `AGENTS.md` block and `plugins/pixel.js`
+  guard, Devin's retired guard hooks in `~/.config/devin/config.json`, the
+  Antigravity plugin, its config entry and the global `pixel-guard` (a
+  user-defined hook under that name is kept).
+- **zcode, Cursor, Copilot CLI**: nothing is written. Install removes the
+  zcode guard in `~/.zcode/cli/config.json`, `~/.cursor/hooks.json` and
+  `~/.copilot/hooks/pixel.json` when an earlier release wrote them. `doctor`
+  reports a leftover as red.
 
 The `policy` key of `pixel config` (`advisory`, `enforce`, `off`) is retired:
 no hook reads it and every value leaves native tools untouched. It stays
@@ -670,7 +683,7 @@ is the only hook `pixel install` registers (Claude Code and Codex):
 
 | Hook event | Command | Effect |
 | --- | --- | --- |
-| `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SessionEnd`, `SubagentStart`, `SubagentStop`, plus `PostToolUseFailure` (Claude) or `Interrupt` (Codex) | `pixel run-hook task-event --provider <host> --event <event>` | Binds coding objectives, gates edits, records tool outcomes, and bounds Stop correction. Global native hooks compose with existing hooks. Once enforced, a task retains its gates if runtime settings change. On `prompt-submit` it also returns the `[PIXEL:BRIEF]` evidence brief as `additionalContext` (see below). |
+| `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SessionEnd`, `SubagentStart`, `SubagentStop`, plus `PostToolUseFailure` (Claude) or `Interrupt` (Codex) | `pixel run-hook task-event --provider <host> --event <event>` | Binds coding objectives, gates edits, records tool outcomes, and bounds Stop correction. Global native hooks compose with existing hooks. Once enforced, a task retains its gates if runtime settings change. On `prompt-submit` it also returns the `[PIXEL:BRIEF]` evidence brief as `additionalContext` (see below). On `SessionStart` and a briefed `UserPromptSubmit` it may start the repository's daemon in the background (see "Keeping a daemon behind the brief"). |
 
 The verbs earlier releases registered (`guard`, `composed-guard`,
 `session-start`, `prompt-submit`, `post-compaction`, `post-tool-use`,
@@ -679,29 +692,105 @@ old install left in an agent's settings cannot block or fail a host. `pixel
 install` and `pixel uninstall` remove those registrations from every agent
 file above; `crates/pixel-install/src/routing.rs` recognises them by verb.
 
-The brief (`execution_brief/chain.rs`, `execution_brief/evidence.rs`,
-`execution_brief/routes.rs`) is built
-on every Claude Code and Codex `prompt-submit` task event for a code-shaped
-prompt. Pi gets none (`start_brief` in
-`task_hook.rs` skips `TaskProvider::Pi`), and no other host registers a prompt
-hook. It runs at most six ops under one 750 ms deadline: `search-content -F
--l` on the first anchor, `find-symbol` to resolve a uid, `impact <uid>` only
-for change or caller intent, `find-code` when no anchor found a file, then
+The brief (`execution_brief/chain.rs`, `evidence.rs`, `relevance.rs`,
+`decision_log.rs`, `routes.rs`) is built on every prompt-submit event of a
+host that has a prompt hook: Claude Code, Codex and Devin through
+`task-event`, Gemini through `BeforeAgent`, Antigravity through
+`PreInvocation`. Pi (`extensions/pixel-brief.ts`) and OpenCode
+(`plugins/pixel-brief.js`) run `pixel brief` instead, and `start_brief` in
+`task_hook.rs` skips `TaskProvider::Pi` for that reason. A prompt starts one
+by its shape (`brief_signal`), the typed text only, the last paragraph of a
+long untagged paste:
+
+- **code-shaped** (`Signal::Strong`: a backticked name, `snake_case`,
+  `camelCase`, a path or a source file): the chain below, no model.
+- **weakly code-shaped** (`Weak`: a code word or a code-question opener): the
+  same chain, with the intent judge (`pixel classify --if-warm`, only when
+  its local server is already listening) free to refuse it (`none`, 0.5 or
+  more), and the relevance gate below applied to it too
+  (`ENFORCE_GATE_ON_WEAK`). The probes are its retriever, so the concept
+  search runs only when they found no file.
+- **plain language** (`Prose`: two or more content words, not a git, release
+  or deploy request, not an acknowledgement): the intent judge, the
+  relevance probe and the meaning search run at once on the deadline, and
+  only the gate decides whether the repository is the subject.
+
+The gate (`execution_brief/relevance.rs`, constants in `gate_model.rs`) has
+no language model in it. From the daemon's `facts.relevance` (`targets_facts`
+with `relevance_only`, which skips the target ranking and is accepted only from
+an `algorithm_version` 2 result; in process over the index and graph when no
+daemon answers) and the
+typed prompt it computes four features: `struct_per_mille` (how many files a
+keyword of positive weight names by path or symbol, per thousand indexed
+files, as a log), `question` (the prompt ends on `?` or opens with a question
+word), `ops_share` (the share of keywords that name a git, release or CI
+operation) and `struct_ratio` (the heaviest structural co-file's weight over
+the keywords' total). A fixed logistic model scores them, and two thresholds
+cut the score into a tier. The weights are the daemon's
+(`pixel_daemon::relevance::row_weight`, `CoFile::weight`), never recomputed.
+The model is an L2 logistic regression fitted on the English dev rows of the
+brief-gate set (`scripts/research-gate/results/gate-model.json`, whose SHA-256
+`gate_model.rs` cites and a test checks, with `gate_reference.py` as the
+executable definition the parity test holds the Rust score to). It does not
+apply without a code graph or without a keyword to weigh: such a plain prompt
+gets no brief, and a weak one keeps its pre-gate brief when only the graph is
+missing.
+
+- **high** tier: the full brief below, with
+  `confidence: high — n/m key terms covered; start with the first file`.
+- **low** tier: a compact brief, at most three `path:line — text` files within
+  700 bytes, no kind route and no search, and
+  `confidence: low — possibly related; verify before relying on it`.
+- **off**, a probe that cannot answer, or no answer in time: nothing. The
+  fused leads of the `meaning` op (daemon only, resident vectors,
+  `unavailable` while they build) join the co-files by reciprocal rank in
+  the first `files:` of either brief.
+
+The chain runs at most six ops under one 750 ms deadline: the two probes of
+a Weak or Prose prompt, `search-content -F -l` on the first anchor,
+`find-symbol` to resolve a uid, `impact <uid>` only
+for change or caller intent, `find-code` when nothing found a file, then
 one evidence op the question kind picks (`evaluate`/`trace` for a path,
 `uses` for covering tests, `skeleton` for a file's shape, `history` for
 rationale, `context` for a defect's definition, `targets_facts` for a
 feature) plus a bounded `line_at` or context read for the `defined:` line.
 A `status` probe (facts freshness, embedding warmth) rides along uncounted.
 It reads a warm daemon if one answers this protocol and otherwise the index and
-graph read-only in process; it never starts a daemon and never builds an
-index or graph. Its history request sends `read_only: true`, which only a
+graph read-only in process for that prompt; it never waits for a daemon and
+never builds an index or graph. Its history request sends `read_only: true`, which only a
 version-15 daemon honours, so the hook can never be the request that opens
 the facts warmer. A repository without an index yields no brief. A missing or
 stale graph still yields the text evidence (`files:`), with the reason under
 `unresolved:` (`the graph is not built`, `the graph is stale`) and no callers.
-Output is capped at 2 KiB and says how many ops answered (`coverage: n/m`,
-`packet partial` when the budget cut short). `PIXEL_BRIEF=0|false|off` or
-`brief: false` in `.pixel/config.yaml` switches it off.
+Output is capped at 2 KiB (`BRIEF_BYTES`; `PROSE_BRIEF_BYTES` for plain
+language) and says how many ops answered (`coverage: n/m`, `packet partial`
+when the budget cut short). Every decision, a refusal included, is one line of
+`.pixel/brief-decisions.jsonl` (see "On-disk state").
+`PIXEL_BRIEF=0|false|off` or `brief: false` in `.pixel/config.yaml`
+switches the brief off.
+
+**Keeping a daemon behind the brief.** Without a daemon the brief has no
+`meaning` leads, and a daemon exits after thirty minutes idle or becomes
+unusable when the protocol moves, so the hooks bring one back
+(`execution_brief/autostart.rs`). Both moments decide the same way: the
+brief is on, the repository has an index, and auto-start is on (the CLI's own
+switch, `PIXEL_DAEMON_AUTO_START=0` or `daemon_auto_start: false`); then
+`probe_daemon` says what answers. Nothing answers: launch. An older protocol:
+send it Shutdown, then launch. A newer protocol: leave it to that pixel. A
+current daemon: nothing to launch for a prompt, but a `SessionStart` still
+launches, because the start process is what asks the daemon its first
+question and wakes the `meaning` vectors. The launch is one detached `pixel
+daemon start <root> --warm-meaning` (`spawn_detached`, its own process
+group, no standard streams), which retires a stale daemon and waits for it to
+exit, starts the foreground daemon through `spawn_daemon`, waits for it to
+answer and asks the one question. A prompt that finds no daemon still briefs
+from the index in process; the daemon is for the next one. The hook decides on
+a thread of its own and waits `HOOK_BOUND` (100 ms) for the decision at most,
+so a wedged socket costs a start, never the hook; the decision log records
+what came of it (`daemon`: `launched`, `running`, `skipped: …`,
+`launch failed`) beside where the evidence came from (`route`: `daemon` or
+`local`). The `daemon start --warm-meaning` process is not metered as a user
+command.
 
 `pixel doctor` checks current installation artifacts and distinguishes configured
 or protocol-checked hooks from observed live execution.

@@ -22,6 +22,15 @@ an after differ only in ``--pixel``::
     python3 scripts/bench-brief-gate.py --pixel target/dev-release/pixel \\
         --repo <indexed checkout at the fixture SHA> --split all --out result.json
 
+``--daemon`` picks how the repo's daemon stands during the run: ``on`` (started
+first), ``off`` (stopped, and auto-start disabled so the binary cannot start
+one) or ``cold`` (stopped, auto-start left on, no canary and no warm-up: the
+prompts run one after another in file order, the way a session that begins
+after a break or an upgrade would see them, and the first brief that finds no
+daemon starts one for the next). A cold result reports how many briefs ran
+without the daemon before one answered. ``--compare <result.json>`` checks
+that the gate decisions of this run equal those of an earlier one.
+
 ``--check-set`` validates the set (schema, duplicate ids, split balance, a
 privacy lint, and with ``--repo`` that every expected file exists there);
 ``--self-test`` runs the parser and metric tests. Standard library only.
@@ -395,35 +404,40 @@ def evaluate(rows, outcomes):
 # Running pixel
 # --------------------------------------------------------------------------
 
-def brief_env():
+def brief_env(auto_start=False):
     """The environment of one brief call: the brief forced on (it ignores a
-    ``brief: false`` in any pixel config), the weak-signal judge's debug line kept."""
+    ``brief: false`` in any pixel config), the weak-signal judge's debug line kept.
+
+    ``auto_start`` is whether the binary may start a daemon: only a cold run
+    lets it; ``on`` and ``off`` measure the daemon they were given."""
     env = dict(os.environ)
     env["PIXEL_BRIEF"] = "1"
     env["PIXEL_BRIEF_DEBUG"] = "1"
+    env["PIXEL_DAEMON_AUTO_START"] = "1" if auto_start else "0"
     env["NO_COLOR"] = "1"
     return env
 
 
-def run_brief(pixel, repo, prompt, timeout):
+def run_brief(pixel, repo, prompt, timeout, env=None):
     started = time.perf_counter()
     try:
         done = subprocess.run([str(pixel), "brief", "--metrics", "off", prompt, str(repo)],
-                              cwd=repo, capture_output=True, text=True, timeout=timeout, env=brief_env())
+                              cwd=repo, capture_output=True, text=True, timeout=timeout,
+                              env=env or brief_env())
         code, out, err = done.returncode, done.stdout, done.stderr
     except subprocess.TimeoutExpired:
         code, out, err = -9, "", "timeout"
     return code, out, err, (time.perf_counter() - started) * 1000
 
 
-def check_canary(pixel, repo, timeout):
+def check_canary(pixel, repo, timeout, env=None):
     """Whether a prompt that names a code token gets a brief; ``(ok, why)``.
 
     An index that does not cover HEAD, or a binary that cannot read it,
     returns nothing for every prompt, and a bench that went on would report a
     gate that never fires.
     """
-    code, out, err, _ = run_brief(pixel, repo, CANARY_PROMPT, timeout)
+    code, out, err, _ = run_brief(pixel, repo, CANARY_PROMPT, timeout, env)
     if parse_brief(out)["fired"]:
         return True, ""
     return False, f"exit {code}, stdout {out[:80]!r}, stderr {err.strip()[:160]!r}"
@@ -437,14 +451,104 @@ def judge_note(stderr):
     return None
 
 
-def measure_row(pixel, repo, row, repeat, timeout):
-    runs = [run_brief(pixel, repo, row["text"], timeout) for _ in range(repeat)]
+DECISION_FIELDS = ("gate", "tier", "score", "reason", "route", "daemon")
+
+
+DECISION_LOG = Path(".pixel") / "brief-decisions.jsonl"
+
+
+def log_mark(repo):
+    """What marks the end of the repo's decision log now: its last line, or
+    ``None`` for no log or an empty one.
+
+    The log is rewritten in place and trimmed to its last 500 lines, so its
+    size, an offset in it or a line count can stand still (or move) while a
+    call appended nothing (or something); its last line changes exactly when a
+    call appends a record, because every record carries its own time and hash.
+    """
+    try:
+        text = (Path(repo) / DECISION_LOG).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    lines = [line for line in text.splitlines() if line.strip()]
+    return lines[-1] if lines else None
+
+
+def read_decision(repo, mark):
+    """The decision a call appended to the repo's decision log, reduced to the
+    fields a run compares; ``mark`` is the [`log_mark`] taken before the call.
+
+    ``None`` when the call appended nothing (the last line is still the mark:
+    a binary that writes no log, ``PIXEL_BRIEF_LOG=0``, a call that died before
+    it logged), the log is gone, or the line it appended is not a JSON object.
+    A time compared with the clock would hand the previous prompt's record to a
+    call that wrote none whenever both fell in the same millisecond.
+    """
+    now = log_mark(repo)
+    if now is None or now == mark:
+        return None
+    try:
+        record = json.loads(now)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    return {key: record.get(key) for key in DECISION_FIELDS}
+
+
+def measure_row(pixel, repo, row, repeat, timeout, env=None):
+    runs = []
+    decision, mark = None, log_mark(repo)
+    for index in range(repeat):
+        runs.append(run_brief(pixel, repo, row["text"], timeout, env))
+        if index == 0:
+            decision = read_decision(repo, mark)
     code, out, err, _ = runs[0]
     block = parse_brief(out)
     return {"id": row["id"], "fired": block["fired"], "rc": code, "block": block,
             "latency_ms": round(statistics.median(r[3] for r in runs), 2),
             "stable": len({r[1] for r in runs}) == 1, "judge": judge_note(err),
+            "decision": decision,
             "stdout_sha": hashlib.sha256(out.encode()).hexdigest()[:12]}
+
+
+def route_summary(sequence):
+    """Where a run's briefs read from, for ``(id, decision)`` pairs in the
+    order they ran. A prompt that was declined has no route and is not counted.
+
+    ``local_before_daemon`` is the number of briefs that ran in process before
+    the first one a daemon answered (all of them when none was); ``launches``
+    the briefs that started a daemon.
+    """
+    routed = [(i, d) for i, d in sequence if d and d.get("route") in ("local", "daemon")]
+    first = next((n for n, (_, d) in enumerate(routed) if d["route"] == "daemon"), None)
+    return {
+        "briefs": len(routed),
+        "local": sum(1 for _, d in routed if d["route"] == "local"),
+        "daemon": sum(1 for _, d in routed if d["route"] == "daemon"),
+        "local_before_daemon": len(routed) if first is None else first,
+        "first_daemon_id": None if first is None else routed[first][0],
+        "launches": [i for i, d in routed if d.get("daemon") == "launched"],
+        "daemon_outcomes": dict(Counter(d.get("daemon") for _, d in routed if d.get("daemon"))),
+    }
+
+
+def compare_results(mine, other):
+    """Whether two results took the same gate decisions on the prompts they
+    share. ``fired`` is compared for every shared id; ``gate``, ``tier`` and
+    ``score`` too where both runs recorded a decision."""
+    theirs = {row["id"]: row for row in other.get("rows", [])}
+    shared = [row for row in mine.get("rows", []) if row["id"] in theirs]
+    fired_diff, decision_diff = [], []
+    for row in shared:
+        peer = theirs[row["id"]]
+        if row["fired"] != peer["fired"]:
+            fired_diff.append(row["id"])
+        a, b = row.get("decision"), peer.get("decision")
+        if a and b and any(a.get(k) != b.get(k) for k in ("gate", "tier", "score")):
+            decision_diff.append(row["id"])
+    return {"shared": len(shared), "fired_diff": fired_diff, "decision_diff": decision_diff,
+            "identical": not fired_diff and not decision_diff}
 
 
 def daemon_running(pixel, repo):
@@ -465,6 +569,37 @@ def set_daemon(pixel, repo, mode):
             return mode == "on"
         time.sleep(0.2)
     return daemon_running(pixel, repo)
+
+
+WARM_PROMPT = "how does the daemon notice files that changed while it was still starting up"
+
+
+def warm_meaning(pixel, repo, env, attempts=25, pause=3.0):
+    """Ask plain-language briefs until the daemon's resident ``meaning``
+    vectors answer (the first calls come back ``unavailable`` while they
+    build); whether they did. Only ``--daemon on`` is a warm-daemon run."""
+    for _ in range(attempts):
+        done = subprocess.run([str(pixel), "brief", "--json", "--metrics", "off", WARM_PROMPT, str(repo)],
+                              cwd=repo, capture_output=True, text=True, timeout=60, env=env)
+        try:
+            if json.loads(done.stdout).get("answered", 0) >= 2:
+                return True
+        except (json.JSONDecodeError, AttributeError):
+            pass
+        time.sleep(pause)
+    return False
+
+
+def session_start(pixel, repo, timeout=30):
+    """Run the hook of a session starting in ``repo``, as Claude Code would."""
+    payload = json.dumps({"session_id": "bench", "cwd": str(repo), "hook_event_name": "SessionStart",
+                          "source": "startup"})
+    env = brief_env(auto_start=True)
+    env.pop("PIXEL_BRIEF_DEBUG", None)
+    started = time.perf_counter()
+    done = subprocess.run([str(pixel), "run-hook", "task-event", "--provider", "claude", "--event", "session-start"],
+                          input=payload, cwd=repo, capture_output=True, text=True, timeout=timeout, env=env)
+    return done.returncode, (time.perf_counter() - started) * 1000
 
 
 def restore_daemon(pixel, repo, running):
@@ -577,6 +712,17 @@ def render_markdown(result):
     for label in ("all", "fired"):
         s = lat[label]
         out.append(f"| {label} | {s['n']} | {ms(s['p50'])} | {ms(s['p95'])} | {ms(s['max'])} |")
+    routes = result.get("routes")
+    if routes and routes["briefs"]:
+        out.append("")
+        out.append("| evidence route | briefs |")
+        out.append("| --- | ---: |")
+        out.append(f"| in process | {routes['local']} |")
+        out.append(f"| daemon | {routes['daemon']} |")
+        out.append(f"| in process before the daemon first answered | {routes['local_before_daemon']} |")
+        first = routes["first_daemon_id"]
+        out.append(f"| first prompt the daemon answered | {first or 'none'} |")
+        out.append(f"| daemon starts launched | {len(routes['launches'])} |")
     return "\n".join(out)
 
 
@@ -584,9 +730,9 @@ def render_markdown(result):
 # Command
 # --------------------------------------------------------------------------
 
-def select_rows(rows, split):
+def select_rows(rows, split, in_file_order=False):
     chosen = [r for r in rows if split == "all" or r["split"] == split]
-    return sorted(chosen, key=lambda r: r["id"])
+    return chosen if in_file_order else sorted(chosen, key=lambda r: r["id"])
 
 
 def run_bench(args):
@@ -599,24 +745,51 @@ def run_bench(args):
     problems = validate_rows(rows)
     if problems:
         raise SystemExit("the prompt set is invalid:\n  " + "\n  ".join(problems[:20]))
-    chosen = select_rows(rows, args.split)
+    cold = args.daemon == "cold"
+    if cold and args.repeat != 1:
+        raise SystemExit("--daemon cold runs each prompt once: a repeat would find the daemon "
+                         "the first call started")
+    chosen = select_rows(rows, args.split, in_file_order=cold)
     repo_sha = git_output(repo, "rev-parse", "HEAD")
     dirty = bool(git_output(repo, "status", "--porcelain"))
     load_before = os.getloadavg()[0] if hasattr(os, "getloadavg") else None
     started_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     daemon_before = daemon_running(pixel, repo)
+    env = brief_env(auto_start=cold)
+    started_at = time.perf_counter()
+    session, warmed = None, None
     try:
-        daemon_now = set_daemon(pixel, repo, args.daemon)
-        ok, why = check_canary(pixel, repo, args.timeout)
-        if not ok:
-            raise SystemExit("the brief did not fire on a prompt that names a code token "
-                             f"({why}): is {repo} indexed at its "
-                             "HEAD (`pixel prepare-repo`) and is this binary able to read that index?")
-        for _ in range(max(0, args.warmup - 1)):
-            run_brief(pixel, repo, CANARY_PROMPT, args.timeout)
-        outcomes = {}
+        # `cold` starts from no daemon, like `off`; only the binary's auto-start differs.
+        daemon_now = set_daemon(pixel, repo, "on" if args.daemon == "on" else "off")
+        if cold:
+            if daemon_now:
+                raise SystemExit("a cold run needs no daemon, and one still answers after `daemon stop`")
+            if args.session_start:
+                code, took = session_start(pixel, repo)
+                session = {"rc": code, "hook_ms": round(took, 1), "gap_s": args.session_gap}
+                time.sleep(args.session_gap)
+        else:
+            if args.daemon == "on" and args.warm_meaning:
+                warmed = warm_meaning(pixel, repo, env)
+                if not warmed:
+                    raise SystemExit("the daemon's meaning vectors never answered: not a warm run")
+            ok, why = check_canary(pixel, repo, args.timeout, env)
+            if not ok:
+                raise SystemExit("the brief did not fire on a prompt that names a code token "
+                                 f"({why}): is {repo} indexed at its "
+                                 "HEAD (`pixel prepare-repo`) and is this binary able to read that index?")
+            for _ in range(max(0, args.warmup - 1)):
+                run_brief(pixel, repo, CANARY_PROMPT, args.timeout, env)
+        outcomes, order = {}, []
+        run_started = time.perf_counter()
         for row in chosen:
-            outcomes[row["id"]] = measure_row(pixel, repo, row, args.repeat, args.timeout)
+            offset = time.perf_counter() - run_started
+            outcomes[row["id"]] = measure_row(pixel, repo, row, args.repeat, args.timeout, env)
+            outcomes[row["id"]]["started_s"] = round(offset, 2)
+            order.append(row["id"])
+            if cold and args.gap:
+                time.sleep(args.gap)
+        daemon_after = daemon_running(pixel, repo)
     finally:
         restore_daemon(pixel, repo, daemon_before)
     set_in_repo = (repo / "eval" / "brief-gate").exists()
@@ -628,7 +801,10 @@ def run_bench(args):
             "repo": str(repo), "repo_sha": repo_sha, "repo_dirty": dirty,
             "fixture_sha": FIXTURE_SHA, "fixture_match": repo_sha == FIXTURE_SHA and not dirty,
             "set_in_repo": set_in_repo,
-            "split": args.split, "daemon": args.daemon, "daemon_running_during_run": daemon_now,
+            "split": args.split, "daemon": args.daemon,
+            "daemon_running_during_run": daemon_after if cold else daemon_now,
+            "auto_start": cold, "session_start": session, "meaning_warmed": warmed, "gap_s": args.gap if cold else None,
+            "order": "file" if cold else "id",
             "repeat": args.repeat, "warmup": args.warmup, "timeout_s": args.timeout,
             "ollaya_warm": ollaya_warm(),
             "platform": platform.platform(), "python": platform.python_version(),
@@ -641,8 +817,14 @@ def run_bench(args):
         "unstable_ids": [i for i, o in sorted(outcomes.items()) if not o["stable"]],
         "error_ids": [i for i, o in sorted(outcomes.items()) if o["rc"] != 0],
         "judge_ran": sorted(i for i, o in outcomes.items() if o["judge"]),
+        "routes": route_summary([(i, outcomes[i]["decision"]) for i in order]),
         "rows": [{"id": i, **{k: v for k, v in o.items() if k != "id"}} for i, o in sorted(outcomes.items())],
     }
+    compared = None
+    if args.compare:
+        compared = {"against": str(args.compare),
+                    **compare_results(result, json.loads(Path(args.compare).read_text(encoding="utf-8")))}
+        result["compare"] = compared
     if args.out:
         Path(args.out).write_text(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
     notes = []
@@ -668,7 +850,14 @@ def run_bench(args):
     print(render_markdown(result))
     for note in notes:
         print(f"\n{note}")
-    return 0
+    if compared:
+        if compared["identical"]:
+            print(f"\nGATE IDENTICAL to {compared['against']}: {compared['shared']}/{compared['shared']} "
+                  "prompts, same fired, gate, tier and score")
+        else:
+            print(f"\nGATE DIFFERS from {compared['against']} on {compared['shared']} shared prompts: "
+                  f"fired {compared['fired_diff']}, decision {compared['decision_diff']}")
+    return 0 if compared is None or compared["identical"] else 2
 
 
 # --------------------------------------------------------------------------
@@ -837,6 +1026,102 @@ class SelfTest(unittest.TestCase):
             else:
                 os.environ["PIXEL_BRIEF"] = saved
 
+    def test_only_a_cold_run_lets_the_binary_start_a_daemon(self):
+        self.assertEqual(brief_env()["PIXEL_DAEMON_AUTO_START"], "0")
+        self.assertEqual(brief_env(auto_start=False)["PIXEL_DAEMON_AUTO_START"], "0")
+        self.assertEqual(brief_env(auto_start=True)["PIXEL_DAEMON_AUTO_START"], "1")
+
+    def test_a_decision_is_read_only_when_the_call_appended_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.assertIsNone(log_mark(repo))
+            self.assertIsNone(read_decision(repo, None), "no log at all")
+            (repo / ".pixel").mkdir()
+            log = repo / DECISION_LOG
+            # The previous prompt's record carries the very millisecond the next
+            # call starts in: a time comparison would hand it to a call that wrote none.
+            previous = {"ts": int(time.time() * 1000), "gate": "closed", "tier": "off", "score": -1.0,
+                        "route": "daemon", "daemon": "running"}
+            log.write_text("not json\n" + json.dumps(previous) + "\n")
+            mark = log_mark(repo)
+            self.assertEqual(mark, json.dumps(previous))
+            self.assertIsNone(read_decision(repo, mark), "a call that wrote no record has no decision")
+            appended = {"ts": previous["ts"], "gate": "high", "tier": "high", "score": 2.5,
+                        "route": "local", "daemon": "launched", "typed": "dropped"}
+            with log.open("a") as handle:
+                handle.write(json.dumps(appended) + "\n")
+            self.assertEqual(read_decision(repo, mark),
+                             {"gate": "high", "tier": "high", "score": 2.5, "reason": None,
+                              "route": "local", "daemon": "launched"})
+            with log.open("a") as handle:
+                handle.write("garbage\n")
+            self.assertIsNone(read_decision(repo, mark), "a last line that is not a record is no decision")
+            log.write_text(json.dumps([1, 2]) + "\n")
+            self.assertIsNone(read_decision(repo, mark), "nor is a JSON value that is not an object")
+            log.unlink()
+            self.assertIsNone(read_decision(repo, mark), "the log is gone")
+            log.write_text(json.dumps(appended) + "\n")
+            self.assertEqual(read_decision(repo, None)["route"], "local", "the first record of a new log")
+
+    def test_a_decision_is_found_when_the_log_rotates_at_its_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".pixel").mkdir()
+            log = repo / DECISION_LOG
+
+            def line(number, gate="closed", route="daemon"):
+                # Every line the same length, so a rotation leaves the size where it was.
+                return json.dumps({"ts": 1_000 + number, "gate": gate, "route": route,
+                                   "typed": f"prompt {number:04d}"}, sort_keys=True)
+            full = [line(n) for n in range(500)]
+            log.write_text("\n".join(full) + "\n")
+            size, mark = log.stat().st_size, log_mark(repo)
+            self.assertEqual(mark, full[-1])
+            self.assertIsNone(read_decision(repo, mark), "a full log and a call that wrote none")
+            appended = line(500, gate="opened", route="local_")
+            self.assertEqual(len(appended), len(full[0]))
+            log.write_text("\n".join(full[1:] + [appended]) + "\n")  # the writer drops the oldest line
+            self.assertEqual(log.stat().st_size, size, "the rotation moved neither the size nor the line count")
+            self.assertEqual(read_decision(repo, mark)["gate"], "opened")
+            self.assertEqual(len(log.read_text().splitlines()), 500)
+
+    def test_the_route_summary_counts_the_briefs_that_ran_before_the_daemon_answered(self):
+        local = {"route": "local", "daemon": "launched"}
+        local_again = {"route": "local", "daemon": "launched"}
+        served = {"route": "daemon", "daemon": "running"}
+        failed = {"route": "local", "daemon": "launch failed"}
+        summary = route_summary([("a", local), ("declined", {"route": None}), ("b", local_again),
+                                 ("nothing", None), ("c", served), ("d", failed)])
+        self.assertEqual((summary["briefs"], summary["local"], summary["daemon"]), (4, 3, 1))
+        self.assertEqual(summary["local_before_daemon"], 2)
+        self.assertEqual(summary["first_daemon_id"], "c")
+        self.assertEqual(summary["launches"], ["a", "b"])
+        self.assertEqual(summary["daemon_outcomes"], {"launched": 2, "running": 1, "launch failed": 1})
+        never = route_summary([("a", local), ("b", local)])
+        self.assertEqual((never["local_before_daemon"], never["first_daemon_id"]), (2, None))
+        self.assertEqual(route_summary([])["briefs"], 0)
+
+    def test_two_runs_have_the_same_gate_only_when_every_decision_agrees(self):
+        def row(rid, fired, score=1.0, tier="high", with_decision=True):
+            decision = {"gate": "model", "tier": tier, "score": score} if with_decision else None
+            return {"id": rid, "fired": fired, "decision": decision}
+        base = {"rows": [row("a", True), row("b", False), row("only-here", True)]}
+        same = {"rows": [row("a", True), row("b", False, with_decision=False)]}
+        self.assertEqual(compare_results(base, same),
+                         {"shared": 2, "fired_diff": [], "decision_diff": [], "identical": True})
+        fired = {"rows": [row("a", False), row("b", False)]}
+        self.assertEqual(compare_results(base, fired)["fired_diff"], ["a"])
+        scored = {"rows": [row("a", True, score=1.5), row("b", False)]}
+        diff = compare_results(base, scored)
+        self.assertEqual((diff["decision_diff"], diff["identical"]), (["a"], False))
+
+    def test_a_cold_selection_keeps_the_file_order(self):
+        rows = [row_fixture(id="z", text="one"), row_fixture(id="a", text="two"),
+                row_fixture(id="m", text="three", split="test")]
+        self.assertEqual([r["id"] for r in select_rows(rows, "dev")], ["a", "z"])
+        self.assertEqual([r["id"] for r in select_rows(rows, "dev", in_file_order=True)], ["z", "a"])
+        self.assertEqual([r["id"] for r in select_rows(rows, "all", in_file_order=True)], ["z", "a", "m"])
+
     def test_pipeline_against_a_stub_binary(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -970,8 +1255,20 @@ def main(argv=None):
     parser.add_argument("--repo", help="an indexed checkout (pixel prepare-repo) at the fixture SHA")
     parser.add_argument("--set", default=str(DEFAULT_SET), help="prompt set (JSONL)")
     parser.add_argument("--split", choices=("dev", "test", "all"), default="dev")
-    parser.add_argument("--daemon", choices=("on", "off"), default="off",
-                        help="run with the repo's daemon started or stopped (restored afterwards)")
+    parser.add_argument("--daemon", choices=("on", "off", "cold"), default="off",
+                        help="run with the repo's daemon started (on), stopped with auto-start disabled (off), "
+                             "or stopped with auto-start left on and the prompts run in file order (cold); "
+                             "the daemon is restored afterwards")
+    parser.add_argument("--warm-meaning", action="store_true",
+                        help="on only: first ask plain prompts until the daemon's meaning vectors answer "
+                             "(a binary that cannot print --json fails here)")
+    parser.add_argument("--session-start", action="store_true",
+                        help="cold only: run the SessionStart hook before the first prompt")
+    parser.add_argument("--session-gap", type=float, default=3.0,
+                        help="cold with --session-start: seconds between the hook and the first prompt")
+    parser.add_argument("--gap", type=float, default=0.0,
+                        help="cold only: seconds between prompts (a person types; default 0, back to back)")
+    parser.add_argument("--compare", help="an earlier result.json: fail when the gate decisions differ")
     parser.add_argument("--out", help="write the full result as JSON here")
     parser.add_argument("--repeat", type=int, default=1, help="calls per prompt; latency is the median, outputs must agree")
     parser.add_argument("--warmup", type=int, default=1, help="untimed calls before the first prompt (the first is the canary)")

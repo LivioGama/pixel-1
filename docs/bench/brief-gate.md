@@ -158,6 +158,222 @@ wall time of `pixel brief`, process start to exit.
    (p95 127). The machine was loaded (above), so read p50 as an upper
    bound and compare only runs taken back to back.
 
+## After (PR 3): the relevance gate and the two-tier brief
+
+Part 3 of the issue ([#883](https://github.com/Pixel-CLI/pixel/issues/883)):
+a plain-language prompt gets a brief when a fixed four-feature model finds the
+repository talks about it, a full one (high tier) or a compact "possibly
+related" one (low tier), and none otherwise; a weakly code-shaped prompt goes
+through the same gate; a code-shaped prompt is not gated. The model is English
+only (French is information in every table below). It was fitted on the 78
+English **dev** rows (`scripts/research-gate/results/gate-model.json`), so the
+dev numbers are the fitting set and the **test** numbers are the read: the
+test split was run once, after the candidate was frozen, and nothing was
+tuned on it.
+
+### Run identity
+
+| | |
+| --- | --- |
+| candidate | `feat/883-brief-prose-gate` at `44bbaaac9f88609070df363fb8a4886ecbd1b66e` (stacked on #884, #885 at `bb6f2191`, #886 at `d4d98d31`); binary `pixel 0.7.1 / commit: 44bbaaac…`, `CARGO_PROFILE_DEV_DEBUG=0 cargo build --profile dev-release -p pixel-cli` from that commit, clean tree |
+| baseline | `pixel 0.7.1 / commit: 85bede7d9a3c4e385e0a2045241a6466efbd8cbd`, built the same way in a clean clone of that commit, run in the same session as the candidate |
+| repository under test | the same fixture as the baseline above: a clean clone checked out at `85bede7d`, indexed with `pixel prepare-repo --no-daemon` (`fixture_match: true` in every result). Not the candidate's own tree: it carries `eval/brief-gate/`, which the runner warns about (the set would index itself), and the labels were read against `85bede7d` |
+| prompt set | `eval/brief-gate/prompts.jsonl`, 218 rows, SHA-256 `bc6ac042d64b1c96c56d1c83b4052853e0947a3dd7ca0c9b2b655e6f036276ad`; test split: 109 rows, 76 English (42 on-topic, 34 off-topic) and 33 French |
+| runner | `scripts/bench-brief-gate.py`, `--repeat 3 --warmup 3`; 0 unstable rows and 0 errors in the four test runs; order baseline off, candidate off, baseline on, candidate on |
+| daemon on | the fixture's daemon started with the binary under test; for the candidate the `meaning` vectors were warmed first (`pixel brief --json` on a plain prompt until two probes answered), because the first calls answer `unavailable` while they build |
+| machine | `macOS-27.0-arm64-arm-64bit-Mach-O`, Python 3.14.7, 16 CPUs, shared with other agents: 1-minute load average 5 to 12 across the test runs; compare latencies of runs taken back to back only |
+| intent judge | no server on the Ollaya port: the judge ran on weak and plain prompts and returned no verdict. The gate does not use it for plain prompts; a warm server can still silence a weak prompt (`none`, 0.5 or more) |
+
+### Reproduce
+
+```bash
+git clone -q --no-checkout "$REPO" "$FIXTURE" && git -C "$FIXTURE" checkout -q 85bede7d
+"$PIXEL" prepare-repo "$FIXTURE" --no-daemon
+python3 scripts/bench-brief-gate.py --check-set --repo "$FIXTURE"
+for daemon in off on; do
+  python3 scripts/bench-brief-gate.py --pixel "$PIXEL" --repo "$FIXTURE" \
+    --split test --daemon "$daemon" --repeat 3 --warmup 3 --out "gate-test-$daemon.json"
+done
+```
+
+`$PIXEL` is the candidate for the "PR 3" rows and the `85bede7d` build for the
+"main" rows. The "any brief" and "high only" columns are the same run read two
+ways: a low-tier brief counts as shown in the first and as not shown in the
+second (the runner reads the tier from `.pixel/brief-decisions.jsonl`, the
+decision log the candidate writes).
+
+### Results, English rows
+
+Gate columns score "a brief came back" against `on_topic`. **FP** is the share
+of the off-topic rows that got a brief. **hit@8** is the share of the 31 test
+(32 dev) rows with `expected_files` whose first eight brief paths hold one,
+no brief counting as a miss; **when fired** leaves the unfired out. Latency is
+the wall time of `pixel brief` over all 109 prompts of the split (French
+included), the median of three calls per prompt.
+
+| split | run | brief | TP | FP | FN | TN | precision | recall | F1 | FP rate |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| test | main `85bede7d` | any | 23 | 7 | 19 | 27 | 76.7% | 54.8% | 63.9% | 20.6% |
+| test | PR 3 | any | 33 | 5 | 9 | 29 | 86.8% | 78.6% | 82.5% | 14.7% |
+| test | PR 3 | high only | 29 | 3 | 13 | 31 | 90.6% | 69.0% | 78.4% | 8.8% |
+| dev | main `85bede7d` | any | 27 | 11 | 16 | 24 | 71.1% | 62.8% | 66.7% | 31.4% |
+| dev | PR 3 | any | 33 | 6 | 10 | 29 | 84.6% | 76.7% | 80.5% | 17.1% |
+| dev | PR 3 | high only | 31 | 4 | 12 | 31 | 88.6% | 72.1% | 79.5% | 11.4% |
+
+The gate is the same with the daemon on and off; only the files differ. Recall
+on plain-language prompts (the case the gate is for; identifier prompts stay
+at 100% everywhere): test 42.4% to 72.7% (any) or 60.6% (high only); dev 52.9%
+to 70.6% or 64.7%.
+
+| split | run | brief | hit@8, daemon off (when fired) | hit@8, daemon on (when fired) | latency p50 / p95 ms, off | latency p50 / p95 ms, on |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| test | main | any | 41.9% (68.4%) | 38.7% (63.2%) | 22 / 120 | 22 / 76 |
+| test | PR 3 | any | 38.7% (46.2%) | 64.5% (76.9%) | 165 / 202 | 98 / 135 |
+| test | PR 3 | high only | 38.7% (50.0%) | 61.3% (79.2%) | same runs | same runs |
+| dev | main | any | 28.1% (42.9%) | 28.1% (42.9%) | 25 / 119 | 25 / 81 |
+| dev | PR 3 | any | 53.1% (60.7%) | 71.9% (82.1%) | 163 / 203 | 113 / 155 |
+| dev | PR 3 | high only | 50.0% (61.5%) | 68.8% (84.6%) | same runs | same runs |
+
+False positives by kind of off-topic prompt (fired / rows, English):
+
+| split | run | ops | chat | paste | generic-code | other-repo | meta |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| test | main | 3/15 | 0/9 | 0/2 | 1/3 | 3/4 | 0/1 |
+| test | PR 3, any | 4/15 | 0/9 | 0/2 | 0/3 | 1/4 | 0/1 |
+| test | PR 3, high only | 2/15 | 0/9 | 0/2 | 0/3 | 1/4 | 0/1 |
+| dev | main | 4/15 | 2/10 | 2/2 | 1/2 | 2/4 | 0/2 |
+| dev | PR 3, any | 3/15 | 1/10 | 0/2 | 1/2 | 1/4 | 0/2 |
+| dev | PR 3, high only | 3/15 | 1/10 | 0/2 | 0/2 | 0/4 | 0/2 |
+
+Test, English, where the briefs went (candidate, by the signal that started
+them and the tier the gate gave): plain language 9 high and 4 low on topic, 1
+low off topic, 6 on-topic and 18 off-topic prompts off; weak 12 high on topic
+and 3 high off topic, 1 low off topic, 3 on-topic and 3 off-topic off; 8
+code-shaped on-topic prompts (not gated).
+
+**Weak prompts the gate silences** (they fired on the baseline). Test: 6 of
+22, three right (`bg-075`, `bg-125`, `bg-143`) and three on-topic prompts lost
+(`bg-033`, `bg-139`, `bg-164`). Dev: 11 of 25, seven right (`bg-011`, `bg-101`,
+`bg-112`, `bg-114`, `bg-159`, `bg-201`, `bg-202`) and four on-topic prompts lost
+(`bg-022`, `bg-036`, `bg-158`, `bg-212`). With the gate off for weak prompts
+(`ENFORCE_GATE_ON_WEAK` false, dev only) F1 was 79.6% against 80.5% and the
+false-positive rate 37.1% against 17.1%.
+
+**French, information only** (the model was not fitted on it): every dev prompt
+is off; on the test split 1 of 19 on-topic prompts gets a brief (5.3% recall,
+against 15.8% on main) and no off-topic one does (main: 1 of 14).
+
+### What the numbers say
+
+1. **The gate does what it was fitted for, and the read confirms it.** On the
+   untouched test split, English precision rises from 76.7% to 86.8% and recall
+   from 54.8% to 78.6% (F1 63.9% to 82.5%) while the false-positive rate falls
+   from 20.6% to 14.7%, 8.8% with only the full briefs counted. The dev numbers
+   (the fitting set) are within about three points of the test numbers on every
+   column.
+2. **The remaining false positives are weak and ops prompts.** Test: three
+   weak prompts at the high tier (`how does the auth middleware decide between
+   jwt and session`, `can you list everything we have to test since the latest
+   release`, `check which github actions are failing right now`), a weak and a
+   plain one at the low tier. Ops prompts are the one category that did not
+   improve on test (4 of 15 against 3 of 15): this tool's own vocabulary is
+   git, release and CI.
+3. **Without the daemon the files are no better than before** (the hooks now
+   start one, so this is the first prompt after a break at worst: see "Cold
+   start" below). hit@8 is 38.7% on test against 41.9% (46.2% when fired
+   against 68.4%): the in-process route
+   has no `meaning` leads, only the co-file order, and the gate now fires on
+   plain prompts the baseline did not answer. With the daemon, hit@8 is 64.5%
+   against 38.7%.
+4. **The gate costs time.** p50 over all prompts goes from 22 ms to 98 ms with
+   the daemon (165 ms without), p95 from 76 ms to 135 ms (202 ms): every plain
+   or weak prompt now asks for the relevance block. All of it sits inside the
+   750 ms window, and the machine was loaded.
+
+### Cold start: the hooks keep a daemon behind the brief
+
+The "Without the daemon" rows above are what a prompt gets after a break (the
+daemon exits after thirty minutes idle) or an upgrade (a protocol bump leaves an
+older daemon unusable), because the brief only pinged the socket. A session
+starting, and a briefed prompt that finds no daemon, now start the repository's
+daemon in the background (`execution_brief/autostart.rs`, "Keeping a daemon
+behind the brief" in `ARCHITECTURE.md`); the prompt that found none keeps the
+in-process route, the next one gets the daemon. This section measures what that
+buys. It is the **dev** split only (the test split was read once, above, and is
+not touched again), English rows for the headline.
+
+| | |
+| --- | --- |
+| binary | `pixel 0.7.1 / commit: 0b298428a3b3a9bb6bae55f35a0ae7a9d891febe`, clean tree, `CARGO_PROFILE_DEV_DEBUG=0 cargo build --profile dev-release -p pixel-cli` into a target directory of its own; the code is that of `5e586c12` (the next commit changes only the bench script) |
+| repository, set | the fixture of the runs above (clean clone at `85bede7d`, `fixture_match: true`), set SHA-256 `bc6ac042…6276ad`; dev split: 109 rows, 78 English (43 on-topic, 35 off-topic); 0 errors and 0 unstable rows in all ten runs |
+| modes | `on`: daemon started and the `meaning` vectors warmed first (`--warm-meaning`); `off`: daemon stopped and auto-start disabled; `cold`: daemon stopped, auto-start on, no canary and no warm-up, the 109 prompts one after another in file order, back to back (the worst case: a person types for seconds between prompts); `cold-session`: as `cold` after a `SessionStart` hook and 3 s; `cold-nocache`: as `cold` with `.pixel/code-vectors/` deleted first, so the first `meaning` build embeds every chunk |
+| runs | two sequences, `on`, `off`, `cold`, `cold-session`, `cold-nocache`, one session, `--repeat 1` (a cold prompt can only be taken once); load average 6 to 8 on 16 CPUs, shared with other agents: compare latencies within a sequence |
+
+```bash
+B=<the binary above>; F=<the fixture>
+python3 scripts/bench-brief-gate.py --pixel "$B" --repo "$F" --split dev --daemon on --warm-meaning --out on.json
+python3 scripts/bench-brief-gate.py --pixel "$B" --repo "$F" --split dev --daemon off  --compare on.json --out off.json
+python3 scripts/bench-brief-gate.py --pixel "$B" --repo "$F" --split dev --daemon cold --compare on.json --out cold.json
+python3 scripts/bench-brief-gate.py --pixel "$B" --repo "$F" --split dev --daemon cold --session-start --session-gap 3 --compare on.json --out cold-session.json
+rm -rf "$F/.pixel/code-vectors"
+python3 scripts/bench-brief-gate.py --pixel "$B" --repo "$F" --split dev --daemon cold --compare on.json --out cold-nocache.json
+```
+
+English dev rows (78; hit@8 over the 32 with `expected_files`; any brief).
+Latency is sequence 1, with sequence 2 in parentheses; every other column was
+the same in both:
+
+| mode | P | R | F1 | FP rate | hit@8 | hit@8 when fired | latency p50 / p95 ms | briefs in process / daemon | in process before the daemon answered | gate identical to `on` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| on | 84.6% | 76.7% | 80.5% | 17.1% | 71.9% | 82.1% | 106 / 170 (103 / 159) | 0 / 106 | 0 | n/a |
+| off | 84.6% | 76.7% | 80.5% | 17.1% | 53.1% | 60.7% | 166 / 199 (160 / 199) | 106 / 0 | 106 | 109 of 109 |
+| cold | 84.6% | 76.7% | 80.5% | 17.1% | 71.9% | 82.1% | 109 / 177 (105 / 164) | 1 / 105 | 1 | 109 of 109 |
+| cold, after a session start | 84.6% | 76.7% | 80.5% | 17.1% | 71.9% | 82.1% | 106 / 171 (108 / 174) | 0 / 106 | 0 | 109 of 109 |
+| cold, no vector cache | 84.6% | 76.7% | 80.5% | 17.1% | 71.9% | 82.1% | 111 / 172 (111 / 179) | 1 / 105 | 1 | 109 of 109 |
+
+"Gate identical" is asserted by `--compare` (printed as `GATE IDENTICAL … 109/109
+prompts, same fired, gate, tier and score`, exit status 2 otherwise): every
+prompt took the same `fired`, `gate`, `tier` and `score` in every mode, so the
+daemon changes the files and never the decision. Latency is the wall time of
+`pixel brief` over the English rows, one call per prompt; briefs counted are
+those that had a route (a declined prompt has none).
+
+The hook itself (`pixel run-hook task-event --provider claude --event <event>`
+with the JSON payload on stdin, the fixture's daemon stopped before each call,
+15 calls per row, scratch script, wall time in ms):
+
+| hook | auto-start off, no daemon | auto-start on, no daemon (starts one) | auto-start on, daemon running |
+| --- | ---: | ---: | ---: |
+| `SessionStart`, median / max | 22 / 29 | 24 / 29 | 24 / 30 |
+| `UserPromptSubmit`, median / max | 186 / 201 | 191 / 204 | 185 / 208 |
+
+What it says:
+
+1. **A cold start costs one local brief.** In both sequences the first
+   prompt that was briefed ran in process, started a daemon, and the next
+   brief, 0.18 to 0.20 s later, found it. After a `SessionStart` none ran in
+   process. hit@8 is 71.9% in every cold mode, against 53.1% in process
+   throughout (`off`), and equal to a daemon that had been up all along.
+2. **The `meaning` vectors come back fast when their cache is on disk.**
+   Every cold brief text equals the `on` brief text, byte for byte
+   (`stdout_sha`, 0 of 106 differ), because the daemon asked its first
+   `meaning` question at start and read the vectors from `.pixel/code-vectors/`
+   before the third prompt (0.4 s). Without that cache (a repository the
+   daemon has never served) two briefs, `bg-006` and `bg-018`, went out without
+   leads (their file order differs); both still named the expected file, so
+   hit@8 did not move. A larger repository builds slower than this fixture's
+   1 161 files, and the briefs that arrive meanwhile are the in-process ones.
+3. **The hook pays 2 to 5 ms for it.** The decision is a few local socket
+   probes on a thread of its own, bounded by 100 ms, and the start itself is a
+   detached process; the differences above are inside the run-to-run spread
+   (the max column), not a measured cost.
+4. **Not measured.** A real stale-protocol daemon (an older binary running
+   against this one) is covered by unit tests with a scripted daemon
+   (retired, then launched), not by a run; Linux; a repository whose daemon
+   takes longer than 0.2 s to bind; the live agent A/B. The numbers are the
+   dev split, the set the gate was fitted on: the gate is unchanged by this
+   work (asserted above), the files are what moved.
+
 ## Excavation: the agent-side metric
 
 *Excavation* is the native exploration an agent does to find the code a prompt
