@@ -35,6 +35,7 @@ macro_rules! eprint {
 #[cfg(feature = "readify")]
 mod ai_cli_readify;
 mod audit_cmd;
+mod brief_parts;
 mod call_guard;
 mod classify;
 mod classify_eval;
@@ -1455,6 +1456,12 @@ enum HookCmd {
         provider: task_hook::TaskProvider,
         #[arg(long, value_enum)]
         event: task_hook::TaskHookEvent,
+        /// Serve slice K of N of the prompt-submit brief (`--part 2/3`), for a
+        /// host that caps what one hook may inject. Part 1 computes the brief
+        /// and stores it; the others print their slice of it. Without the
+        /// flag the one hook prints the whole brief.
+        #[arg(long, value_name = "K/N")]
+        part: Option<brief_parts::BriefPart>,
     },
     #[command(flatten)]
     Retired(RetiredHookCmd),
@@ -4388,6 +4395,14 @@ fn run() -> Result<(), String> {
     let started = std::time::Instant::now();
     let argv: Vec<String> = std::env::args().collect();
     let matches = Cli::command().try_get_matches().unwrap_or_else(|error| {
+        // A hook the host cannot parse the arguments of (a newer install's
+        // flag given to this older binary, or the reverse) says so on stderr
+        // and exits 0: Claude Code blocks the prompt on exit 2, which is
+        // what clap exits with.
+        if fails_open(&argv, &error) {
+            eprintln!("{error}");
+            std::process::exit(0);
+        }
         // An unknown subcommand may be a plugin; its exit code is the
         // plugin's own, or 1/2 for a refusal or a moved-command hint.
         if let Some(code) = plugin_cmd::dispatch(&error, &argv) {
@@ -6215,7 +6230,11 @@ fn run_command(
             Ok(())
         }
         Command::RunHook { cmd } => match cmd {
-            HookCmd::TaskEvent { provider, event } => task_hook::run(provider, event),
+            HookCmd::TaskEvent {
+                provider,
+                event,
+                part,
+            } => task_hook::run(provider, event, part),
             // Retired verbs: drain the payload the host wrote, answer nothing.
             HookCmd::Retired(_) => {
                 let _ = hook_input::read_hook_payload();
@@ -6872,6 +6891,13 @@ fn relative_time(ts_ms: i64, now_ms: i64) -> String {
     } else {
         format!("{}d ago", secs / 86400)
     }
+}
+
+/// Whether a parse error belongs to a `run-hook` invocation and is a real
+/// error (help and version requests are not): a host hook never fails with
+/// clap's exit code 2.
+fn fails_open(argv: &[String], error: &clap::Error) -> bool {
+    matches!(argv.get(1).map(String::as_str), Some("run-hook" | "hook")) && error.use_stderr()
 }
 
 fn main() -> ExitCode {
