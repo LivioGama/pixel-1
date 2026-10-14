@@ -35,8 +35,9 @@ pub(crate) const PART_CHARS: usize = 9_800;
 /// bytes per estimated token, 2,500 tokens): the same figure as [`PART_CHARS`],
 /// since 9,800 bytes stay under 10,000.
 pub(crate) const PART_BYTES: usize = 9_800;
-/// How long a part after the first waits for the first part's brief.
-pub(crate) const WAIT: Duration = Duration::from_millis(2_000);
+/// What a part after the first waits beyond the bound part 1 is given: part 1
+/// stores the brief and marks it done once its own bound has passed.
+pub(crate) const WAIT_SLACK: Duration = Duration::from_millis(1_000);
 /// How often a waiting part looks for the stored brief.
 pub(crate) const POLL: Duration = Duration::from_millis(15);
 /// Directory under `.pixel/` holding the stored briefs.

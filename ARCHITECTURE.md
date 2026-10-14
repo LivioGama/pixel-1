@@ -774,7 +774,11 @@ missing.
   `unavailable` while they build) join the co-files by reciprocal rank in
   the first `files:` of either brief.
 
-The chain runs at most six ops under one 750 ms deadline: the two probes of
+The chain runs at most six ops under one deadline, 3 s for a hook (`brief_window_ms` in
+`.pixel/config.yaml` or `PIXEL_BRIEF_WINDOW_MS`, clamped to 250 ms to 4.5 s so it ends before the 6 s hook
+decision and the host's 10 s kill; 750 ms for the `brief` command, never more than 1 s since Pi cuts it off at 1.2 s). Parts 2 to N
+wait for part 1 as long as part 1 may take (the 6 s hook decision bound). A kind-admitted brief whose window ended before its pack
+renders the best files as a `confidence: low` lead instead of nothing. The ops are the two probes of
 a Weak or Prose prompt, `search-content -F -l` on the first anchor,
 `find-symbol` to resolve a uid, `impact <uid>` only
 for change or caller intent, `find-code` when nothing found a file, then
@@ -1126,6 +1130,18 @@ record is unsafe under concurrency and must never be used. The installer provide
 no native automatic chat transport; mock-wrapper tests prove prompt delivery and
 stream/exit preservation, not actual model adherence or live-host duplicate
 suppression. Chat relay remains a host-supported, separately verifiable boundary.
+
+
+### Brief probes
+
+`probes/<name>/` holds scripts that add blocks to the prompt-submit brief (contract: `CONTRIBUTING.md`, "Write a
+probe"). Each is a plugin directory (`pixel-plugin.toml`, capability `brief-probe`, the plugin host's manifest)
+plus an executable that reads `{prompt, repo_root, brief, kind, session_files}` on stdin and prints blocks and
+`drop:` / `first:` directives. `scripts/probe-test.py` is the specification of the merge (drops, then firsts, lead
+blocks before the brief's and append blocks after, one block per header, 3 x 9,800 characters with append blocks
+shed first, the closing directive kept last) and of the checks (budget, determinism, read-only, neighbours);
+`scripts/probe-loop.py`, `probe-translate.py` and `brief-bench.py` (bench: `eval/brief-bench/`) feed it. The binary
+does not run probes yet: the plugin host has one capability, `command`, and the merge exists in Python only.
 
 ## Testing and gates
 

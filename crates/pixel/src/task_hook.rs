@@ -20,6 +20,10 @@ pub(crate) const MAX_INPUT: u64 = crate::hook_input::MAX_HOOK_INPUT;
 // Return a decision before the managed native hooks' ten-second host deadline
 // and Pi's eight-second subprocess deadline; a stalled worker dies with run().
 const DECISION_TIMEOUT: Duration = Duration::from_secs(6);
+// The brief's longest window plus the time to print it stays inside that decision.
+const _: () = assert!(
+    pixel_install::config::BRIEF_WINDOW_MAX_MS + 1_500 <= DECISION_TIMEOUT.as_millis() as u64
+);
 const UNAVAILABLE: &str = "Pixel task state is unavailable. Reads and recovery remain available; edits and completion require a working task ledger.";
 
 /// Hosts with a verified task lifecycle adapter.
@@ -1324,6 +1328,14 @@ fn publish_first_part(
         .filter(|slice| !slice.is_empty())
 }
 
+/// How long a part after the first waits for the first part's brief: the
+/// bound part 1 itself is given ([`DECISION_TIMEOUT`]) and a little more to
+/// store and release it, so a part never prints before part 1 has finished or
+/// given up. It stays under the ten seconds the host allows a hook.
+fn follow_bound() -> Duration {
+    DECISION_TIMEOUT + brief_parts::WAIT_SLACK / 2
+}
+
 /// A part after the first: print the slice of the brief part 1 stores,
 /// waiting at most `bound` for it. `None` (print nothing) when the payload
 /// names no prompt or repository or the brief does not arrive in time; `{}`
@@ -1530,7 +1542,7 @@ pub fn run(provider: TaskProvider, event: TaskHookEvent, part: Option<BriefPart>
         if let Some(part) = later {
             // Nothing to say is nothing printed: a hook that cannot get its
             // slice in time never holds the prompt.
-            follow(provider, raw, part, brief_parts::WAIT)
+            follow(provider, raw, part, follow_bound())
         } else {
             let input = raw.clone();
             Some(bounded_decision(
