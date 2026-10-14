@@ -139,6 +139,7 @@ pub fn uninstall(options: &UninstallOptions) -> Result<InstallReport> {
         crate::copilot_config::remove_copilot_hooks(&home, dry_run)?,
         remove_pi_extension(&home, dry_run)?,
         remove_classify_skill(&home, dry_run)?,
+        remove_pixel_skill(&home, dry_run)?,
         crate::pi_global::uninstall(
             &crate::pi_global::PiPaths::resolve(&home, options.home.is_some()),
             dry_run,
@@ -369,20 +370,45 @@ fn remove_project_claude_guard(repo: &Path, exe: &Path, dry_run: bool) -> Result
 /// list here: a target added to the wizard has to be removed by the same
 /// uninstall run that installed it, and a copied list is how a block survives
 /// an uninstall.
-fn strip_setup_blocks(
+pub(crate) fn strip_setup_blocks(
     base: &Path,
     scope: crate::setup::Scope,
     dry_run: bool,
 ) -> Result<InstallStep> {
-    let mut targets: Vec<PathBuf> = crate::setup::AgentTarget::ALL
-        .iter()
-        .filter_map(|agent| agent.instruction_path(base, scope))
-        .collect();
+    strip_setup_blocks_selected(base, scope, None, dry_run)
+}
+
+/// [`strip_setup_blocks`], limited to `agents`' instruction paths when a
+/// guided setup gives a selection: an agent that was not picked keeps its
+/// files. The rule files and Pi's retired system prompt are not owned by one
+/// agent, so they are swept either way.
+pub(crate) fn strip_setup_blocks_selected(
+    base: &Path,
+    scope: crate::setup::Scope,
+    agents: Option<&[crate::setup::AgentTarget]>,
+    dry_run: bool,
+) -> Result<InstallStep> {
+    let mut targets: Vec<PathBuf> = match agents {
+        Some(agents) => agents
+            .iter()
+            .filter_map(|agent| agent.instruction_path(base, scope))
+            .collect(),
+        None => crate::setup::AgentTarget::ALL
+            .iter()
+            .filter_map(|agent| agent.instruction_path(base, scope))
+            .collect(),
+    };
     // The per-agent rule files, where that feature wrote one. Pixel names
     // them, so one left with nothing but whitespace after the strip is a file
     // the setup created and is deleted rather than left empty.
     let rule_files = crate::setup::rule_files(base);
     targets.extend(rule_files.iter().cloned());
+    // Pi's system-prompt file is retired as a setup target — no run writes it
+    // any more — but a block an earlier release put there still comes out on
+    // remove.
+    if scope == crate::setup::Scope::Global {
+        targets.push(base.join(crate::install::PI_PROMPT_REL));
+    }
     targets.sort();
     targets.dedup();
 
@@ -953,6 +979,39 @@ fn remove_classify_skill(home: &Path, dry_run: bool) -> Result<InstallStep> {
                 "no classify skill found".to_string()
             } else {
                 format!("removed {} classify skill dir(s)", removed.len())
+            },
+        ),
+        detail: (!removed.is_empty()).then(|| removed.join(" ")),
+    })
+}
+
+// -------------------------------------------------------------------------
+// Step 4c: remove the pixel skill from every harness's skills dir
+// -------------------------------------------------------------------------
+
+/// Remove a `skills/pixel` dir only when its `SKILL.md` is the managed copy
+/// the install step wrote — a user-authored skill under the same name stays.
+fn remove_pixel_skill(home: &Path, dry_run: bool) -> Result<InstallStep> {
+    let mut removed = Vec::new();
+    for dir in crate::skill::managed_skill_dirs(home) {
+        let file = dir.join("SKILL.md");
+        if !fs::read_to_string(&file).is_ok_and(|text| text == crate::skill::PIXEL_SKILL) {
+            continue;
+        }
+        if !dry_run {
+            rename_as_backup(&dir)?;
+        }
+        removed.push(dir.display().to_string());
+    }
+    Ok(InstallStep {
+        id: "skills.pixel".into(),
+        status: CheckStatus::Green,
+        summary: install::dry_run_summary(
+            dry_run,
+            &if removed.is_empty() {
+                "no pixel skill found".to_string()
+            } else {
+                format!("removed {} pixel skill dir(s)", removed.len())
             },
         ),
         detail: (!removed.is_empty()).then(|| removed.join(" ")),

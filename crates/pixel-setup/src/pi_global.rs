@@ -36,6 +36,16 @@ const PACKAGE_EXTENSION: &str = "extensions/pixel-impact.ts";
 /// event is its prompt-submit channel, so the same package carries it.
 const BRIEF_EXTENSION: &str = "extensions/pixel-brief.ts";
 
+/// The `pixel` skill the package installs into Pi's own skills directory,
+/// relative to the agent directory. Pi loads `skills/<name>/SKILL.md` like
+/// every other harness, so the retrieval workflow lands as a skill, not as
+/// injected prompt text.
+const PI_SKILL_REL: &str = "skills/pixel/SKILL.md";
+
+/// The skill content: [`crate::skill::PIXEL_SKILL`], the one copy every
+/// harness's deploy of `skills/pixel/SKILL.md` writes.
+const PI_SKILL: &str = crate::skill::PIXEL_SKILL;
+
 const PACKAGE_MANIFEST: &str = "package.json";
 
 const STEP_ID: &str = "hooks.pi-impact";
@@ -257,6 +267,14 @@ pub(crate) fn install(
         &paths.package_dir.join(BRIEF_EXTENSION),
         &brief_extension_source(exe),
     )?;
+    let skill = paths.agent_dir.join(PI_SKILL_REL);
+    if let Some(dir) = skill.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    // The skill is a harness file, not pixel's own: a differing copy is the
+    // user's, so back it up before overwriting like every other managed write.
+    config::backup_if_changing(&skill, PI_SKILL.as_bytes())?;
+    install::write_atomically(&skill, PI_SKILL)?;
     if !declared {
         install::write_settings(&paths.settings, &settings, false)?;
     }
@@ -303,6 +321,14 @@ pub(crate) fn uninstall(paths: &PiPaths, dry_run: bool) -> Result<InstallStep> {
                 packages.retain(|entry| !names_package(entry, &source));
             }
             install::write_settings(&paths.settings, settings, false)?;
+        }
+        let skill = paths.agent_dir.join(PI_SKILL_REL);
+        // The skill directory is pixel's own package name, but its content is
+        // not: remove it only when it still holds exactly what install wrote.
+        if fs::read_to_string(&skill).is_ok_and(|text| text == PI_SKILL) {
+            fs::remove_file(&skill)?;
+            let _ = fs::remove_dir(skill.parent().unwrap());
+            let _ = fs::remove_dir(paths.agent_dir.join("skills"));
         }
         for file in [
             paths.package_extension(),
@@ -375,10 +401,12 @@ pub(crate) fn check(paths: &PiPaths, exe: &Path, pi_installed: bool) -> PiImpact
             &paths.package_dir.join(BRIEF_EXTENSION),
             &brief_extension_source(exe),
         )
+        || !current(&paths.agent_dir.join(PI_SKILL_REL), PI_SKILL)
     {
         return PiImpactState::NeedsInstall(format!(
-            "the Pixel Pi impact package at {} is missing, stale or points to a different binary",
-            paths.package_dir.display()
+            "the Pixel Pi impact package at {} or the pixel skill under {} is missing, stale or points to a different binary",
+            paths.package_dir.display(),
+            paths.agent_dir.display()
         ));
     }
     let legacy = paths.legacy_extension();
