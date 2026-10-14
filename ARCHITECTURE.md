@@ -135,7 +135,9 @@ Per repository, under `.pixel/` (git-ignored):
 | `history.db` (+ `-wal`, `-shm`, `history.db.lock`) | `pixel-facts` | SQLite: commit facts, diff text, lifecycle, FTS5 trigram indexes. Populated by `pixel build-index --history` or the daemon ingest thread on the first history query; capped by the window and budget above, with `auto_vacuum = INCREMENTAL` so an eviction shrinks the file. Schema version `FACTS_SCHEMA_VERSION` (3) in `PRAGMA user_version`: another version is rebuilt, except 2 (`UPGRADES_IN_PLACE_FROM`), whose dates are repaired in place. |
 | `code-vectors/` (`manifest.json`, `seg-*.vec`, `lock`) | `pixel-recall` | `search-meaning` chunk vectors, keyed by the xxh3-128 hash of the chunk text seeded with the model id, embedder revision and `CHUNKER_VERSION`; stored as the model's `f32`s. Written only when the search root carries `base.shard` and is not `$HOME`, never by the daemon's semantic fallback. `flock` on `lock` (shared to read, exclusive to write), segments immutable, the manifest replaced by rename; rewritten with the live rows once unreachable ones exceed a quarter of them. |
 | `actions.jsonl` | `pixel-actionlog` | One line per invocation, with the route and phase timings of each request it served (`serve`). |
-| `brief-decisions.jsonl` | CLI `brief` (`execution_brief/decision_log.rs`) | One JSON line per prompt the prompt-submit brief judged, or declined for being about nothing: time, signal (`strong`, `weak`, `prose`), gate (`open`, `closed`, `denied`, `unjudged`, `declined`) and its reason, the gate's tier (`high`, `low`, `off`), score and model source, the best file and the features the score read, the intent judge's verdict, ops, bytes (and whether it carried the search receipt and answer excerpts, with the excerpt bytes, and for a region pack its bytes, hook parts, symbols and whether the text search stood in for a stale graph) and milliseconds spent, the evidence route (`daemon` or `local`) and what the daemon start the prompt gave came to (`launched`, `running`, `skipped: …`, `launch failed`), the typed text (never a pasted block, credential shapes masked, cut at 600 characters) and its SHA-256. The last 500 lines, mode 0600, never creates `.pixel/`; `PIXEL_BRIEF_LOG=0\|false\|off` writes nothing. `pixel brief --json` prints the same record beside the brief. |
+| `brief-decisions.jsonl` | CLI `brief` (`execution_brief/decision_log.rs`) | One JSON line per prompt the prompt-submit brief judged, or declined for being about nothing: time, signal (`strong`, `weak`, `prose`), gate (`open`, `closed`, `denied`, `unjudged`, `declined`) and its reason, the gate's tier (`high`, `low`, `off`), score and model source, the best file and the features the score read, the intent judge's verdict, ops, bytes (and whether it carried the search receipt and answer excerpts, with the excerpt bytes, and for a region pack its bytes, hook parts, symbols, located blocks and whether the text search stood in for a stale graph) and milliseconds spent, the evidence route (`daemon` or `local`) and what the daemon start the prompt gave came to (`launched`, `running`, `skipped: …`, `launch failed`), the typed text (never a pasted block, credential shapes masked, cut at 600 characters) and its SHA-256. The last 500 lines, mode 0600, never creates `.pixel/`; `PIXEL_BRIEF_LOG=0\|false\|off` writes nothing. `pixel brief --json` prints the same record beside the brief. |
+| `brief-feedback.jsonl` | CLI `run-hook task-event` (`execution_brief/feedback.rs`) | What the agent read after the brief, per host session (the id is stored as 16 hex digits of its SHA-256). `prompt`: one line per prompt the brief saw, with the brief's bytes, gate and kind, the repository paths it injected (best first, at most 32) and the SHA-256 of the typed text that joins it to `brief-decisions.jsonl`. `part`: the bytes each prompt-submit hook part printed to the host, and whether the part gave up waiting for the brief (`late`), so a brief that never arrived is told from an empty one. `tool`: one line per `PostToolUse` or `PostToolUseFailure` with the tool name, whether it changed a file, and the repository files it named (the `file_path`, `path` or `notebook_path` of its input and the existing files among the words of its shell command; a file outside the repository, a link out of it or a credential-shaped path is never named). `stop`, and with it a `turn` line that closes the prompt: injected, read and edited paths, their overlap and the tool calls before the first answer. Paths and counts only, never prompt, command or output text. The last 1,500 lines, mode 0600, written through `decision_log::append_with` (never through a link, never creates `.pixel/`); `PIXEL_BRIEF_LOG=0\|false\|off` writes nothing. `scripts/brief-feedback-summary.py` turns the `turn` lines into the zero-call rate and the injected-versus-read precision and recall. |
+| `brief-sessions/<session>.json` | CLI `run-hook task-event` (`execution_brief/sent.rs`) | The line ranges the region packs already sent to one host session, so the next pack leaves them out and spends its room on source the session has not got. The name is the first 16 hex digits of the SHA-256 of the host's session id; the file holds keys only: per range the first 16 hex digits of the SHA-256 of the path, its first and last line and when it was sent. A key older than 24 hours is forgotten (every write also deletes session files nobody has written for a day), at most 1,000 are kept, and `SessionStart` with source `compact` or `clear` deletes the file (a `resume` keeps it: the context is the same). Written atomically with mode 0600 in a 0700 directory, never through a link (`.pixel` or `brief-sessions` as a symbolic link is refused), and never creates `.pixel/`. `PIXEL_BRIEF_DEDUPE=0\|false\|off` sends everything again. |
 | `brief-parts/<session>-<prompt>.txt` | CLI `run-hook task-event --part` (`brief_parts.rs`) | The whole prompt-submit brief of one prompt, stored by part 1 of a brief split over several hooks and read by parts 2 to N (see "Agent integration"). The name is the first 16 hex digits of the SHA-256 of the host's session id, a dash and the SHA-256 of the prompt, so no host text reaches a file name. Written atomically with mode 0600 (`pixel_git::nofollow::write_replace`), never through a link (`.pixel` or `brief-parts` as a symbolic link is refused); an empty file means the prompt got no brief, so the other parts do not wait. Part 1 deletes the entry before it computes the brief, leaves an empty `.done` file with the same stem once its own output is written, and every part-1 write deletes the entries older than one hour. |
 | `reconcile-conflict.json` | `pixel-ops` | Conflict marker `reconcile` writes and clears (no hook reads it). |
 | `calls.json` | CLI | Circuit breaker counters for repeated identical calls. |
@@ -648,7 +650,7 @@ is the only hook `pixel setup` registers (Claude Code and Codex):
 
 | Hook event | Command | Effect |
 | --- | --- | --- |
-| `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SessionEnd`, `SubagentStart`, `SubagentStop`, plus `PostToolUseFailure` (Claude) or `Interrupt` (Codex) | `pixel run-hook task-event --provider <host> --event <event>` | Binds coding objectives, gates edits, records tool outcomes, and bounds Stop correction. Global native hooks compose with existing hooks. Once enforced, a task retains its gates if runtime settings change. On `prompt-submit` it also returns the `[PIXEL:BRIEF]` evidence brief as `additionalContext` (see below). On `SessionStart` and a briefed `UserPromptSubmit` it may start the repository's daemon in the background (see "Keeping a daemon behind the brief"). |
+| `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, `SessionEnd`, `SubagentStart`, `SubagentStop`, plus `PostToolUseFailure` (Claude) or `Interrupt` (Codex) | `pixel run-hook task-event --provider <host> --event <event>` | Binds coding objectives, gates edits, records tool outcomes, and bounds Stop correction. Global native hooks compose with existing hooks. Once enforced, a task retains its gates if runtime settings change. On `prompt-submit` it also returns the `[PIXEL:BRIEF]` evidence brief as `additionalContext` (see below). On `SessionStart` and a briefed `UserPromptSubmit` it may start the repository's daemon in the background (see "Keeping a daemon behind the brief"). Every hook of the table also leaves its line in `.pixel/brief-feedback.jsonl` after it has answered the host (`prompt-submit` parts, `post-tool-use`, `tool-failure`, `stop`): the read feedback of the brief, best effort and silent, so it adds no registration and cannot fail a host. |
 | `UserPromptSubmit` (Claude Code and Codex, `brief_parts` entries; default 3) | `pixel run-hook task-event --provider <host> --event prompt-submit --part K/N` | The brief split over `N` hooks (see "A brief larger than one hook"). Part 1 is the entry above with the ledger and the brief; parts 2 to `N` only print their slice. |
 
 The verbs earlier releases registered (`guard`, `composed-guard`,
@@ -883,8 +885,126 @@ A pack of regions alone, with no symbol or passage behind it, ends on
 a lead ("not a verified answer") instead of the directive, and one the window
 ended before it finished says so. It is built from lines read at HEAD
 (`Evidence::lines_at`, refused for a credential-shaped path) and spends none of
-the brief's operations. `pack_bytes`, `pack_parts`, `pack_targets` and
-`fallback` are in each decision.
+the brief's operations. `pack_bytes`, `pack_parts`, `pack_targets`,
+`pack_located` and `fallback` are in each decision.
+
+**Locators** (`execution_brief/locator.rs`, asked by `pack_evidence` before the
+pack is built). Two questions have no symbol to resolve: where a setting is
+defined or defaulted ("what port does the dev server use", "which
+environment variables change how it behaves") and which tests cover a topic.
+`locator::asks` reads them from the typed words (`config`, `default`, `port`,
+`env`, a value word such as `limit` inside a question that opens like one
+about a value; `test`, `spec`, `coverage`). The prompt's content words
+(`terms`: no setting or test word, no generic one) are stemmed the way
+`answer::tokens` reads text, narrowed to the four the relevance probe weighs
+heaviest (`pick_terms`: a word it found in too many files is dropped), and
+searched with one `Evidence::grep` each for the shapes that define a setting
+(a constant, an upper-case assignment, a key given a literal, an environment
+read, a flag, a default) and, in parallel, for the upper-case names that carry
+a term (`VITE_APP_PORT`), or for the declarations of tests whose name carries
+it. A term is matched as a word of an identifier (`port` is in `SERVER_PORT`
+and `serverPort`, not in `portal`), and the name a line gives its setting must
+carry a term: the words in a value do not make a setting. The best lines
+(two for each term first, at most fourteen, four per file; test modules of a
+source file, indented lower-case constants, tests and documentation files
+dropped) are cut into windows of exact source (a constant with its doc
+comment and its whole declaration; a short configuration file whole), a
+question about the environment adds the variable names read with the first
+read of each (the repository's own prefix first), and a question about tests
+adds the matching tests by name with `path:line`, the first lines of the best
+eight and, when a manifest vouches for a runner (`pytest`, `vitest`, `jest`,
+`cargo test`, `go test`), the command that runs only them. The blocks join the
+pack after the symbols' own and ahead of nothing but the graph facts; a block
+over lines a definition already shows is dropped, and a pack of locator blocks
+alone ends on the directive. Quoted tokens that read as credentials are
+masked, and a credential-shaped path never reaches the searches' rows
+(`.env*` files stay out of the brief). A locator spends no brief operation,
+lives inside its own 300 ms (`LOCATOR_WINDOW`) and the brief's window, and a
+search that fails leaves the pack as it was.
+
+**The session's files** (`execution_brief/session_paths.rs`, started by the
+hook beside the worker and given `CONTEXT_WINDOW`, 150 ms of the brief's
+750). A prompt of a hook session ("now fix the test") often says too little to
+place in the repository, so the brief also reads where the session already is:
+the files its last tool calls read or edited, found in the structured inputs
+(`file_path`, `path`, a shell `command`) of the last 64 KB of the
+host's `transcript_path` (Claude Code and Codex payloads), newest first, and
+the dirty files of `git status`, most recently written first. Only a path leaves
+the module: a candidate counts when it exists inside the repository once its
+links are resolved and is not credential-shaped, so transcript text reaches
+neither the brief nor a log. The two lists rank as one list that joins the
+fusion of the meaning leads and the relevance co-files as a third, boosting only: a file
+those lists already name gains its reciprocal rank, and a file only the session
+names does not enter, so an unrelated dirty file never displaces a lead. A
+short follow-up (`is_follow_up`: at most ten words that ask for a change or
+lean on what came before) that the gate would have closed is let through
+instead, when the session has files: the files are the brief
+(`Admission::Context`, gate `open`, reason `context: …`, rendered as a low-tier
+maybe) and the off-topic leads of its words are dropped. A source that has not
+answered inside its window adds nothing. `PIXEL_BRIEF_CONTEXT=0|false|off`
+turns it off, and the `brief` command, which has no session, never uses it.
+
+**Evidence sent once** (`execution_brief/sent.rs`). A session that asks again
+about code it was just sent would get the same lines again, and they would fill
+the pack's room that source it has never seen could use. So the pack of a hook
+prompt remembers its blocks' ranges per `session_id` (`.pixel/brief-sessions/`,
+see "On-disk state") and the next one leaves out any block that overlaps one:
+the definition, the usage windows, the callers' windows, the test bodies and the
+locators' blocks. The room they would have taken goes to the sites after them
+(`usage_candidates` weighs twice the sites when some were sent, and shows the
+first eight that are new), and a pack that is left with no source falls back to
+the packet's lines. Only the pack's ranges are remembered; the `brief` command
+has no session and sends everything. The record is forgotten after 24 hours and
+when the host starts the session over: `SessionStart` with source `compact` or
+`clear`, which is when the agent stops holding what it was sent. Codex raises no
+`SessionStart` for a compaction, and `PreCompact` is not among the hooks
+`pixel setup` registers (registering it would have every Codex user review the
+hooks again), so a Codex compaction is covered by the 24 hours alone.
+`PIXEL_BRIEF_DEDUPE=0|false|off` turns it off.
+
+**Question kinds without a symbol** (`execution_brief/kinds.rs`, asked by
+`pack_evidence` beside the locators). `routes::QuestionKind` gained `Overview`
+(a tour: "quick tour", "lay of the land", "what each crate is for"; a
+cue of how the whole is put together needs a noun for the whole) and `Review`
+(a review cue beside a change noun: "review the latest commit", "is this PR
+safe to merge"), read from the words, with no model, and ahead of a judge's
+verdict; the walkthrough phrases ("walk me through", "what happens when",
+"end to end") route to `Flow` with or without a symbol. The relevance gate
+closes these prompts because they are not phrased in the repository's words,
+so `admitted_by_kind` lets a tour and a review through (`Admission::Kind`, logged
+as gate `open` with reason `kind: overview`) and a walkthrough only when it
+shares two words with a file the graph knows by its symbols. Their packs are
+the evidence itself, built from three reads added to `Evidence`:
+`repo_map` (the indexed files, their top-level declarations and `main`
+functions, read from the published graph in `graph_reads.rs`: areas are
+directories split while an area holds more than 60 files, an area is shown by
+its four best declarations as `path:line kind name`, tests, documentation and
+scripts are one line, and a repository of 60 files or fewer is listed file by
+file), `changes` (one `pixel_git::GitRunner` call bounded by what is left of
+the window, `git show`, `git diff HEAD` or the diff against the merge base,
+cut into files, line counts and the new-side range of each hunk in
+`git_changes.rs`) and `flow_tree` with `find_symbols` (the calls out of a
+function in the order the source makes them, from `edges`). An overview
+carries the map, the first 70 lines of `ARCHITECTURE.md` and its outline, the
+head of the manifest and of the README; a review the change summary (counts,
+and the source files no changed test file is about), the declaration around
+each hunk (code before tests, at most ten regions of sixty lines), the
+touched declarations and the callers of the functions among them; a walkthrough
+the call trace and the body of each call, from the symbol the prompt names,
+the call path the chain found, or the function whose name carries the rare
+words of the prompt and from which most of the others are reached
+(`entry_score`). The regions closest to a few words are left out of the pack of
+a tour and of a review. A question about history in so many words ("which commit", "when did",
+"who added", `blame`) is `QuestionKind::History`: it is admitted like a
+walkthrough, and its pack is the commits of the history index
+(`build-index --history`, read through the daemon's read-only `history` op:
+no ingest, no plugin) that match the prompt's content words, as `sha date
+subject`, what the two best commits changed (`path:line +a -r`, one bounded git
+call each) and the paths and changed lines the search matched. An absent
+history index leaves the prompt as it was. A TS/JS class property holding an
+arrow function is a method of its class in the graph (extractor 25), so a
+walkthrough can start at a handler written that way.
+The reads add no brief operation and fail open.
 
 **Keeping a daemon behind the brief.** Without a daemon the brief has no
 `meaning` leads, and a daemon exits after thirty minutes idle or becomes

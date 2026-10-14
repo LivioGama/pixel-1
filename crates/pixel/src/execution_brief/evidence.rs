@@ -34,6 +34,9 @@ use super::chain::{
     CONCEPT_ROWS, CallerHit, Evidence, Flow, Found, HistoryHit, MAX_TARGETS, MeaningHit,
     RelevanceAnswer, RichFound, RichHit, SEARCH_ROWS, SYMBOL_ROWS, StatusProbe, SymbolHit,
 };
+use super::git_changes;
+use super::graph_reads;
+use super::kinds::{ChangeScope, Changes, FlowNode, RepoMap};
 use super::relevance::{CoFileStat, KeywordStat, RelevanceInput};
 
 /// The path search's bound: the daemon's `evaluate` default and its
@@ -126,10 +129,11 @@ impl Live {
         .clone()
     }
 
-    fn local_rows(&self, anchor: &str) -> Result<RichFound, String> {
+    /// The rows of the local text index whose line matches `pattern`.
+    fn local_grep(&self, pattern: &str, limit: usize) -> Result<RichFound, String> {
         let set = self.index_set()?;
         let (rows, stats) = set
-            .search_page_filtered(&regex::escape(anchor), 0, Some(SEARCH_ROWS), None, None)
+            .search_page_filtered(pattern, 0, Some(limit), None, None)
             .map_err(|error| error.to_string())?;
         Ok(RichFound {
             hits: rows
@@ -359,12 +363,16 @@ impl Evidence for Live {
     }
 
     fn files_matching(&self, anchor: &str, deadline: Instant) -> Result<RichFound, String> {
+        self.grep(&regex::escape(anchor), SEARCH_ROWS, deadline)
+    }
+
+    fn grep(&self, pattern: &str, limit: usize, deadline: Instant) -> Result<RichFound, String> {
         match self.route {
             Route::Daemon => {
                 let request = Request::Search {
-                    pattern: regex::escape(anchor),
+                    pattern: pattern.to_string(),
                     json: true,
-                    limit: Some(SEARCH_ROWS),
+                    limit: Some(limit),
                     offset: None,
                     paths: None,
                     scope: None,
@@ -373,7 +381,7 @@ impl Evidence for Live {
                 };
                 Ok(search_rows(&self.ask(&request, deadline)?))
             }
-            Route::Local => self.local_rows(anchor),
+            Route::Local => self.local_grep(pattern, limit),
         }
     }
 
@@ -636,6 +644,42 @@ impl Evidence for Live {
             })?,
         };
         caller_hits(&data)
+    }
+
+    fn repo_map(&self, deadline: Instant) -> Result<RepoMap, String> {
+        if Instant::now() >= deadline {
+            return Err("out of time".to_string());
+        }
+        self.with_graph(graph_reads::read_repo_map)
+    }
+
+    fn changes(&self, scope: ChangeScope, deadline: Instant) -> Result<Changes, String> {
+        git_changes::changes(&self.root, scope, deadline)
+    }
+
+    fn find_symbols(
+        &self,
+        terms: &[String],
+        limit: usize,
+        deadline: Instant,
+    ) -> Result<Vec<SymbolHit>, String> {
+        if Instant::now() >= deadline {
+            return Err("out of time".to_string());
+        }
+        self.with_graph(|store| graph_reads::read_symbols_like(store, terms, limit))
+    }
+
+    fn flow_tree(
+        &self,
+        uid: &str,
+        depth: usize,
+        limit: usize,
+        deadline: Instant,
+    ) -> Result<Vec<FlowNode>, String> {
+        if Instant::now() >= deadline {
+            return Err("out of time".to_string());
+        }
+        self.with_graph(|store| graph_reads::read_callee_tree(store, uid, depth, limit))
     }
 
     fn lines_at(
@@ -1042,7 +1086,21 @@ fn history_hits(data: &Value) -> Result<Vec<HistoryHit>, String> {
                 .and_then(Value::as_str)
                 .map(|s| s.lines().next().unwrap_or("").trim().to_string())
                 .unwrap_or_default();
-            Some(HistoryHit { sha, subject })
+            let text = |key: &str| {
+                row.get(key)
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .filter(|value| !value.is_empty())
+            };
+            Some(HistoryHit {
+                sha,
+                subject,
+                at: text("at")
+                    .or_else(|| text("committed_at"))
+                    .unwrap_or_default(),
+                path: text("path"),
+                snippet: text("snippet"),
+            })
         })
         .collect())
 }
@@ -1757,6 +1815,12 @@ mod tests {
                 .as_deref(),
             Some("x")
         );
+        // A pattern search sends the pattern as it is, with the row limit
+        // it was given, where a literal search escapes its anchor.
+        assert_eq!(
+            live.grep(r"^\s*X\d+", 7, deadline).unwrap().hits[0].path,
+            "src/a.ts"
+        );
         assert_eq!(
             live.context(&hit, 400, deadline).unwrap().0,
             "fn go() {\n  go_body();\n}"
@@ -1786,7 +1850,8 @@ mod tests {
             live.history("retry", 3, deadline).unwrap().0,
             [HistoryHit {
                 sha: "0123456789".into(),
-                subject: "add the retry loop".into()
+                subject: "add the retry loop".into(),
+                ..HistoryHit::default()
             }]
         );
         assert_eq!(
@@ -1803,6 +1868,7 @@ mod tests {
             ops,
             [
                 "search",
+                "search",
                 "context",
                 "uses",
                 "evaluate",
@@ -1812,19 +1878,23 @@ mod tests {
                 "targets_facts"
             ]
         );
-        assert_eq!(requests[1]["uid"], "src/a.ts#go#function");
-        assert_eq!(requests[1]["budget_tokens"], 400);
-        assert_eq!(requests[2]["uid_or_name"], "src/a.ts#go#function");
-        assert_eq!(requests[2]["role"], "callers");
-        assert_eq!(requests[3]["from"], "go");
-        assert_eq!(requests[3]["to"], "stop");
-        assert_eq!(requests[3]["at_snapshot"], true);
-        assert_eq!(requests[4]["file"], "cfg/x.json");
+        assert_eq!(requests[0]["pattern"], r"a\.b");
+        assert_eq!(requests[0]["limit"], SEARCH_ROWS);
+        assert_eq!(requests[1]["pattern"], r"^\s*X\d+");
+        assert_eq!(requests[1]["limit"], 7);
+        assert_eq!(requests[2]["uid"], "src/a.ts#go#function");
+        assert_eq!(requests[2]["budget_tokens"], 400);
+        assert_eq!(requests[3]["uid_or_name"], "src/a.ts#go#function");
+        assert_eq!(requests[3]["role"], "callers");
+        assert_eq!(requests[4]["from"], "go");
+        assert_eq!(requests[4]["to"], "stop");
+        assert_eq!(requests[4]["at_snapshot"], true);
+        assert_eq!(requests[5]["file"], "cfg/x.json");
         // Read-only history: the flag rides the wire only when set, so its
         // presence here is the contract — an absent flag would let a daemon
         // take the ingest-and-warm path a hook must never start.
-        assert_eq!(requests[6]["read_only"], true);
-        assert_eq!(requests[7]["task"], "add flag");
+        assert_eq!(requests[7]["read_only"], true);
+        assert_eq!(requests[8]["task"], "add flag");
         drop(daemon);
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -1898,13 +1968,29 @@ mod tests {
             [
                 HistoryHit {
                     sha: "0123456789".into(),
-                    subject: "first line".into()
+                    subject: "first line".into(),
+                    ..HistoryHit::default()
                 },
                 HistoryHit {
                     sha: "abc".into(),
-                    subject: "subject via message".into()
+                    subject: "subject via message".into(),
+                    ..HistoryHit::default()
                 }
             ]
+        );
+        // A diff hit says when, where and what.
+        let rich = json!({"candidates": [{
+            "oid": "fedcba9876543210", "subject": "skip unreachable files", "at": "2023-04-02T10:00:00Z",
+            "path": "crates/ignore/src/dir.rs", "snippet": "+ if unreachable { continue }", "kind": "diff"
+        }]});
+        let hit = history_hits(&rich).unwrap().remove(0);
+        assert_eq!(
+            (hit.at.as_str(), hit.path.as_deref(), hit.snippet.as_deref()),
+            (
+                "2023-04-02T10:00:00Z",
+                Some("crates/ignore/src/dir.rs"),
+                Some("+ if unreachable { continue }")
+            )
         );
         assert_eq!(
             history_hits(&json!({})).unwrap_err(),
@@ -2311,5 +2397,91 @@ mod tests {
         for tier in ["high", "low", "off"] {
             assert!(tiers.contains(&tier), "{tier} missing from {tiers:?}");
         }
+    }
+
+    #[test]
+    fn the_graph_reads_should_answer_on_both_routes_from_the_published_graph() {
+        use pixel_graph::store::{EdgeRow, SymbolKind, Tier};
+        let mut store = GraphStore::open_in_memory().unwrap();
+        let a = store.replace_file("src/a.ts", "oid", "ts").unwrap();
+        let b = store.replace_file("src/b.ts", "oid", "ts").unwrap();
+        let on_drop = store
+            .insert_symbol(
+                a,
+                "src/a.ts#onDrop#function",
+                "onDrop",
+                "onDrop",
+                SymbolKind::Function,
+                1,
+                9,
+                "function onDrop()",
+            )
+            .unwrap();
+        let insert = store
+            .insert_symbol(
+                b,
+                "src/b.ts#insertImage#function",
+                "insertImage",
+                "insertImage",
+                SymbolKind::Function,
+                1,
+                5,
+                "function insertImage()",
+            )
+            .unwrap();
+        store
+            .insert_edge(&pixel_graph::EdgeRow {
+                src_id: on_drop,
+                dst_id: insert,
+                kind: pixel_graph::EdgeKind::Calls,
+                tier: Tier::Exact,
+                site_line: 4,
+                receiver: None,
+                callee: None,
+            })
+            .unwrap();
+        let _ = EdgeRow::clone;
+        for route in [Route::Local, Route::Daemon] {
+            let live = Live::new(Path::new("/nowhere"), route);
+            *live.graph.lock().unwrap() = Some(Ok(GraphStore::open_in_memory().unwrap()));
+            assert!(
+                live.repo_map(Instant::now() + WINDOW)
+                    .unwrap()
+                    .files
+                    .is_empty()
+            );
+        }
+        let live = Live::new(Path::new("/nowhere"), Route::Local);
+        *live.graph.lock().unwrap() = Some(Ok(store));
+        let deadline = Instant::now() + WINDOW;
+        let map = live.repo_map(deadline).unwrap();
+        assert_eq!(map.files.len(), 2);
+        assert_eq!(map.symbols, 2);
+        let found = live
+            .find_symbols(&["drop".to_string()], 10, deadline)
+            .unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .map(|hit| hit.name.as_str())
+                .collect::<Vec<_>>(),
+            ["onDrop"]
+        );
+        let tree = live.flow_tree("onDrop", 2, 10, deadline).unwrap();
+        assert_eq!(
+            tree.iter()
+                .map(|node| node.name.as_str())
+                .collect::<Vec<_>>(),
+            ["onDrop", "insertImage"]
+        );
+        // A window that is over asks nothing of the graph.
+        let late = Instant::now().checked_sub(WINDOW).unwrap();
+        assert!(live.repo_map(late).is_err());
+        assert!(live.find_symbols(&["drop".to_string()], 10, late).is_err());
+        assert!(live.flow_tree("onDrop", 2, 10, late).is_err());
+        // A graph that is not current fails the read instead of answering.
+        let stale = Live::new(Path::new("/nowhere"), Route::Local);
+        *stale.graph.lock().unwrap() = Some(Err("graph is stale".into()));
+        assert_eq!(stale.repo_map(deadline).unwrap_err(), "graph is stale");
     }
 }

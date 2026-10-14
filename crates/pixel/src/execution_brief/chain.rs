@@ -40,10 +40,14 @@ use regex::Regex;
 use super::answer::{self, Excerpt, Hop, Receipt};
 use super::autostart;
 use super::decision_log::{self, Record};
+use super::feedback;
 use super::intent::Verdict;
+use super::kinds::{self, ChangeScope, Changes, FlowNode, KindInput, RepoMap};
 use super::region_pack;
 use super::relevance::{self, Basis, GateInput, RelevanceInput, Tier};
 use super::routes::QuestionKind;
+use super::sent::{self, Seen};
+use super::session_paths::{self, SessionPaths};
 use super::{SOURCE_EXTENSIONS, Signal, brief_signal, names_code};
 
 /// Opening line of the block; a host and a test find the brief by it.
@@ -267,10 +271,16 @@ pub(crate) struct StatusProbe {
 }
 
 /// One history row: the commit's short sha and its subject line.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct HistoryHit {
     pub(crate) sha: String,
     pub(crate) subject: String,
+    /// When the commit was made (the index's timestamp), if it said.
+    pub(crate) at: String,
+    /// The path the hit is about (a path or diff hit), if any.
+    pub(crate) path: Option<String>,
+    /// The changed lines the hit matched (a diff hit), if any.
+    pub(crate) snippet: Option<String>,
 }
 
 /// One declaration `find-symbol` reports; `uid` is `path#name#kind`.
@@ -331,6 +341,13 @@ pub(crate) trait Evidence: Sync {
     fn files_matching(&self, anchor: &str, deadline: Instant) -> Result<RichFound, String> {
         self.files_with(anchor, deadline).map(RichFound::from)
     }
+    /// Rows whose line matches the regular expression `pattern` (not
+    /// escaped), at most `limit` of them in path order: what a locator asks
+    /// for when it knows the shape of the line but not the exact text.
+    fn grep(&self, pattern: &str, limit: usize, deadline: Instant) -> Result<RichFound, String> {
+        let _ = (pattern, limit, deadline);
+        Err("pattern search unsupported".to_string())
+    }
     /// Files a free-text concept points at.
     fn concept(&self, phrase: &str, deadline: Instant) -> Result<Found, String>;
     /// The same concept search, keeping the matched text (`raw`/`detail`)
@@ -377,6 +394,42 @@ pub(crate) trait Evidence: Sync {
     ) -> Result<Flow, String> {
         let _ = (from, to, budget_ms);
         Err("flow unsupported".to_string())
+    }
+    /// The repository as the code graph has it: its indexed files, their
+    /// top-level declarations and its `main` functions. Read-only, whole
+    /// graph, no daemon op.
+    fn repo_map(&self, _deadline: Instant) -> Result<RepoMap, String> {
+        Err("repo map unsupported".to_string())
+    }
+    /// What changed in `scope`: the files of the diff, their line counts and
+    /// the lines each changed. One bounded git call.
+    fn changes(&self, scope: ChangeScope, _deadline: Instant) -> Result<Changes, String> {
+        let _ = scope;
+        Err("changes unsupported".to_string())
+    }
+    /// Functions and methods whose name contains one of `terms`, at most
+    /// `limit`. Read-only, from the graph, no daemon op.
+    fn find_symbols(
+        &self,
+        terms: &[String],
+        limit: usize,
+        _deadline: Instant,
+    ) -> Result<Vec<SymbolHit>, String> {
+        let _ = (terms, limit);
+        Err("symbol search unsupported".to_string())
+    }
+    /// The calls out of the function `uid` (or a name that is only one), in
+    /// the order the source makes them and depth first: at most `limit`
+    /// nodes, `depth` levels deep.
+    fn flow_tree(
+        &self,
+        uid: &str,
+        depth: usize,
+        limit: usize,
+        _deadline: Instant,
+    ) -> Result<Vec<FlowNode>, String> {
+        let _ = (uid, depth, limit);
+        Err("flow tree unsupported".to_string())
     }
     /// The declarations of `file` (`list-signatures`).
     fn skeleton(&self, file: &str, _deadline: Instant) -> Result<Vec<SymbolHit>, String> {
@@ -618,9 +671,19 @@ impl Plan {
     /// shape before the heuristic does.
     fn from_typed(typed: &str, change_intent: bool, verdict_label: Option<&str>) -> Self {
         let anchors = Anchors::from_text(typed);
-        let kind = verdict_label
-            .and_then(QuestionKind::of_verdict)
-            .unwrap_or_else(|| QuestionKind::heuristic(typed, &anchors));
+        let heuristic = QuestionKind::heuristic(typed, &anchors);
+        // A tour, a review and a walkthrough are read from the words; a
+        // verdict that sees a task in them would send them to the lookup.
+        let kind = if matches!(
+            heuristic,
+            QuestionKind::Overview | QuestionKind::Review | QuestionKind::Flow
+        ) {
+            heuristic
+        } else {
+            verdict_label
+                .and_then(QuestionKind::of_verdict)
+                .unwrap_or(heuristic)
+        };
         Self {
             anchors,
             // A bugfix prompt wants the symbol's blast radius even when the
@@ -778,6 +841,14 @@ pub(crate) enum Admission {
     Closed(String),
     /// The intent judge said the prompt is not a coding task.
     Denied(String),
+    /// The relevance gate would have closed the prompt, but it asks for a
+    /// tour, a review or a walkthrough, which the repository's words cannot
+    /// say: the kind admits it.
+    Kind(QuestionKind),
+    /// The relevance gate would have closed a short follow-up ("now fix the
+    /// test"), but the session is already working on files: they stand for
+    /// what the words cannot say.
+    Context,
 }
 
 impl Admission {
@@ -788,12 +859,21 @@ impl Admission {
             Self::Open => "open",
             Self::Closed(_) => "closed",
             Self::Denied(_) => "denied",
+            Self::Kind(_) | Self::Context => "open",
         }
     }
 
     fn reason(&self) -> Option<&str> {
         match self {
             Self::Closed(reason) | Self::Denied(reason) => Some(reason),
+            Self::Kind(kind) => Some(match kind {
+                QuestionKind::Overview => "kind: overview",
+                QuestionKind::Review => "kind: review",
+                QuestionKind::Flow => "kind: flow",
+                QuestionKind::History => "kind: history",
+                _ => "kind",
+            }),
+            Self::Context => Some("context: a short follow-up on the session's files"),
             Self::Unjudged | Self::Open => None,
         }
     }
@@ -811,6 +891,11 @@ pub(crate) struct Brief {
     silenced: bool,
     /// The relevance decision, when the probe answered.
     relevance: Option<relevance::Verdict>,
+    /// Ranges an earlier pack sent to this session.
+    seen: Seen,
+    /// A short follow-up the gate would have closed was let through on the
+    /// session's files: the brief is a maybe, whatever the words scored.
+    lifted: bool,
     /// The intent judge's verdict, when it answered.
     judged: Option<Verdict>,
     /// The `confidence:` line of a brief built on the relevance decision.
@@ -901,6 +986,9 @@ impl Brief {
     /// The tier the relevance decision put the prompt in; `None` when it was
     /// not made, or when the model did not apply (no code graph).
     fn tier(&self) -> Option<Tier> {
+        if self.lifted {
+            return Some(Tier::Low);
+        }
         self.relevance
             .as_ref()
             .filter(|verdict| verdict.basis != Basis::NoGraph)
@@ -1018,6 +1106,37 @@ impl Brief {
 
     fn has_excerpts(&self) -> bool {
         self.excerpt_counts().iter().any(|count| *count > 0)
+    }
+
+    /// The repository files the rendered block names, best first and without
+    /// repeats: the region pack's blocks when the block is one, else the
+    /// files, ranges, excerpts, definitions, tests and targets the lines list.
+    fn injected_paths(&self, packed: bool) -> Vec<String> {
+        let mut paths: Vec<String> = Vec::new();
+        let mut add = |path: &str| {
+            if !path.is_empty()
+                && paths.len() < feedback::MAX_PATHS
+                && !paths.iter().any(|held| held == path)
+            {
+                paths.push(path.to_string());
+            }
+        };
+        if packed {
+            if let Some(pack) = &self.pack {
+                pack.paths().iter().for_each(|path| add(path));
+            }
+            return paths;
+        }
+        self.reads.iter().for_each(|read| add(&read.path));
+        self.excerpts.iter().for_each(|excerpt| add(&excerpt.path));
+        self.defined.iter().for_each(|hit| add(&hit.path));
+        self.files
+            .iter()
+            .take(MAX_FILES)
+            .for_each(|hit| add(&hit.path));
+        self.tests.iter().for_each(|path| add(path));
+        self.targets.iter().for_each(|path| add(path));
+        paths
     }
 
     fn excerpt_counts(&self) -> [usize; EXCERPT_FILES] {
@@ -1266,7 +1385,10 @@ pub(crate) fn run(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, de
 fn pack_evidence(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, deadline: Instant) {
     let mut brief = edit(state, |brief| brief.clone());
     // History rows answer a rationale question better than regions do.
-    if !brief.pack_limit.on() || Instant::now() >= deadline || !brief.history.is_empty() {
+    if !brief.pack_limit.on()
+        || Instant::now() >= deadline
+        || (!brief.history.is_empty() && plan.kind != QuestionKind::History)
+    {
         return;
     }
     // A routed kind that reads no ranges of its own (a rationale whose
@@ -1302,10 +1424,49 @@ fn pack_evidence(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, dea
         .chain(brief.leads.iter().filter_map(|lead| lead.symbol.clone()))
         .chain(brief.reads.iter().filter_map(|read| read.symbol.clone()))
         .collect();
+    // A tour, a review and a walkthrough are answered by the repository, the
+    // change and the calls themselves; a question about a setting or about
+    // tests by lines found by their shape. Neither names a symbol, so they
+    // stand beside the symbols' blocks, or alone.
+    let lead_symbols: Vec<(String, String)> = brief
+        .leads
+        .iter()
+        .filter_map(|lead| {
+            lead.symbol
+                .clone()
+                .map(|symbol| (symbol, lead.path.clone()))
+        })
+        .collect();
+    let named: Vec<String> = plan.anchors.names().map(ToString::to_string).collect();
+    let mut located = kinds::blocks(
+        &KindInput {
+            kind: plan.kind,
+            typed: &plan.typed,
+            names: &named,
+            leads: &lead_symbols,
+            hops: &brief.flow_hops,
+            receipt: brief.receipt.as_ref(),
+        },
+        evidence,
+        deadline,
+    );
+    let by_kind = !located.is_empty();
+    // The regions closest to a few words are not the repository, nor the
+    // change; and the words of a review ("commit", "latest", "tests") are
+    // not a topic to look for tests of.
+    let own = kinds::owns_the_pack(plan.kind);
+    if !own {
+        located.extend(super::locator::locate(
+            &plan.typed,
+            evidence,
+            brief.receipt.as_ref(),
+            deadline,
+        ));
+    }
     let input = region_pack::Input {
         names,
         phrases: region_pack::quoted_phrases(&plan.typed),
-        hints,
+        hints: if own { Vec::new() } else { hints },
         terms,
         paths: plan
             .anchors
@@ -1325,10 +1486,11 @@ fn pack_evidence(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, dea
             .iter()
             .map(|caller| (caller.path.clone(), caller.line))
             .collect(),
-        regions: !strong,
+        regions: !strong && !own,
         reads: brief
             .reads
             .iter()
+            .filter(|_| !own)
             .map(|read| region_pack::ReadRegion {
                 path: read.path.clone(),
                 first: read.first,
@@ -1343,10 +1505,20 @@ fn pack_evidence(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, dea
             .collect(),
         wants_tests: brief.wants_tests,
         wants_docs: brief.wants_docs,
+        locators: located,
         limit: brief.pack_limit,
+        seen: brief.seen.clone(),
     };
-    let mut publish =
-        |pack: &region_pack::Pack| edit(state, |brief| brief.pack = Some(pack.clone()));
+    let mut publish = |pack: &region_pack::Pack| {
+        edit(state, |brief| {
+            brief.pack = Some(pack.clone());
+            // A pack of the kind's own evidence is an answer even when the
+            // probes behind the gate had none.
+            if by_kind && brief.answered == 0 {
+                brief.answered = 1;
+            }
+        });
+    };
     if let Some(pack) = region_pack::build(&input, evidence, deadline, &mut publish) {
         publish(&pack);
     }
@@ -1902,7 +2074,9 @@ fn run_kind(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, deadline
         QuestionKind::Flow => flow_evidence(plan, evidence, state, deadline),
         QuestionKind::Tests => tests_evidence(evidence, state, deadline),
         QuestionKind::Config => config_evidence(plan, evidence, state, deadline),
-        QuestionKind::Rationale => rationale_evidence(plan, evidence, state, deadline),
+        QuestionKind::Rationale | QuestionKind::History => {
+            rationale_evidence(plan, evidence, state, deadline);
+        }
         QuestionKind::Bugfix => {
             edit(state, |brief| {
                 brief.next = brief
@@ -1914,6 +2088,9 @@ fn run_kind(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, deadline
         }
         QuestionKind::Feature => feature_evidence(plan, evidence, state, deadline),
         QuestionKind::Lookup => lookup_evidence(evidence, state, deadline),
+        // Their evidence is the repository and the change themselves, read
+        // by `pack_evidence`.
+        QuestionKind::Overview | QuestionKind::Review => {}
     }
 }
 
@@ -2289,6 +2466,7 @@ pub(crate) fn declined_record(declined: Declined, prompt: &str) -> Record {
         pack_bytes: 0,
         pack_parts: 0,
         pack_targets: 0,
+        pack_located: 0,
         fallback: false,
         elapsed_ms: 0,
         route: None,
@@ -2303,6 +2481,22 @@ pub(crate) fn declined_record(declined: Declined, prompt: &str) -> Record {
 /// collected, so a hook about to exit has let the launch happen.
 pub(crate) type Starter = Box<dyn FnOnce() -> autostart::Kicked + Send>;
 
+/// How the files of the session are collected for a prompt, by a deadline.
+pub(crate) type ContextSource = Box<dyn FnOnce(Instant) -> SessionPaths + Send>;
+
+/// Environment opt-out of the session's files: `0`, `false` or `off`.
+pub(crate) const CONTEXT_ENV: &str = "PIXEL_BRIEF_CONTEXT";
+
+/// What a host tells the brief about the session a prompt belongs to.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Session {
+    /// The host's id for the session, when it names one: the key of what the
+    /// session has been sent (see `sent`).
+    pub(crate) id: Option<String>,
+    /// The host's transcript of the session, when it names one.
+    pub(crate) transcript: Option<PathBuf>,
+}
+
 /// What a brief does around its chain besides running it.
 #[derive(Default)]
 pub(crate) struct Around {
@@ -2312,6 +2506,13 @@ pub(crate) struct Around {
     pub(crate) starter: Option<Starter>,
     /// What the region pack may be; the default leaves the packet as it was.
     pub(crate) pack: region_pack::Limit,
+    /// The files the session is working on, when the host's hook has a session.
+    pub(crate) context: Option<ContextSource>,
+    /// Ranges an earlier pack sent to this session: the pack leaves them out.
+    pub(crate) seen: Seen,
+    /// Where the ranges this pack sends are remembered: the repository and
+    /// the session.
+    pub(crate) sent: Option<(PathBuf, String)>,
 }
 
 impl Around {
@@ -2321,7 +2522,7 @@ impl Around {
         Self {
             log: Some(path),
             starter: None,
-            pack: region_pack::Limit::default(),
+            ..Self::default()
         }
     }
 }
@@ -2339,12 +2540,17 @@ pub(crate) struct Pending {
     /// The text the brief judged: the typed prompt, or its last paragraph.
     task: String,
     signal: Signal,
+    /// Where the ranges the pack sends are remembered for the session.
+    sent: Option<(PathBuf, String)>,
 }
 
 /// A finished brief: the block, when there is one, and what was decided.
 pub(crate) struct Finished {
     pub(crate) text: Option<String>,
     pub(crate) record: Record,
+    /// The repository files the block names, best first: what the agent was
+    /// handed to read, for `feedback`. Empty when there is no block.
+    pub(crate) paths: Vec<String>,
 }
 
 /// Whether the gate's verdict decided if the brief was shown: always for
@@ -2414,6 +2620,7 @@ impl Pending {
             pack_bytes: stats.pack_bytes,
             pack_parts: stats.pack_parts,
             pack_targets: stats.pack_targets,
+            pack_located: stats.pack_located,
             fallback: stats.fallback,
             elapsed_ms,
             route: brief.route,
@@ -2425,26 +2632,39 @@ impl Pending {
             // Best effort: a log that cannot be written never costs the prompt.
             let _ = decision_log::append(path, &record.line(), decision_log::MAX_LINES);
         }
-        Finished { text, record }
+        let paths = if text.is_some() {
+            brief.injected_paths(stats.pack_bytes > 0)
+        } else {
+            Vec::new()
+        };
+        // What the pack just sent is not sent to this session again.
+        if let (Some((root, session)), Some(pack), true) =
+            (&self.sent, &brief.pack, stats.pack_bytes > 0)
+        {
+            let _ = sent::record(root, session, &pack.ranges(), pixel_task::now_ms());
+        }
+        Finished {
+            text,
+            record,
+            paths,
+        }
     }
 }
 
-/// Start the brief for `prompt` in `root`, or decline: a switched-off brief,
-/// a repository without an index and a prompt that asks nothing about code
-/// start no thread and run no lookup.
+/// Start the brief for `prompt` of a hook session in `root`, or decline: a
+/// switched-off brief, a repository without an index and a prompt that asks
+/// nothing about code start no thread and run no lookup.
 ///
 /// `parts` is how many hooks deliver the brief (`brief_parts`, or 1 for a host
-/// with one hook): the region pack may fill that many.
-pub(crate) fn start(prompt: &str, root: &Path, parts: u8) -> Option<Pending> {
-    try_start(prompt, root, parts).ok()
+/// with one hook): the region pack may fill that many. `session` is what the
+/// host says of the session: with it the files the session is already working
+/// on (its transcript's recent tool calls, the dirty files of the working
+/// tree) boost the leads, and let a short follow-up through the gate.
+pub(crate) fn start_in(prompt: &str, root: &Path, parts: u8, session: Session) -> Option<Pending> {
+    try_start_as(prompt, root, false, parts, Some(session)).ok()
 }
 
-/// [`start`], saying why it declined.
-pub(crate) fn try_start(prompt: &str, root: &Path, parts: u8) -> Result<Pending, Declined> {
-    try_start_as(prompt, root, false, parts)
-}
-
-/// [`start`] for the `brief` command, which hosts without a prompt hook (Pi,
+/// [`start_in`] for the `brief` command, which hosts without a prompt hook (Pi,
 /// OpenCode) run and which they drop above 4 000 bytes: a region pack stays
 /// under that unless `PIXEL_BRIEF_PARTS` says the host takes more.
 pub(crate) fn start_for_command(prompt: &str, root: &Path) -> Option<Pending> {
@@ -2453,14 +2673,38 @@ pub(crate) fn start_for_command(prompt: &str, root: &Path) -> Option<Pending> {
 
 /// [`start_for_command`], saying why it declined.
 pub(crate) fn try_start_for_command(prompt: &str, root: &Path) -> Result<Pending, Declined> {
-    try_start_as(prompt, root, true, 1)
+    try_start_as(prompt, root, true, 1, None)
 }
 
-fn try_start_as(prompt: &str, root: &Path, command: bool, parts: u8) -> Result<Pending, Declined> {
+fn try_start_as(
+    prompt: &str,
+    root: &Path,
+    command: bool,
+    parts: u8,
+    session: Option<Session>,
+) -> Result<Pending, Declined> {
     let log = decision_log::path_for(root);
     let gate = Gate::read(root);
     let root = root.to_path_buf();
     let for_start = root.clone();
+    let for_context = root.clone();
+    let dedupe = sent::enabled();
+    let session_id = session.as_ref().and_then(|session| session.id.clone());
+    // What this session was sent by earlier prompts, and where this prompt's
+    // pack is remembered.
+    let seen = session_id
+        .as_deref()
+        .filter(|_| dedupe)
+        .map(|id| sent::load(&root, id, pixel_task::now_ms()))
+        .unwrap_or_default();
+    let sent_to = session_id.filter(|_| dedupe).map(|id| (root.clone(), id));
+    let context: Option<ContextSource> = session
+        .filter(|_| decision_log::enabled(std::env::var(CONTEXT_ENV).ok().as_deref()))
+        .map(|session| -> ContextSource {
+            Box::new(move |deadline| {
+                session_paths::collect(&for_context, session.transcript.as_deref(), deadline)
+            })
+        });
     let pack = region_pack::limit_from_env(command, parts);
     try_start_with(
         prompt,
@@ -2473,11 +2717,14 @@ fn try_start_as(prompt: &str, root: &Path, command: bool, parts: u8) -> Result<P
             log,
             starter: Some(Box::new(move || autostart::start_for_prompt(&for_start))),
             pack,
+            context,
+            seen,
+            sent: sent_to,
         },
     )
 }
 
-/// [`start`] with its gate, window, evidence source and intent judge given and
+/// [`start_in`] with its gate, window, evidence source and intent judge given and
 /// no decision log: the seam the chain's tests start from.
 #[cfg(test)]
 pub(crate) fn start_with<F, J>(
@@ -2503,7 +2750,7 @@ where
     .ok()
 }
 
-/// [`try_start`] with its gate, window, evidence source, intent judge, tier
+/// [`try_start_as`] with its gate, window, evidence source, intent judge, tier
 /// model and decision log given. The judge runs on a weakly code-shaped or
 /// plain prompt, beside the relevance probe and the meaning search; on a
 /// weak prompt a denying verdict ends the brief before any evidence op, and
@@ -2521,7 +2768,14 @@ where
     F: FnOnce(Instant) -> Box<dyn Evidence> + Send + 'static,
     J: Fn(&str, Instant) -> Option<Verdict> + Send + Sync + 'static,
 {
-    let Around { log, starter, pack } = around;
+    let Around {
+        log,
+        starter,
+        pack,
+        context,
+        seen,
+        sent,
+    } = around;
     if !gate.open() {
         return Err(if gate.enabled {
             Declined::Unindexed
@@ -2547,11 +2801,25 @@ where
     let state = Arc::new(Mutex::new(Brief {
         signal: Some(signal),
         pack_limit: pack,
+        seen,
         ..Brief::default()
     }));
     let (finished, done) = mpsc::channel();
     let worker = Arc::clone(&state);
     let task = typed.clone();
+    // The session's files are collected beside the worker, inside their own
+    // short window, and only a prompt that is going to be briefed pays for it.
+    let context_deadline = (started + session_paths::CONTEXT_WINDOW).min(deadline);
+    let context = context.and_then(|source| {
+        let (send, receive) = mpsc::channel();
+        std::thread::Builder::new()
+            .name("pixel-brief-context".into())
+            .spawn(move || {
+                let _ = send.send(source(context_deadline));
+            })
+            .ok()
+            .map(|_| (receive, context_deadline))
+    });
     std::thread::Builder::new()
         .name("pixel-brief".into())
         .spawn(move || {
@@ -2563,6 +2831,7 @@ where
                 finished: &finished,
                 judge: &judge,
                 model,
+                context: &context,
             };
             work(&job, open);
             let _ = finished.send(());
@@ -2577,6 +2846,7 @@ where
         kicked,
         task,
         signal,
+        sent,
     })
 }
 
@@ -2589,6 +2859,8 @@ struct Job<'a, J> {
     finished: &'a Sender<()>,
     judge: &'a J,
     model: Model,
+    /// The session's files on their way, and when they stop being waited for.
+    context: &'a Option<(Receiver<SessionPaths>, Instant)>,
 }
 
 /// The worker of one brief: plan, ask, run.
@@ -2605,6 +2877,7 @@ where
         finished,
         judge,
         model,
+        context,
     } = *job;
     if signal == Signal::Strong {
         let plan = Plan::from_typed(typed, has_change_intent(typed), None);
@@ -2615,7 +2888,27 @@ where
     }
     let evidence = open(deadline);
     edit(state, |brief| brief.route = Some(evidence.route()));
-    let mut settled = |got: &Gathered| match refusal(signal, got, false, ENFORCE_GATE_ON_WEAK) {
+    let kind = QuestionKind::heuristic(typed, &Anchors::from_text(typed));
+    // The session's files: they boost the leads, and a short follow-up that
+    // the words alone cannot place is let through on them.
+    let session = context
+        .as_ref()
+        .and_then(|(receive, until)| {
+            receive
+                .recv_timeout(until.saturating_duration_since(Instant::now()))
+                .ok()
+        })
+        .unwrap_or_default()
+        .ranked();
+    let lift = !session.is_empty() && is_follow_up(typed);
+    let mut settled = |got: &Gathered| match refusal_lifting(
+        signal,
+        got,
+        false,
+        ENFORCE_GATE_ON_WEAK,
+        kind,
+        lift,
+    ) {
         Some(admission) => {
             close(state, got, admission);
             let _ = finished.send(());
@@ -2635,7 +2928,7 @@ where
     if edit(state, |brief| brief.silenced) {
         return;
     }
-    if let Some(admission) = refusal(signal, &got, true, ENFORCE_GATE_ON_WEAK) {
+    if let Some(admission) = refusal_lifting(signal, &got, true, ENFORCE_GATE_ON_WEAK, kind, lift) {
         close(state, &got, admission);
         return;
     }
@@ -2644,7 +2937,7 @@ where
         None => (has_change_intent(typed), None),
     };
     let plan = Plan::from_typed(typed, change_intent, label.as_deref());
-    fold(state, &plan, &got);
+    fold_with(state, &plan, &got, &session, lift);
     // A maybe is a short list of files and nothing else: no kind route, no
     // definition read, no fallback search.
     if edit(state, |brief| brief.tier()) == Some(Tier::Low) {
@@ -2782,14 +3075,18 @@ fn score(got: &mut Gathered, typed: &str, model: Model) {
 
 /// Why `signal`'s prompt gets no brief, if it does not. `complete`: no more
 /// answers are coming, so a probe that never answered counts as "cannot tell".
+/// `lift`: a short follow-up of a session that is working on files, which the
+/// relevance gate does not close (see [`is_follow_up`]).
 /// Plain language must be shown on topic by the repository, the intent judge
 /// having no say in it; a weak prompt is refused by the judge, and by the
 /// relevance decision when `enforce_weak`.
-fn refusal(
+fn refusal_lifting(
     signal: Signal,
     got: &Gathered,
     complete: bool,
     enforce_weak: bool,
+    kind: QuestionKind,
+    lift: bool,
 ) -> Option<Admission> {
     let verdict = got.judged.as_ref().and_then(Option::as_ref);
     match signal {
@@ -2803,13 +3100,20 @@ fn refusal(
             got.scored
                 .as_ref()
                 .filter(|scored| {
-                    enforce_weak && scored.tier == Tier::Off && scored.basis != Basis::NoGraph
+                    enforce_weak
+                        && scored.tier == Tier::Off
+                        && scored.basis != Basis::NoGraph
+                        && !lift
+                        && !admitted_by_kind(kind, Some(scored))
                 })
                 .map(|scored| Admission::Closed(off_topic_reason(scored)))
         }
         Signal::Prose => match (&got.relevance, &got.scored) {
+            // A tour or a review is about the repository whatever words it
+            // uses, and whether or not the probe could be asked.
+            _ if admitted_by_kind(kind, got.scored.as_ref()) => None,
             (Some(Err(reason)), _) => Some(Admission::Closed(format!("relevance: {reason}"))),
-            (_, Some(scored)) if scored.tier == Tier::Off => {
+            (_, Some(scored)) if scored.tier == Tier::Off && !lift => {
                 Some(Admission::Closed(off_topic_reason(scored)))
             }
             (None, _) if complete => Some(Admission::Closed(
@@ -2817,6 +3121,36 @@ fn refusal(
             )),
             _ => None,
         },
+    }
+}
+
+/// [`refusal_lifting`] for a prompt of no session: nothing lifts it.
+#[cfg(test)]
+fn refusal(
+    signal: Signal,
+    got: &Gathered,
+    complete: bool,
+    enforce_weak: bool,
+    kind: QuestionKind,
+) -> Option<Admission> {
+    refusal_lifting(signal, got, complete, enforce_weak, kind, false)
+}
+
+/// Keywords one file must hold, at least, for a walkthrough to be about the
+/// repository: the prompt shares two words with a file the graph knows.
+const FLOW_MIN_SHARED: usize = 2;
+
+/// Whether the kind of the prompt lets it through a gate that read it as off
+/// topic. A tour and a review of a change are about the repository by their
+/// phrasing, so they need no vocabulary; a walkthrough asks about a thing,
+/// and must share words with a file the graph knows by its symbols.
+fn admitted_by_kind(kind: QuestionKind, scored: Option<&relevance::Verdict>) -> bool {
+    match kind {
+        QuestionKind::Overview | QuestionKind::Review => true,
+        QuestionKind::Flow | QuestionKind::History => scored.is_some_and(|scored| {
+            scored.features.shared >= FLOW_MIN_SHARED && scored.features.structural_files > 0
+        }),
+        _ => false,
     }
 }
 
@@ -2856,7 +3190,7 @@ fn close(state: &Mutex<Brief>, got: &Gathered, admission: Admission) {
 /// Fold what the probes found into the brief: the decision, and the fused
 /// leads as its first files, so the literal and concept searches only run
 /// when they found nothing.
-fn fold(state: &Mutex<Brief>, plan: &Plan, got: &Gathered) {
+fn fold_with(state: &Mutex<Brief>, plan: &Plan, got: &Gathered, session: &[String], lift: bool) {
     let leads: &[MeaningHit] = match &got.meaning {
         Some(Ok(leads)) => leads,
         _ => &[],
@@ -2865,16 +3199,30 @@ fn fold(state: &Mutex<Brief>, plan: &Plan, got: &Gathered) {
         Some(Ok(answer)) => &answer.lines,
         _ => &[],
     };
+    // The gate would have closed this prompt and the session's files stand in
+    // for what its words cannot say: they are the brief's files, and the
+    // words' leads (off topic by the gate's own verdict) are left out.
+    let lifted = lift
+        && !session.is_empty()
+        && got
+            .scored
+            .as_ref()
+            .is_none_or(|scored| scored.tier == Tier::Off);
+    let (leads, lines): (&[MeaningHit], &[RichHit]) =
+        if lifted { (&[], &[]) } else { (leads, lines) };
     let fused = RichFound {
-        hits: fuse(leads, lines),
+        hits: fuse_with(leads, lines, session, lifted),
         capped: false,
     };
     let admit_json = plan.kind == QuestionKind::Config;
     edit(state, |brief| {
         note(brief, got);
+        brief.lifted = lifted;
         brief.admission = match &got.scored {
+            _ if lifted => Admission::Context,
             Some(scored) if scored.basis == Basis::NoGraph => Admission::Unjudged,
             Some(scored) if scored.tier != Tier::Off => Admission::Open,
+            scored if admitted_by_kind(plan.kind, scored.as_ref()) => Admission::Kind(plan.kind),
             Some(scored) => Admission::Closed(off_topic_reason(scored)),
             None => Admission::Unjudged,
         };
@@ -2884,10 +3232,13 @@ fn fold(state: &Mutex<Brief>, plan: &Plan, got: &Gathered) {
             brief.answered += answers;
             brief.searched = true;
         }
-        brief.confidence = got
-            .scored
-            .as_ref()
-            .and_then(relevance::Verdict::confidence_line);
+        brief.confidence = if lifted {
+            Some(relevance::LOW_CONFIDENCE_LINE.to_string())
+        } else {
+            got.scored
+                .as_ref()
+                .and_then(relevance::Verdict::confidence_line)
+        };
         brief.absorb(fused, admit_json);
         let (wants_tests, wants_docs) = answer::cues(&plan.typed);
         brief.wants_tests = wants_tests || plan.kind == QuestionKind::Tests;
@@ -2914,6 +3265,12 @@ fn fold(state: &Mutex<Brief>, plan: &Plan, got: &Gathered) {
     });
 }
 
+/// [`fold_with`] for a prompt of no session.
+#[cfg(test)]
+fn fold(state: &Mutex<Brief>, plan: &Plan, got: &Gathered) {
+    fold_with(state, plan, got, &[], false);
+}
+
 /// What the entry at zero-based `rank` of one list adds to a file's fused
 /// score: ranks count from one, so the first entry adds `1 / (FUSE_K + 1)`.
 fn reciprocal_rank(rank: usize) -> f64 {
@@ -2925,7 +3282,18 @@ fn reciprocal_rank(rank: usize) -> f64 {
 /// name rises above one only a list names; its row is the first list's, the
 /// meaning chunk, which is the more precise place to start. A credential-shaped
 /// path never enters a brief.
-fn fuse(leads: &[MeaningHit], cofiles: &[RichHit]) -> Vec<RichHit> {
+///
+/// `session` is the files the session is already working on, newest first. It
+/// is a third list that only lifts: a file the leads and co-files already name
+/// gains its reciprocal rank, and a file only the session names stays out, so
+/// an unrelated dirty file never displaces a lead. With `only_session` (a short
+/// follow-up the words cannot place) the session's files are the answer.
+fn fuse_with(
+    leads: &[MeaningHit],
+    cofiles: &[RichHit],
+    session: &[String],
+    only_session: bool,
+) -> Vec<RichHit> {
     fn add(ranked: &mut Vec<(RichHit, f64)>, hit: RichHit, rank: usize) {
         let score = reciprocal_rank(rank);
         match ranked.iter_mut().find(|(held, _)| held.path == hit.path) {
@@ -2934,16 +3302,32 @@ fn fuse(leads: &[MeaningHit], cofiles: &[RichHit]) -> Vec<RichHit> {
         }
     }
     let mut ranked: Vec<(RichHit, f64)> = Vec::new();
-    for (rank, lead) in leads.iter().enumerate() {
-        let hit = RichHit {
-            path: lead.path.clone(),
-            line: u64::from(lead.start_line),
-            text: (!lead.snippet.is_empty()).then(|| lead.snippet.clone()),
-        };
-        add(&mut ranked, hit, rank);
-    }
-    for (rank, hit) in cofiles.iter().enumerate() {
-        add(&mut ranked, hit.clone(), rank);
+    if only_session {
+        for (rank, path) in session.iter().enumerate() {
+            let hit = RichHit {
+                path: path.clone(),
+                line: 0,
+                text: None,
+            };
+            add(&mut ranked, hit, rank);
+        }
+    } else {
+        for (rank, lead) in leads.iter().enumerate() {
+            let hit = RichHit {
+                path: lead.path.clone(),
+                line: u64::from(lead.start_line),
+                text: (!lead.snippet.is_empty()).then(|| lead.snippet.clone()),
+            };
+            add(&mut ranked, hit, rank);
+        }
+        for (rank, hit) in cofiles.iter().enumerate() {
+            add(&mut ranked, hit.clone(), rank);
+        }
+        for (rank, path) in session.iter().enumerate() {
+            if let Some((_, total)) = ranked.iter_mut().find(|(held, _)| held.path == *path) {
+                *total += reciprocal_rank(rank);
+            }
+        }
     }
     ranked.retain(|(hit, _)| !pixel_index::index::credential_path(Path::new(&hit.path)));
     ranked.sort_by(|left, right| right.1.total_cmp(&left.1));
@@ -2952,6 +3336,61 @@ fn fuse(leads: &[MeaningHit], cofiles: &[RichHit]) -> Vec<RichHit> {
         .map(|(hit, _)| hit)
         .take(MAX_FILES)
         .collect()
+}
+
+/// [`fuse_with`] for a prompt of no session.
+#[cfg(test)]
+fn fuse(leads: &[MeaningHit], cofiles: &[RichHit]) -> Vec<RichHit> {
+    fuse_with(leads, cofiles, &[], false)
+}
+
+/// Words a short follow-up leans on what came before.
+const FOLLOW_UP_CUES: &[&str] = &[
+    "now",
+    "then",
+    "also",
+    "again",
+    "same",
+    "that",
+    "this",
+    "it",
+    "them",
+    "those",
+    "there",
+    "too",
+    "next",
+    "instead",
+    "still",
+    "maintenant",
+    "ensuite",
+    "aussi",
+    "encore",
+    "pareil",
+    "ça",
+    "cela",
+];
+/// The most words a follow-up has.
+const FOLLOW_UP_WORDS: usize = 10;
+
+/// Whether `typed` is a short follow-up: a few words that ask for a change or
+/// lean on what came before ("now fix the test"). Such a prompt names nothing
+/// the repository's words can place, which is why the gate closes it; with the
+/// files the session is working on it can be placed.
+pub(crate) fn is_follow_up(typed: &str) -> bool {
+    let words: Vec<String> = typed
+        .split_whitespace()
+        .map(|word| {
+            word.trim_matches(|ch: char| !ch.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|word| !word.is_empty())
+        .collect();
+    !words.is_empty()
+        && words.len() <= FOLLOW_UP_WORDS
+        && (has_change_intent(typed)
+            || words
+                .iter()
+                .any(|word| FOLLOW_UP_CUES.contains(&word.as_str())))
 }
 
 /// How many entries of each list a render shows.
@@ -3064,6 +3503,8 @@ pub(crate) struct AnswerStats {
     pub(crate) pack_parts: usize,
     /// Symbols the pack is about.
     pub(crate) pack_targets: usize,
+    /// Blocks a locator contributed to the pack.
+    pub(crate) pack_located: usize,
     /// The text search stood in for a graph that could not answer.
     pub(crate) fallback: bool,
 }
@@ -3097,6 +3538,7 @@ pub(crate) fn fit(brief: &Brief) -> Option<(String, AnswerStats)> {
             )
             .len(),
             pack_targets: pack.targets(),
+            pack_located: pack.located(),
             fallback: pack.fallback(),
             ..AnswerStats::default()
         };
@@ -3104,6 +3546,11 @@ pub(crate) fn fit(brief: &Brief) -> Option<(String, AnswerStats)> {
     }
     if low {
         return render_low(brief).map(|text| (text, AnswerStats::default()));
+    }
+    // Admitted for its kind, not for the evidence of the packet: without the
+    // kind's own pack there is nothing to say.
+    if matches!(brief.admission, Admission::Kind(_)) {
+        return None;
     }
     let receipt = !brief.receipt_lines().is_empty();
     let cap = byte_cap(
@@ -3501,6 +3948,7 @@ mod tests {
         HistoryHit {
             sha: sha.into(),
             subject: subject.into(),
+            ..HistoryHit::default()
         }
     }
 
@@ -5794,35 +6242,45 @@ mod tests {
     #[test]
     fn refusal_should_let_a_strong_prompt_through_whatever_the_probes_say() {
         let got = gathered(Some(Ok(off_topic_answer())), said("none", 0.99), Tier::Off);
-        assert_eq!(refusal(Signal::Strong, &got, true, true), None);
+        assert_eq!(
+            refusal(Signal::Strong, &got, true, true, QuestionKind::Lookup),
+            None
+        );
     }
 
     #[test]
     fn refusal_should_close_a_prose_prompt_the_model_puts_off() {
         let off = gathered(Some(Ok(off_topic_answer())), None, Tier::Off);
         assert_eq!(
-            refusal(Signal::Prose, &off, false, false),
+            refusal(Signal::Prose, &off, false, false, QuestionKind::Lookup),
             Some(Admission::Closed(
                 "off topic: score -1.00, 3/3 key terms in the best file".into()
             ))
         );
         let failed = gathered(Some(Err("cold".into())), None, Tier::Off);
         assert_eq!(
-            refusal(Signal::Prose, &failed, false, false),
+            refusal(Signal::Prose, &failed, false, false, QuestionKind::Lookup),
             Some(Admission::Closed("relevance: cold".into()))
         );
         for tier in [Tier::High, Tier::Low] {
             let on = gathered(Some(Ok(on_topic_answer())), None, tier);
-            assert_eq!(refusal(Signal::Prose, &on, true, false), None, "{tier:?}");
+            assert_eq!(
+                refusal(Signal::Prose, &on, true, false, QuestionKind::Lookup),
+                None,
+                "{tier:?}"
+            );
         }
     }
 
     #[test]
     fn refusal_should_wait_for_a_missing_relevance_answer_until_nothing_more_is_coming() {
         let silent = gathered(None, Some(None), Tier::Off);
-        assert_eq!(refusal(Signal::Prose, &silent, false, false), None);
         assert_eq!(
-            refusal(Signal::Prose, &silent, true, false),
+            refusal(Signal::Prose, &silent, false, false, QuestionKind::Lookup),
+            None
+        );
+        assert_eq!(
+            refusal(Signal::Prose, &silent, true, false, QuestionKind::Lookup),
             Some(Admission::Closed(
                 "relevance: no answer before the deadline".into()
             ))
@@ -5833,11 +6291,21 @@ mod tests {
     fn refusal_should_leave_a_prose_prompt_to_the_model_whatever_the_intent_judge_says() {
         for label in ["none", "ops"] {
             let on = gathered(Some(Ok(on_topic_answer())), said(label, 0.99), Tier::High);
-            assert_eq!(refusal(Signal::Prose, &on, true, false), None, "{label}");
+            assert_eq!(
+                refusal(Signal::Prose, &on, true, false, QuestionKind::Lookup),
+                None,
+                "{label}"
+            );
         }
         let unanswered = gathered(None, said("none", 0.99), Tier::High);
         assert_eq!(
-            refusal(Signal::Prose, &unanswered, false, false),
+            refusal(
+                Signal::Prose,
+                &unanswered,
+                false,
+                false,
+                QuestionKind::Lookup
+            ),
             None,
             "a judge that answers first does not close the brief"
         );
@@ -5856,7 +6324,8 @@ mod tests {
                 Signal::Weak,
                 &on_gathered(said("none", 0.9), Tier::High),
                 true,
-                false
+                false,
+                QuestionKind::Lookup
             ),
             Some(Admission::Denied("judge: none (0.90)".into()))
         );
@@ -5865,33 +6334,49 @@ mod tests {
                 Signal::Weak,
                 &on_gathered(said("ops", 0.99), Tier::High),
                 true,
-                false
+                false,
+                QuestionKind::Lookup
             ),
             None,
             "ops steers a weak prompt, it never silences it"
         );
-        assert_eq!(refusal(Signal::Weak, &off(), true, false), None);
         assert_eq!(
-            refusal(Signal::Weak, &off(), true, true),
+            refusal(Signal::Weak, &off(), true, false, QuestionKind::Lookup),
+            None
+        );
+        assert_eq!(
+            refusal(Signal::Weak, &off(), true, true, QuestionKind::Lookup),
             Some(Admission::Closed(
                 "off topic: score -1.00, 3/3 key terms in the best file".into()
             ))
         );
         for tier in [Tier::High, Tier::Low] {
             assert_eq!(
-                refusal(Signal::Weak, &on_gathered(None, tier), true, true),
+                refusal(
+                    Signal::Weak,
+                    &on_gathered(None, tier),
+                    true,
+                    true,
+                    QuestionKind::Lookup
+                ),
                 None,
                 "{tier:?}"
             );
         }
         let failed = gathered(Some(Err("cold".into())), None, Tier::Off);
         assert_eq!(
-            refusal(Signal::Weak, &failed, true, true),
+            refusal(Signal::Weak, &failed, true, true, QuestionKind::Lookup),
             None,
             "a probe that cannot tell never silences a weak prompt"
         );
         assert_eq!(
-            refusal(Signal::Weak, &gathered(None, None, Tier::Off), true, true),
+            refusal(
+                Signal::Weak,
+                &gathered(None, None, Tier::Off),
+                true,
+                true,
+                QuestionKind::Lookup
+            ),
             None
         );
     }
@@ -6730,7 +7215,7 @@ mod tests {
             Around {
                 log,
                 starter: Some(starter),
-                pack: region_pack::Limit::default(),
+                ..Around::default()
             },
         )
     }
@@ -8093,5 +8578,519 @@ mod tests {
         let past = Instant::now().checked_sub(SECOND).unwrap();
         pack_evidence(&plan, &repo, &late, past);
         assert!(late.into_inner().unwrap().pack.is_none());
+    }
+
+    // ---- the kinds that name no symbol ------------------------------------------
+
+    const TOUR: &str = "I'm new to this repo. give me a quick tour of how it's organised and what each crate is for";
+    const REVIEW: &str = "review the latest commit and tell me if anything looks risky";
+    const WALK: &str = "walk me through what happens when someone drops an image onto the canvas";
+
+    /// A gate reading of `shared` words in a file of `structural` symbols,
+    /// in the off tier.
+    fn off_with(shared: usize, structural: usize) -> Gathered {
+        let mut got = gathered(Some(Ok(off_topic_answer())), None, Tier::Off);
+        if let Some(scored) = got.scored.as_mut() {
+            scored.features.shared = shared;
+            scored.features.structural_files = structural;
+        }
+        got
+    }
+
+    #[test]
+    fn refusal_should_admit_a_tour_and_a_review_but_a_walkthrough_only_beside_the_repositorys_words()
+     {
+        for signal in [Signal::Prose, Signal::Weak] {
+            for kind in [QuestionKind::Overview, QuestionKind::Review] {
+                assert_eq!(
+                    refusal(signal, &off_with(0, 0), true, true, kind),
+                    None,
+                    "{signal:?} {kind:?}"
+                );
+            }
+            assert!(
+                refusal(signal, &off_with(0, 0), true, true, QuestionKind::Flow).is_some(),
+                "{signal:?}: no word shared, no walkthrough"
+            );
+            assert!(
+                refusal(signal, &off_with(5, 0), true, true, QuestionKind::Flow).is_some(),
+                "{signal:?}: words shared with files that hold no symbol"
+            );
+            assert_eq!(
+                refusal(signal, &off_with(2, 1), true, true, QuestionKind::Flow),
+                None,
+                "{signal:?}"
+            );
+            // Asked about in so many words, history needs the same footing.
+            assert_eq!(
+                refusal(signal, &off_with(2, 1), true, true, QuestionKind::History),
+                None,
+                "{signal:?}"
+            );
+            assert!(
+                refusal(signal, &off_with(0, 4), true, true, QuestionKind::History).is_some(),
+                "{signal:?}"
+            );
+            assert!(
+                refusal(signal, &off_with(5, 9), true, true, QuestionKind::Lookup).is_some(),
+                "{signal:?}: any other kind stays behind the gate"
+            );
+        }
+        // A tour does not need the probe to have answered at all.
+        let failed = gathered(Some(Err("cold".into())), None, Tier::Off);
+        assert_eq!(
+            refusal(Signal::Prose, &failed, true, true, QuestionKind::Overview),
+            None
+        );
+        assert!(refusal(Signal::Prose, &failed, true, true, QuestionKind::Lookup).is_some());
+    }
+
+    #[test]
+    fn the_plan_should_read_a_tour_a_review_and_a_walkthrough_from_the_words_before_a_verdict() {
+        for (prompt, kind) in [
+            (TOUR, QuestionKind::Overview),
+            (REVIEW, QuestionKind::Review),
+            (WALK, QuestionKind::Flow),
+        ] {
+            for label in [None, Some("bugfix"), Some("feature"), Some("refactor")] {
+                let plan = Plan::from_typed(prompt, false, label);
+                assert_eq!(plan.kind, kind, "{prompt} {label:?}");
+            }
+        }
+        // Other kinds still follow a verdict.
+        let plan = Plan::from_typed("make `retry_loop` faster", false, Some("feature"));
+        assert_eq!(plan.kind, QuestionKind::Feature);
+    }
+
+    #[test]
+    fn admission_should_name_a_kind_open_with_its_reason() {
+        let admission = Admission::Kind(QuestionKind::Overview);
+        assert_eq!(
+            (admission.label(), admission.reason()),
+            ("open", Some("kind: overview"))
+        );
+        assert_eq!(
+            Admission::Kind(QuestionKind::Review).reason(),
+            Some("kind: review")
+        );
+        assert_eq!(
+            Admission::Kind(QuestionKind::Flow).reason(),
+            Some("kind: flow")
+        );
+        assert_eq!(Admission::Kind(QuestionKind::Lookup).reason(), Some("kind"));
+    }
+
+    /// A fake repository that has a map, a README and nothing else.
+    struct Mapped(Fake);
+
+    impl Evidence for Mapped {
+        fn files_with(&self, anchor: &str, deadline: Instant) -> Result<Found, String> {
+            self.0.files_with(anchor, deadline)
+        }
+        fn concept(&self, phrase: &str, deadline: Instant) -> Result<Found, String> {
+            self.0.concept(phrase, deadline)
+        }
+        fn symbols(&self, name: &str, deadline: Instant) -> Result<Vec<SymbolHit>, String> {
+            self.0.symbols(name, deadline)
+        }
+        fn callers(&self, target: &str, deadline: Instant) -> Result<Vec<CallerHit>, String> {
+            self.0.callers(target, deadline)
+        }
+        fn relevance(&self, typed: &str, deadline: Instant) -> Result<RelevanceAnswer, String> {
+            self.0.relevance(typed, deadline)
+        }
+        fn meaning(
+            &self,
+            q: &str,
+            limit: usize,
+            deadline: Instant,
+        ) -> Result<Vec<MeaningHit>, String> {
+            self.0.meaning(q, limit, deadline)
+        }
+        fn repo_map(&self, _: Instant) -> Result<RepoMap, String> {
+            Ok(RepoMap {
+                files: vec![kinds_file("src/lib.rs")],
+                symbols: 1,
+                tops: Vec::new(),
+                mains: Vec::new(),
+            })
+        }
+        fn lines_at(
+            &self,
+            path: &str,
+            start: u64,
+            end: u64,
+            deadline: Instant,
+        ) -> Result<Vec<String>, String> {
+            self.0.lines_at(path, start, end, deadline)
+        }
+    }
+
+    fn kinds_file(path: &str) -> kinds::MapFile {
+        kinds::MapFile {
+            path: path.into(),
+            lang: "rust".into(),
+            symbols: 1,
+        }
+    }
+
+    fn around_pack() -> Around {
+        Around {
+            pack: region_pack::Limit::of(3),
+            ..Around::default()
+        }
+    }
+
+    #[test]
+    fn a_tour_should_brief_through_a_gate_that_reads_it_as_off_topic() {
+        let mut fake = Fake::new();
+        fake.relevance = Ok(off_topic_answer());
+        fake.sources = vec![(
+            "README.md".to_string(),
+            vec!["# Pixel".into(), "A tool.".into()],
+        )];
+        let finished = try_start_with(
+            TOUR,
+            OPEN,
+            SECOND,
+            move |_| Box::new(Mapped(fake)),
+            no_verdict,
+            model_off,
+            around_pack(),
+        )
+        .unwrap()
+        .finish_with_record();
+        let text = finished.text.expect("the tour gets a brief");
+        assert!(
+            text.contains("### repo map\n1 indexed files, 1 symbols (rust 1)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("### README.md:1-2 — readme\n1| # Pixel"),
+            "{text}"
+        );
+        assert!(text.ends_with(region_pack::DIRECTIVE), "{text}");
+        let record = finished.record;
+        assert_eq!(
+            (
+                record.gate,
+                record.reason.as_deref(),
+                record.tier,
+                record.kind
+            ),
+            (
+                "open",
+                Some("kind: overview"),
+                Some("off"),
+                Some("overview")
+            )
+        );
+        assert!(record.pack_located >= 2, "{}", record.pack_located);
+        // The same gate still closes a prompt of any other kind.
+        let mut fake = Fake::new();
+        fake.relevance = Ok(off_topic_answer());
+        let closed = try_start_with(
+            PROSE,
+            OPEN,
+            SECOND,
+            move |_| Box::new(Mapped(fake)),
+            no_verdict,
+            model_off,
+            around_pack(),
+        )
+        .unwrap()
+        .finish_with_record();
+        assert!(closed.text.is_none());
+        assert_eq!(closed.record.gate, "closed");
+    }
+
+    #[test]
+    fn a_tour_without_a_pack_or_without_anything_to_read_should_render_nothing() {
+        let fake = || {
+            let mut fake = Fake::new();
+            fake.relevance = Ok(off_topic_answer());
+            fake
+        };
+        // The pack switched off: the packet has nothing of a tour.
+        let off = try_start_with(
+            TOUR,
+            OPEN,
+            SECOND,
+            move |_| Box::new(Mapped(fake())),
+            no_verdict,
+            model_off,
+            Around::default(),
+        )
+        .unwrap()
+        .finish_with_record();
+        assert!(off.text.is_none());
+        // Nothing to read: the fake has no map, no document, no manifest.
+        let nothing = try_start_with(
+            TOUR,
+            OPEN,
+            SECOND,
+            move |_| Box::new(fake()),
+            no_verdict,
+            model_off,
+            around_pack(),
+        )
+        .unwrap()
+        .finish_with_record();
+        assert!(nothing.text.is_none());
+    }
+
+    #[test]
+    fn a_brief_admitted_for_its_kind_should_render_only_its_pack() {
+        let brief = Brief {
+            signal: Some(Signal::Prose),
+            admission: Admission::Kind(QuestionKind::Review),
+            answered: 1,
+            files: vec![RichHit {
+                path: "src/a.rs".into(),
+                line: 1,
+                text: None,
+            }],
+            ..Brief::default()
+        };
+        assert!(
+            fit(&brief).is_none(),
+            "the packet of a kind admission says nothing"
+        );
+    }
+
+    /// The session's files, as a hook with a transcript would collect them.
+    fn around_session(recent: &[&str], dirty: &[&str]) -> Around {
+        let paths = SessionPaths {
+            recent: recent.iter().map(ToString::to_string).collect(),
+            dirty: dirty.iter().map(ToString::to_string).collect(),
+        };
+        Around {
+            context: Some(Box::new(move |_| paths)),
+            ..Around::default()
+        }
+    }
+
+    /// Start `prompt` on an off-topic repository, with `around`.
+    fn briefed_off_topic(prompt: &str, around: Around) -> Finished {
+        let mut fake = Fake::new();
+        fake.relevance = Ok(off_topic_answer());
+        fake.meaning = Ok(vec![lead(DAEMON, 1, "an unrelated lead")]);
+        try_start_with(
+            prompt,
+            OPEN,
+            SECOND,
+            move |_| Box::new(fake),
+            no_verdict,
+            model_off,
+            around,
+        )
+        .expect("the prompt starts a brief")
+        .finish_with_record()
+    }
+
+    #[test]
+    fn a_short_follow_up_the_gate_would_close_should_be_let_through_on_the_session_files() {
+        let finished = briefed_off_topic(
+            "now fix the test",
+            around_session(&["src/a.rs"], &["src/b.rs", "src/a.rs"]),
+        );
+        let text = finished.text.expect("the session's files make a brief");
+        assert!(text.contains("\nfiles: src/a.rs; src/b.rs\n"), "{text}");
+        assert!(text.contains(relevance::LOW_CONFIDENCE_LINE), "{text}");
+        assert!(
+            !text.contains(DAEMON),
+            "the words' own leads were off topic: {text}"
+        );
+        let record = finished.record;
+        assert_eq!((record.gate, record.tier), ("open", Some("low")));
+        assert_eq!(
+            record.reason.as_deref(),
+            Some("context: a short follow-up on the session's files")
+        );
+        assert_eq!(finished.paths, vec!["src/a.rs", "src/b.rs"]);
+    }
+
+    #[test]
+    fn the_same_follow_up_without_session_files_should_stay_closed() {
+        for around in [Around::default(), around_session(&[], &[])] {
+            let finished = briefed_off_topic("now fix the test", around);
+            assert_eq!(finished.text, None);
+            assert_eq!(finished.record.gate, "closed");
+        }
+    }
+
+    #[test]
+    fn a_prompt_that_is_not_a_short_follow_up_should_not_be_lifted_by_the_session_files() {
+        let around = || around_session(&["src/a.rs"], &["src/b.rs"]);
+        for prompt in [
+            "what's the weather going to be like tomorrow",
+            "quel temps fera-t-il demain dans la region parisienne",
+            "now explain how the quarterly revenue forecast from the finance team changes next year",
+        ] {
+            let finished = briefed_off_topic(prompt, around());
+            assert_eq!(
+                (finished.text, finished.record.gate),
+                (None, "closed"),
+                "{prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_follow_up_should_need_few_words_and_a_change_or_a_lean_on_what_came_before() {
+        for yes in [
+            "now fix the test",
+            "also update the docs",
+            "do the same for the other one",
+            "rename it",
+            "maintenant corrige le test",
+            "Fix that, please!",
+        ] {
+            assert!(is_follow_up(yes), "{yes}");
+        }
+        for no in [
+            "",
+            "   ",
+            "what's the weather going to be like tomorrow",
+            "how does the daemon decide when to rebuild the graph after a commit lands in the middle of startup",
+        ] {
+            assert!(!is_follow_up(no), "{no:?}");
+        }
+        assert_eq!(FOLLOW_UP_WORDS, 10);
+    }
+
+    #[test]
+    fn the_session_files_should_lift_a_lead_they_name_and_never_add_a_file_of_their_own() {
+        let leads = [
+            lead("x.rs", 1, "x"),
+            lead("y.rs", 1, "y"),
+            lead("z.rs", 1, "z"),
+        ];
+        let plain: Vec<String> = fuse_with(&leads, &[], &[], false)
+            .into_iter()
+            .map(|hit| hit.path)
+            .collect();
+        assert_eq!(plain, vec!["x.rs", "y.rs", "z.rs"]);
+        let session = ["z.rs".to_string(), "dirty-and-unrelated.rs".to_string()];
+        let boosted: Vec<String> = fuse_with(&leads, &[], &session, false)
+            .into_iter()
+            .map(|hit| hit.path)
+            .collect();
+        assert_eq!(boosted, vec!["z.rs", "x.rs", "y.rs"]);
+        // The session stands alone only for a lifted follow-up, newest first.
+        let only: Vec<(String, u64)> = fuse_with(&leads, &[], &session, true)
+            .into_iter()
+            .map(|hit| (hit.path, hit.line))
+            .collect();
+        assert_eq!(
+            only,
+            vec![
+                ("z.rs".to_string(), 0),
+                ("dirty-and-unrelated.rs".to_string(), 0)
+            ]
+        );
+        let credential = ["config/.env".to_string()];
+        assert!(fuse_with(&[], &[], &credential, true).is_empty());
+    }
+
+    #[test]
+    fn the_session_files_should_boost_an_on_topic_prompt_without_changing_its_gate() {
+        let mut fake = Fake::new();
+        fake.relevance = Ok(on_topic_answer());
+        fake.meaning = Ok(vec![
+            lead(DAEMON, 280, "fn watch_ready() {"),
+            lead("crates/pixel-daemon/src/api.rs", 40, "fn op_status"),
+            lead("crates/pixel-daemon/src/lib.rs", 3, "mod api;"),
+        ]);
+        let finished = try_start_with(
+            PROSE,
+            OPEN,
+            SECOND,
+            move |_| Box::new(fake),
+            no_verdict,
+            model_high,
+            around_session(&["crates/pixel-daemon/src/lib.rs"], &[]),
+        )
+        .unwrap()
+        .finish_with_record();
+        assert_eq!(finished.record.gate, "open");
+        let text = finished.text.expect("an on-topic prompt is briefed");
+        let files = text
+            .lines()
+            .find(|line| line.starts_with("files:"))
+            .unwrap();
+        let lib = files.find("crates/pixel-daemon/src/lib.rs").unwrap();
+        let api = files.find("crates/pixel-daemon/src/api.rs").unwrap();
+        assert!(
+            lib < api,
+            "the file the session just read ranks above a lead it did not: {files}"
+        );
+    }
+
+    /// A pack for `PACK_PROMPT` in session `s` of `root`, with what the
+    /// session was sent already.
+    fn packed_in(root: &Path, seen: Seen) -> Finished {
+        try_start_with(
+            PACK_PROMPT,
+            OPEN,
+            SECOND,
+            move |_| Box::new(pack_source()),
+            no_verdict,
+            model_high,
+            Around {
+                pack: region_pack::Limit::of(1),
+                seen,
+                sent: Some((root.to_path_buf(), "s".to_string())),
+                ..Around::default()
+            },
+        )
+        .expect("the prompt starts a brief")
+        .finish_with_record()
+    }
+
+    #[test]
+    fn a_pack_should_be_remembered_for_the_session_and_not_sent_to_it_again() {
+        let root = scratch_dir("sent-once");
+        std::fs::create_dir_all(root.join(".pixel")).unwrap();
+        let now = || pixel_task::now_ms();
+        let first = packed_in(&root, Seen::default());
+        assert!(first.record.pack_bytes > 0, "{:?}", first.text);
+        let seen = sent::load(&root, "s", now());
+        assert!(seen.overlaps("src/ui.ts", 1, 3), "the definition was sent");
+        assert!(seen.overlaps("src/page.ts", 3, 3), "the usage was sent");
+        // The next prompt of the session finds the same code and sends none of it.
+        let second = packed_in(&root, seen);
+        assert_eq!(second.record.pack_bytes, 0, "{:?}", second.text);
+        assert!(
+            !second.text.unwrap_or_default().contains("\n### "),
+            "no block of source is repeated"
+        );
+        // A session the host started over is sent the pack again.
+        sent::reset(&root, "s");
+        let third = packed_in(&root, sent::load(&root, "s", now()));
+        assert_eq!(third.record.pack_bytes, first.record.pack_bytes);
+    }
+
+    #[test]
+    fn a_brief_with_no_pack_should_remember_nothing() {
+        let root = scratch_dir("sent-none");
+        std::fs::create_dir_all(root.join(".pixel")).unwrap();
+        let finished = try_start_with(
+            PACK_PROMPT,
+            OPEN,
+            SECOND,
+            move |_| Box::new(pack_source()),
+            no_verdict,
+            model_high,
+            Around {
+                pack: region_pack::Limit::of(0),
+                sent: Some((root.clone(), "s".to_string())),
+                ..Around::default()
+            },
+        )
+        .unwrap()
+        .finish_with_record();
+        assert!(finished.text.is_some());
+        assert!(sent::load(&root, "s", pixel_task::now_ms()).is_empty());
     }
 }

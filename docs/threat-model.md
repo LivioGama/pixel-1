@@ -34,7 +34,7 @@ model providers, and the website under `website/`.
 | Asset | Where | Why it matters |
 | --- | --- | --- |
 | Source and history of indexed repositories | the working tree, read through `pixel-git::GitRunner` and the walkers in `pixel-index`/`pixel-graph` | confidentiality of code the user did not mean to share; integrity of what the agent is told about it |
-| Per-repository index and sidecars | `.pixel/` (ARCHITECTURE.md, "On-disk state"): `base.shard`, `delta.shard`, `graph.v2.db` (`pixel_daemon::api::GRAPH_DB_FILE`), `history.db`, `code-vectors/`, `targets.json`, `regions.json`, `actions.jsonl`, `brief-decisions.jsonl`, `config.yaml`, `tasks/` | what the agent reads as ground truth; `actions.jsonl` and `brief-decisions.jsonl` (the typed prompt) can hold secrets; `regions.json` is evidence for harness orchestration (agent count, scheduling, merging), never an action recommendation |
+| Per-repository index and sidecars | `.pixel/` (ARCHITECTURE.md, "On-disk state"): `base.shard`, `delta.shard`, `graph.v2.db` (`pixel_daemon::api::GRAPH_DB_FILE`), `history.db`, `code-vectors/`, `targets.json`, `regions.json`, `actions.jsonl`, `brief-decisions.jsonl`, `brief-feedback.jsonl`, `brief-sessions/`, `config.yaml`, `tasks/` | what the agent reads as ground truth; `actions.jsonl` and `brief-decisions.jsonl` (the typed prompt) can hold secrets; `brief-feedback.jsonl` holds repository paths and counts only; `brief-sessions/` holds hashes of paths and line numbers; `regions.json` is evidence for harness orchestration (agent count, scheduling, merging), never an action recommendation |
 | Machine-wide state | `~/.pixel/config.yaml` (remote keys), `~/.pixel/plugins/`, `~/.pixel/trusted.toml` and `~/.pixel/plugins.toml` (the plugin host's installs, trust records and network opt-ins), `~/.local/share/pixel/flows/` (fill values: passwords, OTPs), `~/.local/share/pixel/recall/` (agent transcripts), `~/.local/share/pixel/models/`, `~/.local/state/pixel/` (`pixel-ops` journals, snapshots, locks; the `pixel-session` error sink) | secrets at rest, and transcripts that quote them |
 | Daemon socket | `pixel_daemon::daemon::socket_path`: `$TMPDIR` on macOS, `$XDG_RUNTIME_DIR` or `~/.cache/pixel/sockets/` on Linux | any client of the socket can ask for git mutations on the repository |
 | Agent configurations | what `pixel setup` writes: `~/.claude/settings.json`, `$CODEX_HOME/config.toml` and `hooks.json`, the Pi package under `~/.local/share/pixel/pi-package/` and its entry in Pi's `settings.json`, the optional classify helpers once accepted (`skills/pixel-classify/` under the agent config dirs, the Pi package `~/.local/share/pixel/pi-classify/`); per repository with `--repo`, `.claude/settings.local.json` and `.codex/`. The guided `pixel setup` also writes a managed `pixel:setup` block into the instruction files of the agents the user picked (`~/.claude/CLAUDE.md`, `AGENTS.md`, …, shown in full and confirmed first, text around the block untouched, a symlinked dotfile written through) and `pixel-setup.md` rule files when asked. It also edits `~/.pi/agent/APPEND_SYSTEM.md`, the OpenCode, Antigravity, zcode, Devin, Cursor and Copilot CLI configs, `.devin/config.local.json`, `.pi/extensions/pixel-guard.ts` and `AGENTS.md`, only to remove what earlier releases wrote | a hook command runs with the user's privileges on every agent tool call |
@@ -543,7 +543,17 @@ stays so references to the later threats hold.
   context" line. Its lines are read the same way (`Evidence::lines_at`: only
   files the searches named, a credential-shaped path refused, every line cut
   at 160 characters), it adds no operation, daemon op or network
-  destination, and `PIXEL_BRIEF_PACK=0` restores the packet. No prompt is deployed. The bundled prompt a user copies by hand
+  destination, and `PIXEL_BRIEF_PACK=0` restores the packet. Its locators
+  (`execution_brief::locator`, for a question about a setting or about tests)
+  search the repository with the existing `search` op and a pattern built from
+  the prompt's words (escaped) and constant shapes; the rows of a
+  credential-shaped path are dropped before ranking, and a quoted
+  credential-shaped token (long, letters and digits) in a quoted line is
+  replaced by `<redacted>`. The question-kind packs read the published graph
+  (files, top-level declarations, call edges) and run one git call through
+  `pixel_git::GitRunner` (`show` or `diff` of the repository's own history,
+  no network, no write, bounded by the brief's window and a 2 MiB output cap);
+  their file reads go through `Evidence::lines_at` like the pack's. No prompt is deployed. The bundled prompt a user copies by hand
   states that Pixel output is data, not instructions
   (`crates/pixel-install/assets/pixel-agent-prompt.md`). The explicit impact
   skill and Pi command label graph output as repository data, not
@@ -600,7 +610,24 @@ hold.
   paragraph of a long untagged paste (`brief_task`), masks credential shapes
   before it cuts the text at 600 characters (`decision_log::logged_typed`:
   `pixel_git::redact` and a key mask), and is off with
-  `PIXEL_BRIEF_LOG=0|false|off`.
+  `PIXEL_BRIEF_LOG=0|false|off`. `brief-feedback.jsonl`, the read feedback of
+  the same hooks (`execution_brief::feedback`), is written through the same
+  call (`decision_log::append_with`: 0600, no link followed, last 1,500 lines,
+  the same switch) and holds paths and counts only: the host's session id is
+  hashed, a shell command is read only to find the files it names, and a file
+  is named only when it exists inside the repository after its links are
+  resolved and is not credential-shaped (`feedback::tool_targets`); no prompt,
+  command or tool output reaches it. The brief also reads the last 64 KB of
+  the transcript the host's hook payload names (`transcript_path`) and the
+  dirty files of `git status`, for paths alone (`execution_brief::session_paths`):
+  only a regular file is read, one candidate path counts only when it passes the
+  same check as the feedback log's, and nothing else of the transcript leaves the
+  function; `PIXEL_BRIEF_CONTEXT=0|false|off` turns it off. The ranges a pack
+  sent to a session are kept as hashes under `.pixel/brief-sessions/`
+  (`execution_brief::sent`): one 0600 file per hashed session id in a 0700
+  directory, written atomically, with the path as a hash and the line numbers,
+  forgotten after 24 hours, refused through a linked `.pixel` or `brief-sessions`,
+  and never creating `.pixel`; `PIXEL_BRIEF_DEDUPE=0|false|off` turns it off.
 - **Status**: Partial.
 - **Residual**: the recall corpus and the error sink store transcripts and
   argv unredacted (the sink keeps the whole output of every failed `sniper
