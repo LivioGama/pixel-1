@@ -329,18 +329,31 @@ fn install_reports_a_bad_source_and_keeps_the_credentials_of_a_url_out_of_the_lo
 }
 
 /// The pre-rename spellings that stood for a command now shipped as a
-/// plugin and not built into the core, with the plugin they resolve to.
-const MOVED_ALIASES: [(&str, &str); 5] = [
+/// plugin and not built into the core, with the command they resolve to.
+const MOVED_ALIASES: [(&str, &str); 19] = [
+    ("branch", "new-branch"),
+    ("branches", "list-branches"),
+    ("excavate", "dig-history"),
+    ("history", "commit-history"),
+    ("history-search", "search-history"),
+    ("inspect", "repo-state"),
+    ("lifecycle", "file-history"),
+    ("log", "action-log"),
+    ("publish", "commit"),
+    ("reconcile", "sync-branch"),
     ("replay-flow", "flow"),
     ("rescue", "plan-rollback"),
+    ("review", "review-changes"),
     ("rewrite", "squash-branch"),
     ("savings", "token-savings"),
+    ("ship", "commit-and-push"),
+    ("sniper", "list-errors"),
+    ("sync", "fetch"),
     ("update", "fast-forward"),
 ];
 
 /// The moved commands the core no longer builds in: the only names the
-/// moved-command hint is for. The rest still run from the binary until the
-/// change that removes them from it.
+/// moved-command hint is for. Only `check-release` was kept in the binary.
 fn unbuilt_moved() -> Vec<(&'static str, &'static str)> {
     let built_in = super::support::built_in_commands();
     pixel_plugin::MOVED_COMMANDS
@@ -429,10 +442,10 @@ fn the_hint_names_the_repository_each_command_moves_to() {
 #[test]
 fn a_moved_command_that_is_still_built_in_runs_instead_of_hinting() {
     let world = World::new("still-built-in");
-    let help = world.pixel(&["commit-history", "--help"]);
+    let help = world.pixel(&["check-release", "--help"]);
     assert_eq!(help.status.code(), Some(0), "{help:?}");
     assert!(
-        stdout(&help).contains("Usage: pixel commit-history"),
+        stdout(&help).contains("Usage: pixel check-release"),
         "{}",
         stdout(&help)
     );
@@ -441,7 +454,21 @@ fn a_moved_command_that_is_still_built_in_runs_instead_of_hinting() {
         "{}",
         stderr(&help)
     );
-    assert!(super::support::built_in_commands().contains("recall"));
+    assert!(super::support::built_in_commands().contains("check-release"));
+}
+
+#[test]
+fn check_release_is_the_only_moved_command_the_core_still_builds_in() {
+    let built_in = super::support::built_in_commands();
+    let still_built_in: Vec<&str> = pixel_plugin::MOVED_COMMANDS
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| built_in.contains(*name))
+        .collect();
+    assert_eq!(still_built_in, ["check-release"]);
+    assert!(pixel_plugin::stays_in_core("check-release"));
+    assert_eq!(unbuilt_moved().len(), 29, "30 moved, one kept");
+    assert_eq!(pixel_plugin::MOVED_COMMANDS.len(), 30);
 }
 
 #[test]
@@ -533,6 +560,66 @@ fn an_installed_plugin_serves_the_moved_name() {
         stderr(&world.pixel(&["plan-rollback"])),
         moved_hint("plan-rollback")
     );
+}
+
+/// Every record of the repository's action log, parsed.
+fn action_log(world: &World) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(world.repo().join(".pixel/actions.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn a_plugin_run_is_in_the_action_log_like_a_core_command_with_its_outcome_and_masked_args() {
+    let world = World::new("plugin-log");
+    path_plugin(&world, "flow");
+    path_plugin(&world, "plan-rollback");
+    let secret = "auth_url=https://login.test/cb?code=s3cret&state=t0ken";
+    let done = world.pixel(&["flow", "replay", "login", "--var", secret]);
+    assert!(
+        ok(&done).starts_with("args=replay login --var auth_url="),
+        "{done:?}"
+    );
+    // A pre-rename spelling is logged under the command it stands for.
+    let failed = world.pixel(&["rescue", "fail"]);
+    assert_eq!(failed.status.code(), Some(7), "{failed:?}");
+
+    let log = action_log(&world);
+    assert_eq!(log.len(), 2, "{log:#?}");
+    let (first, second) = (&log[0], &log[1]);
+    assert_eq!(first["command"], "flow");
+    assert_eq!(first["args"], "flow replay login --var auth_url=<redacted>");
+    assert_eq!(first["outcome"], "ok");
+    assert!(first.get("error").is_none(), "{first}");
+    assert_eq!(second["command"], "plan-rollback");
+    assert_eq!(second["args"], "rescue fail");
+    assert_eq!(second["outcome"], "error");
+    assert_eq!(second["error"], "plan-rollback exited 7");
+    for record in &log {
+        assert_eq!(
+            record["cwd"],
+            world.repo().canonicalize().unwrap().display().to_string(),
+            "{record}"
+        );
+        assert!(record["pid"].as_u64().unwrap() > 0, "{record}");
+        assert!(record["ts_ms"].as_i64().unwrap() > 0, "{record}");
+        assert!(record["invocation_id"].as_str().is_some(), "{record}");
+    }
+    let text = std::fs::read_to_string(world.repo().join(".pixel/actions.jsonl")).unwrap();
+    assert!(
+        !text.contains("s3cret") && !text.contains("t0ken"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_moved_command_hint_is_not_a_plugin_run_and_leaves_no_log_record() {
+    let world = World::new("plugin-log-hint");
+    let out = world.pixel(&["flow", "list"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(action_log(&world).is_empty());
 }
 
 #[test]

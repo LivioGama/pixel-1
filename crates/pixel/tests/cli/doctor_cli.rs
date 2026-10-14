@@ -185,7 +185,7 @@ fn a_retired_deployed_prompt_is_named_by_ordinary_commands_but_not_by_doctor() {
     };
     let run = |exe: &std::path::Path| {
         std::process::Command::new(exe)
-            .args(["action-log", "--limit", "1"])
+            .args(["plugin", "list"])
             .env("PIXEL_DAEMON_AUTO_START", "0")
             .env("HOME", &*home)
             .current_dir(crate::support::neutral_cwd())
@@ -379,7 +379,7 @@ fn doctor_fix_should_run_a_shared_repair_once_and_report_the_rerun() {
         [
             "pixel doctor --fix: ran 1 repair(s) — 1 fixed, 0 not converged, 0 failed",
             "  [fixed] pixel setup --shell zsh (install.agent-prompt, install.pi-impact)",
-            "pixel doctor: ran 2 check(s), skipped 28 — 2 green, 0 yellow, 0 red",
+            "pixel doctor: ran 2 check(s), skipped 29 — 2 green, 0 yellow, 0 red",
             "",
         ]
         .join("\n")
