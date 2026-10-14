@@ -1,0 +1,56 @@
+From 8bfacbdcec37672d9ba375e2469f7b0aa7010513 Mon Sep 17 00:00:00 2001
+From: Livio Gamassia <livio.gamassia@gmail.com>
+Date: Wed, 7 Oct 2026 01:10:13 +0200
+Subject: [PATCH 2/4] docs(architecture): correct the brief paragraph (Pi gets
+ none, stale graph keeps text evidence)
+
+Pi is skipped by start_brief, and a missing or stale graph still yields the
+files: evidence with the reason under unresolved:; only a repository with no
+index gets no brief. Review feedback on #866.
+
+Refs #865
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ ARCHITECTURE.md | 25 ++++++++++++++-----------
+ 1 file changed, 14 insertions(+), 11 deletions(-)
+
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index bf0d00a8..81af0d12 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -626,17 +626,20 @@ registers task lifecycle events, not the retrieval callbacks below:
+ | Native task lifecycle (Claude Code and Codex) | `pixel run-hook task-event --provider <host> --event <event>` | Binds coding objectives, gates edits, records tool outcomes, and bounds Stop correction. Global native hooks compose with existing hooks. Once enforced, a task retains its gates if runtime settings change. On `prompt-submit` it also returns the `[PIXEL:BRIEF]` evidence brief as `additionalContext` (see below). |
+ 
+ The brief (`execution_brief/chain.rs`, `execution_brief/evidence.rs`) is built
+-on every `prompt-submit` task event for a code-shaped prompt, whatever
+-`pixel config policy` says. It runs at most four ops under one 750 ms
+-deadline: `search-content -F -l` on the first anchor, `find-symbol` to resolve
+-a uid, `impact <uid>` only for change or caller intent, and `find-code` when
+-no anchor found a file. It reads a warm daemon if one answers this protocol
+-and otherwise the index and graph read-only in process; it never starts a
+-daemon and never builds an index or graph, so an unindexed repository or a
+-stale graph yields no brief. Output is capped at 2 KiB and says how many ops
+-ran (`ops: n/4`, `partial: budget` when cut short). `PIXEL_BRIEF=0|false|off`
+-or `brief: false` in `.pixel/config.yaml` switches it off. Pi goes through the
+-same path; no other host registers a prompt hook.
++on every Claude Code and Codex `prompt-submit` task event for a code-shaped
++prompt, whatever `pixel config policy` says. Pi gets none (`start_brief` in
++`task_hook.rs` skips `TaskProvider::Pi`), and no other host registers a prompt
++hook. It runs at most four ops under one 750 ms deadline: `search-content -F
++-l` on the first anchor, `find-symbol` to resolve a uid, `impact <uid>` only
++for change or caller intent, and `find-code` when no anchor found a file. It
++reads a warm daemon if one answers this protocol and otherwise the index and
++graph read-only in process; it never starts a daemon and never builds an
++index or graph. A repository without an index yields no brief. A missing or
++stale graph still yields the text evidence (`files:`), with the reason under
++`unresolved:` (`the graph is not built`, `the graph is stale`) and no callers.
++Output is capped at 2 KiB and says how many ops ran (`ops: n/4`,
++`partial: budget` when cut short). `PIXEL_BRIEF=0|false|off` or `brief: false`
++in `.pixel/config.yaml` switches it off.
+ 
+ `pixel doctor` checks current installation artifacts and distinguishes configured
+ or protocol-checked hooks from observed live execution.
+-- 
+2.55.0
+

@@ -1,0 +1,1239 @@
+# worktree /Users/livio/Documents/pixel/.claude/worktrees/delete-dead-hooks [feat/delete-dead-hooks] at 04dfad7a823f5675ea852fc8e016acb9965ec368
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index da7af85b..74bd18da 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -612,8 +612,18 @@ prompt. Pi gets none (`start_brief` in
+ `task_hook.rs` skips `TaskProvider::Pi`), and no other host registers a prompt
+ hook. It runs at most four ops under one 750 ms deadline: `search-content -F
+ -l` on the first anchor, `find-symbol` to resolve a uid, `impact <uid>` only
+-for change or caller intent, and `find-code` when no anchor found a file. It
+-reads a warm daemon if one answers this protocol and otherwise the index and
++for change or caller intent, and `find-code` when no anchor found a file.
++That intent is decided by the task-intent classifier (`prompt_intent::hook_intent`,
++the labels of `pixel classify --task-intent`) when `classify.enabled` is on and
++the local engine is already listening: never started, never a stored `remote`
++engine, a 100 ms probe and a 300 ms call, any error meaning no verdict. The
++call runs on its own thread beside the first ops and is awaited only where
++`impact` is decided, until 150 ms before the deadline. A verdict of at least
++0.5 for `bugfix`, `feature` or `refactor` runs `impact`; any other label skips
++it unless the prompt explicitly asks about callers or usages (`who uses X`),
++and the brief then says `intent: <label> (classify)` or `intent: caller
++lookup (keywords)`. With no verdict the keyword check (`has_change_intent`)
++decides and no intent line is added. It reads a warm daemon if one answers this protocol and otherwise the index and
+ graph read-only in process; it never starts a daemon and never builds an
+ index or graph. A repository without an index yields no brief. A missing or
+ stale graph still yields the text evidence (`files:`), with the reason under
+diff --git a/changelog.d/865-prompt-brief.added.md b/changelog.d/865-prompt-brief.added.md
+index e381f0fe..ff5373cb 100644
+--- a/changelog.d/865-prompt-brief.added.md
++++ b/changelog.d/865-prompt-brief.added.md
+@@ -1 +1 @@
+-**evidence brief:** on a code-shaped prompt in Claude Code and Codex, the `prompt-submit` task-event hook now returns a `[PIXEL:BRIEF]` block: the files holding the prompt's anchors, the symbol's definition and, for rename or callers questions, its direct callers. At most four bounded ops, a 750 ms deadline and 2 KiB; it never starts a daemon or builds an index. `PIXEL_BRIEF=0` or `brief: false` turns it off. Task #865.
++**evidence brief:** on a code-shaped prompt in Claude Code and Codex, the `prompt-submit` task-event hook now returns a `[PIXEL:BRIEF]` block: the files holding the anchors, the symbol's definition and, for change or callers questions, its direct callers (intent from the classifier when the local engine is already warm, else keywords). At most four bounded ops, a 750 ms deadline and 2 KiB; it never starts a daemon or builds an index. `PIXEL_BRIEF=0` or `brief: false` turns it off. Task #865.
+diff --git a/crates/pixel/src/execution_brief/chain.rs b/crates/pixel/src/execution_brief/chain.rs
+index f46bc0c9..56353e2d 100644
+--- a/crates/pixel/src/execution_brief/chain.rs
++++ b/crates/pixel/src/execution_brief/chain.rs
+@@ -11,6 +11,12 @@
+ //! it has when the deadline passes, so it never holds the prompt back. The
+ //! lookups sit behind [`Evidence`]: `evidence.rs` is the live source, tests
+ //! bring their own.
++//!
++//! Whether `impact` runs is decided by the task-intent classifier when the
++//! local engine is already warm ([`crate::prompt_intent::hook_intent`]: never
++//! started, never remote, any error is "no verdict") and by [`CHANGE_STEMS`]
++//! otherwise. The classifier call depends on no lookup, so it runs on its own
++//! thread beside them and is awaited only where `impact` is decided.
+ 
+ use std::path::Path;
+ use std::sync::mpsc::{self, Receiver};
+@@ -20,6 +26,8 @@ use std::time::{Duration, Instant};
+ use regex::Regex;
+ 
+ use super::{SOURCE_EXTENSIONS, names_code, retrieval_request};
++use crate::prompt_intent::{MIN_RENDER_P, ops_for};
++use crate::task_runtime::Intent;
+ 
+ /// Opening line of the block; a host and a test find the brief by it.
+ pub(crate) const BRIEF_TAG: &str = "[PIXEL:BRIEF]";
+@@ -58,6 +66,32 @@ const CHANGE_STEMS: &[&str] = &[
+     "rename", "remove", "delete", "deprecat", "impact", "caller", "depend", "refactor", "affect",
+     "break", "blast",
+ ];
++/// Time the `impact` lookup keeps after the classifier is awaited: the wait
++/// for a verdict ends this long before the shared deadline, then the keywords
++/// decide, so a slow classifier costs the brief its intent line, not its
++/// callers. Not a second window: the live call is capped well under it.
++const IMPACT_RESERVE: Duration = Duration::from_millis(150);
++/// Intent labels that announce an edit: the callers of what is touched matter.
++const CHANGE_LABELS: &[&str] = &["bugfix", "feature", "refactor"];
++/// Stems of the phrases that explicitly ask who uses a symbol or what a
++/// change reaches. They override a classifier verdict that names no edit
++/// (`investigate`, `question`, `review`, `ops`), and nothing else.
++const CALLER_STEMS: &[&str] = &[
++    "caller",
++    "who call",
++    "what call",
++    "who use",
++    "what use",
++    "used by",
++    "usage",
++    "depend",
++    "references",
++    "what break",
++    "break if",
++    "blast",
++    "impact",
++    "affect",
++];
+ /// Words too common to say what a concept search is about.
+ const CONCEPT_STOPWORDS: &[&str] = &[
+     "about", "could", "does", "each", "every", "from", "have", "into", "make", "please", "should",
+@@ -237,7 +271,12 @@ impl Anchors {
+ #[derive(Clone, Debug, PartialEq, Eq)]
+ pub(crate) struct Plan {
+     anchors: Anchors,
++    /// What the classifier is asked about: the text the user typed.
++    typed: String,
++    /// The keyword reading of the prompt, used when no verdict decides.
+     change_intent: bool,
++    /// The prompt explicitly asks about callers or usages.
++    asks_callers: bool,
+     concept: Option<String>,
+ }
+ 
+@@ -252,7 +291,9 @@ impl Plan {
+         Some(Self {
+             anchors: Anchors::from_text(&typed),
+             change_intent: has_change_intent(&typed),
++            asks_callers: asks_callers(&typed),
+             concept: concept_phrase(&typed),
++            typed,
+         })
+     }
+ }
+@@ -263,6 +304,89 @@ pub(crate) fn has_change_intent(typed: &str) -> bool {
+     CHANGE_STEMS.iter().any(|stem| lower.contains(stem))
+ }
+ 
++/// The prompt explicitly asks who uses a symbol or what a change reaches.
++fn asks_callers(typed: &str) -> bool {
++    let lower = typed.to_lowercase();
++    CALLER_STEMS.iter().any(|stem| lower.contains(stem))
++}
++
++/// Whether `impact` runs, and the line that says who decided.
++#[derive(Clone, Debug, PartialEq, Eq)]
++struct ChangeCall {
++    impact: bool,
++    /// `intent: …`, present only when a verdict or an override decided.
++    note: Option<String>,
++}
++
++/// Decide `impact` from the classifier's `verdict` and the plan's keywords.
++///
++/// A verdict at or above [`MIN_RENDER_P`] naming a label of the intent table
++/// decides: an edit label (`bugfix`, `feature`, `refactor`) runs `impact`,
++/// any other label does not, unless the prompt explicitly asks about callers
++/// or usages (`who calls X`, `what uses X`): that is a lookup the classifier's
++/// `question` does not cancel. Without such a verdict the keywords decide and
++/// the brief says nothing about intent.
++fn decide_change(plan: &Plan, verdict: Option<&Intent>) -> ChangeCall {
++    let Some(verdict) =
++        verdict.filter(|verdict| verdict.p >= MIN_RENDER_P && ops_for(&verdict.label).is_some())
++    else {
++        return ChangeCall {
++            impact: plan.change_intent,
++            note: None,
++        };
++    };
++    let classified = Some(format!("intent: {} (classify)", verdict.label));
++    if CHANGE_LABELS.contains(&verdict.label.as_str()) {
++        ChangeCall {
++            impact: true,
++            note: classified,
++        }
++    } else if plan.asks_callers {
++        ChangeCall {
++            impact: true,
++            note: Some("intent: caller lookup (keywords)".to_string()),
++        }
++    } else {
++        ChangeCall {
++            impact: false,
++            note: classified,
++        }
++    }
++}
++
++/// The classifier's verdicts, delivered by the thread that asked for one.
++pub(crate) type Verdicts = Receiver<Option<Intent>>;
++
++/// The verdict if it arrives before `deadline` less [`IMPACT_RESERVE`];
++/// `None` for a late one, a failed call and a call never made.
++fn await_verdict(verdicts: &Verdicts, deadline: Instant) -> Option<Intent> {
++    let until = deadline.checked_sub(IMPACT_RESERVE).unwrap_or(deadline);
++    verdicts
++        .recv_timeout(until.saturating_duration_since(Instant::now()))
++        .ok()
++        .flatten()
++}
++
++/// Ask `intent` about the prompt on its own thread, but only when the chain
++/// can reach the `impact` decision: with no symbol to look up the call, which
++/// may spend the local engine's time, is not made.
++fn spawn_intent<S>(plan: &Plan, intent: S) -> Verdicts
++where
++    S: FnOnce(&str) -> Option<Intent> + Send + 'static,
++{
++    let (sender, verdicts) = mpsc::channel();
++    if plan.anchors.symbol_name().is_some() {
++        let typed = plan.typed.clone();
++        // A refused spawn drops the sender: the receiver reads "no verdict".
++        let _ = std::thread::Builder::new()
++            .name("pixel-brief-intent".into())
++            .spawn(move || {
++                let _ = sender.send(intent(&typed));
++            });
++    }
++    verdicts
++}
++
+ /// The first words of the prompt that say what it is about.
+ fn concept_phrase(typed: &str) -> Option<String> {
+     let words: Vec<String> = WORD
+@@ -367,6 +491,8 @@ pub(crate) fn pick_uid<'a>(
+ #[derive(Clone, Debug, Default)]
+ pub(crate) struct Brief {
+     anchors: Vec<String>,
++    /// `intent: …` when a verdict or an override decided `impact`.
++    intent: Option<String>,
+     files: Vec<FileHit>,
+     defined: Vec<SymbolHit>,
+     callers: Vec<CallerHit>,
+@@ -429,7 +555,14 @@ fn spend(state: &Mutex<Brief>, deadline: Instant) -> bool {
+ 
+ /// Run the chain against `evidence`, writing into `state` after each
+ /// operation so a reader that stops waiting still sees what is done.
+-pub(crate) fn run(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, deadline: Instant) {
++/// `verdicts` is read once, where `impact` is decided.
++pub(crate) fn run(
++    plan: &Plan,
++    evidence: &dyn Evidence,
++    verdicts: &Verdicts,
++    state: &Mutex<Brief>,
++    deadline: Instant,
++) {
+     edit(state, |brief| brief.anchors.clone_from(&plan.anchors.0));
+     if let Some(term) = plan.anchors.search_term()
+         && spend(state, deadline)
+@@ -472,7 +605,9 @@ pub(crate) fn run(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, de
+                     brief.defined = ordered(&hits, pick);
+                     brief.unresolved.extend(note);
+                 });
+-                if plan.change_intent && spend(state, deadline) {
++                let call = decide_change(plan, await_verdict(verdicts, deadline).as_ref());
++                edit(state, |brief| brief.intent.clone_from(&call.note));
++                if call.impact && spend(state, deadline) {
+                     match evidence.callers(&target, deadline) {
+                         Ok(callers) => edit(state, |brief| {
+                             brief.answered += 1;
+@@ -530,21 +665,42 @@ impl Pending {
+ /// start no thread and run no lookup.
+ pub(crate) fn start(prompt: &str, root: &Path) -> Option<Pending> {
+     let root = root.to_path_buf();
+-    start_with(prompt, Gate::read(&root), BRIEF_WINDOW, move |deadline| {
+-        super::evidence::open(&root, deadline)
+-    })
++    start_with_intent(
++        prompt,
++        Gate::read(&root),
++        BRIEF_WINDOW,
++        move |deadline| super::evidence::open(&root, deadline),
++        crate::prompt_intent::hook_intent,
++    )
+ }
+ 
+-/// [`start`] with its gate, window and evidence source given.
++/// [`start_with_intent`] with no classifier: the keywords decide.
++#[cfg(test)]
+ pub(crate) fn start_with<F>(prompt: &str, gate: Gate, window: Duration, open: F) -> Option<Pending>
+ where
+     F: FnOnce(Instant) -> Box<dyn Evidence> + Send + 'static,
++{
++    start_with_intent(prompt, gate, window, open, |_| None)
++}
++
++/// [`start`] with its gate, window, evidence source and intent source given.
++pub(crate) fn start_with_intent<F, S>(
++    prompt: &str,
++    gate: Gate,
++    window: Duration,
++    open: F,
++    intent: S,
++) -> Option<Pending>
++where
++    F: FnOnce(Instant) -> Box<dyn Evidence> + Send + 'static,
++    S: FnOnce(&str) -> Option<Intent> + Send + 'static,
+ {
+     if !gate.open() {
+         return None;
+     }
+     let plan = Plan::from_prompt(prompt)?;
+     let deadline = Instant::now() + window;
++    let verdicts = spawn_intent(&plan, intent);
+     let state = Arc::new(Mutex::new(Brief::default()));
+     let (finished, done) = mpsc::channel();
+     let worker = Arc::clone(&state);
+@@ -552,7 +708,7 @@ where
+         .name("pixel-brief".into())
+         .spawn(move || {
+             let evidence = open(deadline);
+-            run(&plan, evidence.as_ref(), &worker, deadline);
++            run(&plan, evidence.as_ref(), &verdicts, &worker, deadline);
+             let _ = finished.send(());
+         })
+         .ok()?;
+@@ -637,6 +793,9 @@ fn render_with(brief: &Brief, shown: Shown) -> String {
+         let anchors: Vec<String> = brief.anchors.iter().map(|a| clean(a)).collect();
+         lines.push(format!("anchors: {}", anchors.join(", ")));
+     }
++    if let Some(note) = &brief.intent {
++        lines.push(clean(note));
++    }
+     if let Some(line) = list_line(
+         "defined",
+         brief.defined.iter().map(|hit| {
+@@ -922,6 +1081,8 @@ mod tests {
+         let plan = Plan::from_prompt("who are the callers of `fetchUser`?").unwrap();
+         assert_eq!(plan.anchors.0, ["fetchUser"]);
+         assert!(plan.change_intent);
++        assert!(plan.asks_callers);
++        assert_eq!(plan.typed, "who are the callers of `fetchUser`?");
+         assert_eq!(plan.concept.as_deref(), Some("callers fetchuser"));
+     }
+ 
+@@ -1072,13 +1233,38 @@ mod tests {
+         }
+     }
+ 
+-    fn chain(prompt: &str, fake: &Fake, window: Duration) -> Brief {
++    fn intent(label: &str, p: f64) -> Intent {
++        Intent {
++            label: label.into(),
++            p,
++            model: "winnow:e4b".into(),
++        }
++    }
++
++    /// Verdicts that already hold `verdict`.
++    fn delivered(verdict: Option<Intent>) -> Verdicts {
++        let (sender, verdicts) = mpsc::channel();
++        sender.send(verdict).unwrap();
++        verdicts
++    }
++
++    fn chain_with(prompt: &str, fake: &Fake, window: Duration, verdict: Option<Intent>) -> Brief {
+         let plan = Plan::from_prompt(prompt).unwrap();
+         let state = Mutex::new(Brief::default());
+-        run(&plan, fake, &state, Instant::now() + window);
++        run(
++            &plan,
++            fake,
++            &delivered(verdict),
++            &state,
++            Instant::now() + window,
++        );
+         state.into_inner().unwrap()
+     }
+ 
++    fn chain(prompt: &str, fake: &Fake, window: Duration) -> Brief {
++        chain_with(prompt, fake, window, None)
++    }
++
+     #[test]
+     fn chain_should_search_resolve_a_uid_and_run_impact_on_it_for_a_change_prompt() {
+         let mut fake = Fake::new();
+@@ -1198,6 +1384,323 @@ mod tests {
+         assert_eq!(brief.defined[0].path, "a.ts");
+     }
+ 
++    const QUIET: &str = "tidy up `fetchUser` a little";
++    const WORDY: &str = "what does `fetchUser` do when it can break?";
++    const WHO_USES: &str = "who uses `fetchUser`?";
++
++    #[test]
++    fn asks_callers_should_follow_the_usage_phrases_and_ignore_other_change_words() {
++        for prompt in [
++            "who calls fetchUser",
++            "what uses the parser",
++            "usages of load_config",
++            "is `go` used by the cli",
++            "what breaks if I touch it",
++            "blast radius of the change",
++            "everything that depends on it",
++            "find references to fetchUser",
++        ] {
++            assert!(asks_callers(prompt), "{prompt}");
++        }
++        for prompt in [
++            "rename fetchUser",
++            "remove the flag",
++            "how does the retry logic work",
++            "why does it break at startup",
++        ] {
++            assert!(!asks_callers(prompt), "{prompt}");
++        }
++    }
++
++    #[test]
++    fn decide_change_should_run_impact_for_the_edit_labels_and_skip_it_for_the_others() {
++        let plan = Plan::from_prompt(QUIET).unwrap();
++        assert!(!plan.change_intent && !plan.asks_callers);
++        for (label, impact) in [
++            ("bugfix", true),
++            ("feature", true),
++            ("refactor", true),
++            ("investigate", false),
++            ("question", false),
++            ("review", false),
++            ("ops", false),
++        ] {
++            assert_eq!(
++                decide_change(&plan, Some(&intent(label, 0.9))),
++                ChangeCall {
++                    impact,
++                    note: Some(format!("intent: {label} (classify)")),
++                },
++                "{label}"
++            );
++        }
++    }
++
++    #[test]
++    fn decide_change_should_let_a_verdict_overrule_the_keywords_both_ways() {
++        let wordy = Plan::from_prompt(WORDY).unwrap();
++        assert!(wordy.change_intent && !wordy.asks_callers);
++        assert!(!decide_change(&wordy, Some(&intent("question", 0.8))).impact);
++        let quiet = Plan::from_prompt(QUIET).unwrap();
++        assert!(!quiet.change_intent);
++        assert!(decide_change(&quiet, Some(&intent("refactor", 0.8))).impact);
++    }
++
++    #[test]
++    fn decide_change_should_keep_an_explicit_caller_lookup_a_classifier_calls_a_question() {
++        let plan = Plan::from_prompt(WHO_USES).unwrap();
++        assert!(!plan.change_intent && plan.asks_callers);
++        for label in ["investigate", "question", "review", "ops"] {
++            assert_eq!(
++                decide_change(&plan, Some(&intent(label, 0.9))),
++                ChangeCall {
++                    impact: true,
++                    note: Some("intent: caller lookup (keywords)".into()),
++                },
++                "{label}"
++            );
++        }
++        assert_eq!(
++            decide_change(&plan, Some(&intent("refactor", 0.9)))
++                .note
++                .as_deref(),
++            Some("intent: refactor (classify)")
++        );
++    }
++
++    #[test]
++    fn decide_change_should_fall_back_to_the_keywords_without_a_usable_verdict() {
++        for (prompt, impact) in [(QUIET, false), (WORDY, true)] {
++            let plan = Plan::from_prompt(prompt).unwrap();
++            let fallback = ChangeCall { impact, note: None };
++            assert_eq!(decide_change(&plan, None), fallback, "{prompt}: none");
++            for weak in [
++                intent("question", 0.49),
++                intent("refactor", 0.49),
++                intent("refactor", f64::NAN),
++                intent("chit-chat", 0.99),
++            ] {
++                assert_eq!(
++                    decide_change(&plan, Some(&weak)),
++                    fallback,
++                    "{prompt}: {weak:?}"
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn decide_change_should_trust_a_verdict_of_exactly_one_half() {
++        let plan = Plan::from_prompt(QUIET).unwrap();
++        assert!(decide_change(&plan, Some(&intent("refactor", MIN_RENDER_P))).impact);
++    }
++
++    #[test]
++    fn chain_should_run_impact_and_say_why_when_the_classifier_names_an_edit() {
++        let mut fake = Fake::new();
++        fake.files = Ok(found(vec![hit("src/a.ts", 2)]));
++        fake.symbols = Ok(vec![symbol("src/a.ts", "fetchUser")]);
++        let brief = chain_with(QUIET, &fake, SECOND, Some(intent("refactor", 0.8)));
++        assert_eq!(
++            fake.calls(),
++            [
++                "files_with fetchUser",
++                "symbols fetchUser",
++                "callers src/a.ts#fetchUser#function"
++            ]
++        );
++        assert!(brief.impacted);
++        assert_eq!(brief.intent.as_deref(), Some("intent: refactor (classify)"));
++    }
++
++    #[test]
++    fn chain_should_skip_impact_for_a_keyword_prompt_the_classifier_calls_a_question() {
++        let mut fake = Fake::new();
++        fake.files = Ok(found(vec![hit("src/a.ts", 2)]));
++        fake.symbols = Ok(vec![symbol("src/a.ts", "fetchUser")]);
++        let brief = chain_with(WORDY, &fake, SECOND, Some(intent("question", 0.8)));
++        assert_eq!(fake.calls(), ["files_with fetchUser", "symbols fetchUser"]);
++        assert!(!brief.impacted && brief.callers.is_empty());
++        assert_eq!(brief.intent.as_deref(), Some("intent: question (classify)"));
++        assert!(
++            render(&brief)
++                .unwrap()
++                .contains("\nintent: question (classify)\n")
++        );
++    }
++
++    #[test]
++    fn chain_should_say_nothing_about_intent_when_the_keywords_decided() {
++        let fake = Fake::new();
++        let brief = chain_with("rename `fetchUser` everywhere", &fake, SECOND, None);
++        assert!(brief.impacted);
++        assert_eq!(brief.intent, None);
++        assert!(!render(&brief).unwrap().contains("intent:"));
++    }
++
++    /// A source whose lookups each take 150 ms and whose first one announces
++    /// itself, so a test can tell where the classifier ran.
++    struct Announcing {
++        first: Mutex<Option<mpsc::Sender<()>>>,
++    }
++
++    impl Announcing {
++        fn lookup(&self) {
++            if let Some(sender) = self.first.lock().unwrap().take() {
++                let _ = sender.send(());
++            }
++            std::thread::sleep(Duration::from_millis(150));
++        }
++    }
++
++    impl Evidence for Announcing {
++        fn files_with(&self, _: &str, _: Instant) -> Result<Found, String> {
++            self.lookup();
++            Ok(found(vec![hit("src/a.ts", 2)]))
++        }
++        fn concept(&self, _: &str, _: Instant) -> Result<Found, String> {
++            Ok(Found::default())
++        }
++        fn symbols(&self, _: &str, _: Instant) -> Result<Vec<SymbolHit>, String> {
++            self.lookup();
++            Ok(vec![symbol("src/a.ts", "fetchUser")])
++        }
++        fn callers(&self, _: &str, _: Instant) -> Result<Vec<CallerHit>, String> {
++            self.lookup();
++            Ok(Vec::new())
++        }
++    }
++
++    #[test]
++    fn classify_should_run_beside_the_lookups_not_before_or_after_them() {
++        let (announce, heard) = mpsc::channel();
++        let started = Instant::now();
++        let pending = start_with_intent(
++            QUIET,
++            OPEN,
++            Duration::from_secs(5),
++            move |_| {
++                Box::new(Announcing {
++                    first: Mutex::new(Some(announce)),
++                })
++            },
++            // Answers 300 ms after the first lookup began: only a classifier
++            // that runs beside the lookups hears it at all.
++            move |_| {
++                heard.recv_timeout(Duration::from_secs(5)).ok()?;
++                std::thread::sleep(Duration::from_millis(300));
++                Some(intent("refactor", 0.9))
++            },
++        )
++        .unwrap();
++        let text = pending.finish().unwrap();
++        // Beside the lookups: 150 (files) + 150 (symbols), the verdict lands
++        // at 300, then 150 (callers) = 450 ms. After them it would be 750 ms;
++        // before them it would never hear its signal.
++        assert!(
++            started.elapsed() < Duration::from_millis(650),
++            "{:?}",
++            started.elapsed()
++        );
++        assert!(text.contains("\nintent: refactor (classify)\n"), "{text}");
++        assert!(text.contains("\ncallers (impact d1): none\n"), "{text}");
++        assert!(text.contains("confidence: medium | ops: 3/4\n"), "{text}");
++    }
++
++    #[test]
++    fn a_verdict_after_the_wait_should_fall_back_to_the_keywords_inside_the_window() {
++        let window = Duration::from_millis(600);
++        let started = Instant::now();
++        let pending = start_with_intent(
++            "rename `fetchUser` everywhere",
++            OPEN,
++            window,
++            |_| {
++                let mut fake = Fake::new();
++                fake.files = Ok(found(vec![hit("src/a.ts", 2)]));
++                fake.symbols = Ok(vec![symbol("src/a.ts", "fetchUser")]);
++                Box::new(fake)
++            },
++            |_| {
++                std::thread::sleep(Duration::from_secs(2));
++                Some(intent("question", 0.99))
++            },
++        )
++        .unwrap();
++        let text = pending.finish().unwrap();
++        let elapsed = started.elapsed();
++        assert!(elapsed < window, "{elapsed:?}");
++        assert!(
++            elapsed >= window - IMPACT_RESERVE - Duration::from_millis(20),
++            "the verdict is awaited until the reserve begins: {elapsed:?}"
++        );
++        assert!(text.contains("\ncallers (impact d1): none\n"), "{text}");
++        assert!(!text.contains("intent:"), "{text}");
++        assert!(text.contains("confidence: medium | ops: 3/4\n"), "{text}");
++    }
++
++    #[test]
++    fn a_classifier_that_yields_nothing_should_leave_the_keyword_brief_untouched() {
++        let pending = start_with_intent(
++            "where is `fetchUser` defined",
++            OPEN,
++            SECOND,
++            |_| {
++                let mut fake = Fake::new();
++                fake.files = Ok(found(vec![hit("src/a.ts", 2)]));
++                fake.symbols = Ok(vec![symbol("src/a.ts", "fetchUser")]);
++                Box::new(fake)
++            },
++            |_| None,
++        )
++        .unwrap();
++        let text = pending.finish().unwrap();
++        assert!(
++            !text.contains("intent:") && !text.contains("callers (impact"),
++            "{text}"
++        );
++    }
++
++    #[test]
++    fn the_classifier_should_not_be_asked_when_no_symbol_can_be_looked_up() {
++        let asked = Arc::new(Mutex::new(false));
++        let flag = Arc::clone(&asked);
++        let pending = start_with_intent(
++            "how does the retry logic back off",
++            OPEN,
++            SECOND,
++            |_| Box::new(Fake::new()),
++            move |_| {
++                *flag.lock().unwrap() = true;
++                None
++            },
++        )
++        .unwrap();
++        let _ = pending.finish();
++        assert!(!*asked.lock().unwrap(), "no anchor, no symbol, no verdict");
++    }
++
++    #[test]
++    fn the_classifier_should_see_the_typed_text_not_the_pasted_context() {
++        let seen = Arc::new(Mutex::new(String::new()));
++        let sink = Arc::clone(&seen);
++        let pending = start_with_intent(
++            "<pasted_content id=1>noise_word_here</pasted_content> who uses `fetchUser`?",
++            OPEN,
++            SECOND,
++            |_| Box::new(Fake::new()),
++            move |typed| {
++                *sink.lock().unwrap() = typed.to_string();
++                None
++            },
++        )
++        .unwrap();
++        let _ = pending.finish();
++        let seen = seen.lock().unwrap();
++        assert!(seen.contains("who uses `fetchUser`?"), "{seen}");
++        assert!(!seen.contains("noise_word_here"), "{seen}");
++    }
++
+     #[test]
+     fn spend_should_refuse_after_the_cap_and_after_the_deadline() {
+         let state = Mutex::new(Brief::default());
+@@ -1344,6 +1847,7 @@ mod tests {
+     fn full_brief() -> Brief {
+         Brief {
+             anchors: vec!["handleError".into(), "src/handleError.ts".into()],
++            intent: None,
+             files: vec![hit("apps/web/page.tsx", 4), hit("apps/web/other.tsx", 9)],
+             defined: vec![symbol("src/handleError.ts", "handleError")],
+             callers: vec![caller("apps/web/page.tsx", "Page", 12)],
+@@ -1377,6 +1881,48 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn render_should_put_the_intent_line_after_the_anchors() {
++        let mut brief = full_brief();
++        brief.intent = Some("intent: refactor (classify)".into());
++        let text = render(&brief).unwrap();
++        let lines: Vec<&str> = text.lines().collect();
++        assert_eq!(lines[1], "anchors: handleError, src/handleError.ts");
++        assert_eq!(lines[2], "intent: refactor (classify)");
++        assert_eq!(
++            lines[3],
++            "defined: function handleError src/handleError.ts:3-9"
++        );
++    }
++
++    #[test]
++    fn render_should_keep_the_intent_line_and_the_cap_when_lists_are_shortened() {
++        let mut brief = full_brief();
++        brief.intent = Some("intent: caller lookup (keywords)".into());
++        brief.files = (0..8)
++            .map(|n| hit(&format!("{}{n}", "d".repeat(MAX_ITEM_CHARS - 1)), 1))
++            .collect();
++        brief.callers = (0..10)
++            .map(|n| {
++                caller(
++                    &format!("{}{n}", "c".repeat(MAX_ITEM_CHARS - 1)),
++                    &"v".repeat(60),
++                    1,
++                )
++            })
++            .collect();
++        let text = render(&brief).unwrap();
++        assert!(text.len() <= BRIEF_BYTES, "{} bytes", text.len());
++        assert!(
++            text.contains("\nintent: caller lookup (keywords)\n"),
++            "{text}"
++        );
++        assert!(
++            text.contains(" more)"),
++            "lists give way, lines do not: {text}"
++        );
++    }
++
+     #[test]
+     fn render_should_omit_the_line_number_of_a_caller_without_one() {
+         let mut brief = full_brief();
+diff --git a/crates/pixel/src/prompt_intent.rs b/crates/pixel/src/prompt_intent.rs
+index da612739..236908b5 100644
+--- a/crates/pixel/src/prompt_intent.rs
++++ b/crates/pixel/src/prompt_intent.rs
+@@ -7,17 +7,28 @@
+ //! The command asks the local decision daemon which kind of coding-agent task
+ //! a prompt is (bugfix, feature, …) and names the pixel ops that fit it, from
+ //! one [`INTENTS`] table. The verdict is a classifier claim, never a
+-//! repository fact. The prompt hook that rendered it into a task packet is
+-//! retired.
++//! repository fact. The prompt-start brief asks the same question through
++//! [`hook_intent`] to decide whether to look up callers, best-effort: classify
++//! disabled, a stored `remote` engine, a daemon that is not already listening,
++//! a slow answer or any error all mean "no verdict". It never starts the
++//! daemon and never calls a remote engine.
+ 
++use std::collections::BTreeMap;
+ use std::time::Duration;
+ 
+ use crate::classify::Spec;
++use crate::task_runtime::Intent;
+ 
++/// Connect cap of the warm probe: a daemon on this machine accepts in well
++/// under a millisecond, so 100 ms only bounds a dead or filtered address.
++pub(crate) const WARM_PROBE: Duration = Duration::from_millis(100);
+ /// Whole-request cap of the warm task-intent call. A warm labeled call was
+ /// measured at 0.11 s and a cold one (model load) at 4.3 s: the cap keeps
+ /// the first and fails the second open.
+ pub(crate) const HOOK_CALL_TIMEOUT: Duration = Duration::from_millis(300);
++/// A verdict below this probability is not used: under one half, the label is
++/// not even more likely than all the others together.
++pub(crate) const MIN_RENDER_P: f64 = 0.5;
+ /// The framing every intent label shares.
+ pub(crate) const INTENT_CONTEXT: &str = "What kind of coding-agent task is this prompt?";
+ 
+@@ -113,9 +124,225 @@ pub(crate) fn spec(prompt: &str) -> Result<Spec, String> {
+     )
+ }
+ 
++/// What the warm call knows before it may call the classifier.
++pub(crate) struct Gate {
++    /// `classify.enabled` from the global config.
++    pub(crate) enabled: bool,
++    /// The stored engine preference (`local`, `remote`, `auto`, none).
++    pub(crate) stored_engine: Option<String>,
++    /// The local daemon's base URL.
++    pub(crate) base: String,
++}
++
++/// Classify `prompt` when the gate allows it and the local daemon is already
++/// warm; `None` on every other path.
++///
++/// `warm` probes the base URL and `decide` answers the spec against it,
++/// returning the probabilities and the model id: production passes the TCP
++/// probe and the Ollaya adapter, tests pass stubs.
++pub(crate) fn classify_prompt(
++    prompt: &str,
++    gate: &Gate,
++    warm: impl FnOnce(&str) -> bool,
++    decide: impl FnOnce(&str, &Spec) -> Result<(BTreeMap<String, f64>, String), String>,
++) -> Option<Intent> {
++    if !gate.enabled || !crate::classify_setup::local_permitted(gate.stored_engine.as_deref()) {
++        return None;
++    }
++    if !warm(&gate.base) {
++        return None;
++    }
++    let spec = spec(prompt).ok()?;
++    let (probs, model) = decide(&gate.base, &spec).ok()?;
++    let label = crate::classify::predicted(&probs, &spec.labels);
++    let p = *probs.get(label)?;
++    Some(Intent {
++        label: label.to_string(),
++        p,
++        model,
++    })
++}
++
++/// The production path: the real config, the real probe, the local Ollaya
++/// daemon under [`HOOK_CALL_TIMEOUT`].
++#[cfg_attr(test, mutants::skip)] // wires the real config and daemon into `classify_prompt`, which is tested with stubs
++pub(crate) fn hook_intent(prompt: &str) -> Option<Intent> {
++    let gate = Gate {
++        enabled: crate::config_cmd::classify_enabled().unwrap_or(false),
++        stored_engine: crate::config_cmd::classify_engine(),
++        base: crate::classify_setup::local_base(),
++    };
++    classify_prompt(
++        prompt,
++        &gate,
++        |base| crate::classify_setup::server_reachable_within(base, WARM_PROBE),
++        |base, spec| {
++            let mut engine =
++                crate::decide_ollaya::Ollaya::open(crate::decide_ollaya::OllayaConfig {
++                    base: base.to_string(),
++                    timeout: HOOK_CALL_TIMEOUT,
++                    ..Default::default()
++                });
++            let probs = engine.decide(spec)?;
++            Ok((probs, engine.model_id().to_string()))
++        },
++    )
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    use std::cell::Cell;
++
++    fn gate(enabled: bool, stored: Option<&str>) -> Gate {
++        Gate {
++            enabled,
++            stored_engine: stored.map(str::to_string),
++            base: "http://127.0.0.1:11435".to_string(),
++        }
++    }
++
++    fn verdict(label: &str, p: f64) -> BTreeMap<String, f64> {
++        INTENTS
++            .iter()
++            .map(|kind| {
++                let share = if kind.label == label {
++                    p
++                } else {
++                    (1.0 - p) / (INTENTS.len() - 1) as f64
++                };
++                (kind.label.to_string(), share)
++            })
++            .collect()
++    }
++
++    #[test]
++    fn classify_prompt_should_never_probe_or_decide_when_classify_is_disabled() {
++        let probed = Cell::new(false);
++        let decided = Cell::new(false);
++        let result = classify_prompt(
++            "fix the login bug",
++            &gate(false, Some("local")),
++            |_| {
++                probed.set(true);
++                true
++            },
++            |_, _| {
++                decided.set(true);
++                Ok((verdict("bugfix", 0.9), "m".to_string()))
++            },
++        );
++        assert!(result.is_none());
++        assert!(
++            !probed.get(),
++            "a disabled classify must not touch the daemon"
++        );
++        assert!(
++            !decided.get(),
++            "a disabled classify must never call the decider"
++        );
++    }
++
++    #[test]
++    fn classify_prompt_should_never_probe_or_decide_when_the_stored_engine_is_remote() {
++        let probed = Cell::new(false);
++        let decided = Cell::new(false);
++        let result = classify_prompt(
++            "fix the login bug",
++            &gate(true, Some("remote")),
++            |_| {
++                probed.set(true);
++                true
++            },
++            |_, _| {
++                decided.set(true);
++                Ok((verdict("bugfix", 0.9), "m".to_string()))
++            },
++        );
++        assert!(result.is_none());
++        assert!(!probed.get());
++        assert!(!decided.get(), "the hook never calls a remote engine");
++    }
++
++    #[test]
++    fn classify_prompt_should_not_decide_when_the_local_daemon_is_not_warm() {
++        let probed = Cell::new(None);
++        let decided = Cell::new(false);
++        let result = classify_prompt(
++            "fix the login bug",
++            &gate(true, None),
++            |base| {
++                probed.set(Some(base.to_string()));
++                false
++            },
++            |_, _| {
++                decided.set(true);
++                Ok((verdict("bugfix", 0.9), "m".to_string()))
++            },
++        );
++        assert!(result.is_none());
++        assert_eq!(
++            probed.take().as_deref(),
++            Some("http://127.0.0.1:11435"),
++            "the probe targets the gate's base"
++        );
++        assert!(!decided.get(), "a cold daemon is never started or called");
++    }
++
++    #[test]
++    fn classify_prompt_should_return_the_argmax_with_its_probability_and_model_when_warm() {
++        let seen = Cell::new(None);
++        let result = classify_prompt(
++            "the build started failing after the merge",
++            &gate(true, Some("local")),
++            |_| true,
++            |base, spec| {
++                seen.set(Some((
++                    base.to_string(),
++                    spec.text.clone(),
++                    spec.context.clone(),
++                    spec.labels.clone(),
++                )));
++                Ok((verdict("bugfix", 0.82), "winnow:e4b".to_string()))
++            },
++        )
++        .unwrap();
++        assert_eq!(
++            result,
++            Intent {
++                label: "bugfix".to_string(),
++                p: 0.82,
++                model: "winnow:e4b".to_string(),
++            }
++        );
++        let (base, text, context, labels) = seen.take().unwrap();
++        assert_eq!(base, "http://127.0.0.1:11435");
++        assert_eq!(text, "the build started failing after the merge");
++        assert_eq!(context, INTENT_CONTEXT);
++        assert_eq!(
++            labels,
++            [
++                "bugfix",
++                "feature",
++                "refactor",
++                "investigate",
++                "question",
++                "review",
++                "ops"
++            ]
++        );
++    }
++
++    #[test]
++    fn classify_prompt_should_fail_open_when_the_decider_errors() {
++        let result = classify_prompt(
++            "add a flag",
++            &gate(true, Some("auto")),
++            |_| true,
++            |_, _| Err("timed out".to_string()),
++        );
++        assert!(result.is_none());
++    }
+ 
+     #[test]
+     fn spec_should_carry_every_label_with_its_criterion() {
+diff --git a/crates/pixel/tests/cli/prompt_brief_cli.rs b/crates/pixel/tests/cli/prompt_brief_cli.rs
+index 293bb568..ceb90822 100644
+--- a/crates/pixel/tests/cli/prompt_brief_cli.rs
++++ b/crates/pixel/tests/cli/prompt_brief_cli.rs
+@@ -5,10 +5,13 @@
+ //! prompt in an indexed repository gets `[PIXEL:BRIEF]` as additional context,
+ //! every other case gets nothing extra, and no case builds or refreshes an index.
+ 
+-use std::io::Write;
++use std::io::{Read, Write};
++use std::net::TcpListener;
+ use std::path::Path;
+ use std::process::Stdio;
+-use std::time::SystemTime;
++use std::sync::Arc;
++use std::sync::atomic::{AtomicUsize, Ordering};
++use std::time::{Duration, Instant, SystemTime};
+ 
+ use serde_json::{Value, json};
+ 
+@@ -244,3 +247,219 @@ fn a_missing_graph_should_leave_the_text_evidence_and_build_nothing() {
+     );
+     assert!(!root.join(".pixel/graph.v2.db").exists());
+ }
++
++/// No stem of the keyword check, no explicit caller phrase: only a verdict
++/// can make this prompt look up callers.
++const TIDY: &str = "tidy up `handleError` in packages/ui/handleError.ts a little";
++
++/// A local classify engine that is already warm: it completes the handshake,
++/// reads one request and answers `label` at once. `connections` counts every
++/// connect, probes included. The accept loop is nonblocking with a deadline so
++/// a mutant that never connects fails an assertion instead of hanging.
++fn warm_engine(label: &str) -> (String, Arc<AtomicUsize>) {
++    let others: serde_json::Map<String, Value> = [
++        "bugfix",
++        "feature",
++        "refactor",
++        "investigate",
++        "question",
++        "review",
++        "ops",
++    ]
++    .into_iter()
++    .map(|name| {
++        (
++            name.to_string(),
++            json!(if name == label { 0.9 } else { 0.0167 }),
++        )
++    })
++    .collect();
++    let body = json!({"answers": {"q1": {
++        "type": "choice",
++        "choice": label,
++        "probabilities": others,
++        "confidence": 0.9,
++    }}})
++    .to_string();
++    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++    listener.set_nonblocking(true).unwrap();
++    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
++    let connections = Arc::new(AtomicUsize::new(0));
++    let counted = Arc::clone(&connections);
++    std::thread::spawn(move || {
++        let deadline = Instant::now() + Duration::from_secs(60);
++        while Instant::now() < deadline {
++            let Ok((mut stream, _)) = listener.accept() else {
++                std::thread::sleep(Duration::from_millis(5));
++                continue;
++            };
++            counted.fetch_add(1, Ordering::SeqCst);
++            stream.set_nonblocking(false).unwrap();
++            stream
++                .set_read_timeout(Some(Duration::from_secs(5)))
++                .unwrap();
++            let mut request = Vec::new();
++            let mut chunk = [0u8; 4096];
++            loop {
++                let read = stream.read(&mut chunk).unwrap_or(0);
++                if read == 0 {
++                    break; // the reachability probe connects, then closes
++                }
++                request.extend_from_slice(&chunk[..read]);
++                if request_complete(&request) {
++                    break;
++                }
++            }
++            if request.is_empty() {
++                continue;
++            }
++            let response = format!(
++                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
++                body.len()
++            );
++            let _ = stream.write_all(response.as_bytes());
++        }
++    });
++    (base, connections)
++}
++
++/// Whether `request` holds its whole body, by its `content-length`.
++fn request_complete(request: &[u8]) -> bool {
++    let text = String::from_utf8_lossy(request);
++    let Some((head, body)) = text.split_once("\r\n\r\n") else {
++        return false;
++    };
++    let length = head
++        .lines()
++        .find_map(|line| {
++            let (name, value) = line.split_once(':')?;
++            name.eq_ignore_ascii_case("content-length")
++                .then(|| value.trim().parse::<usize>().ok())?
++        })
++        .unwrap_or(0);
++    body.len() >= length
++}
++
++/// A home whose global config switches classify as given and points the local
++/// engine at `base`. `argv` is `/usr/bin/false`: were the hook ever to start
++/// the engine, nothing would answer.
++fn home_with(tag: &str, enabled: bool, engine: &str, base: &str) -> Scratch {
++    let home = Scratch::for_test("prompt-brief-cli", tag);
++    std::fs::create_dir_all(home.join(".pixel")).unwrap();
++    std::fs::write(
++        home.join(".pixel/config.yaml"),
++        format!(
++            "classify: {{enabled: {enabled}, engine: {engine}, ollaya: {{base: \"{base}\", argv: [\"/usr/bin/false\"]}}}}\n"
++        ),
++    )
++    .unwrap();
++    home
++}
++
++fn with_home(home: &Scratch) -> [(&'static str, &str); 1] {
++    [("HOME", home.to_str().unwrap())]
++}
++
++/// A port nothing listens on: bound, read, released.
++fn closed_base() -> String {
++    let probe = TcpListener::bind("127.0.0.1:0").unwrap();
++    format!("http://127.0.0.1:{}", probe.local_addr().unwrap().port())
++}
++
++#[test]
++fn a_warm_classifier_calling_a_keyword_prompt_a_question_should_skip_callers() {
++    let root = indexed("classify-question");
++    let (base, connections) = warm_engine("question");
++    let home = home_with("home-question", true, "local", &base);
++    let output = hook(&root, "claude", RENAME, &with_home(&home));
++    let text = context(&output);
++    assert!(
++        connections.load(Ordering::SeqCst) >= 1,
++        "the engine was asked"
++    );
++    assert!(
++        text.contains("\nanchors: handleError, reportError, packages/ui/handleError.ts\nintent: question (classify)\ndefined: "),
++        "{text}"
++    );
++    assert!(!text.contains("callers (impact"), "{text}");
++    assert!(text.contains("\nconfidence: medium | ops: 2/4\n"), "{text}");
++}
++
++#[test]
++fn a_warm_classifier_naming_an_edit_should_run_callers_without_any_keyword() {
++    let root = indexed("classify-refactor");
++    let (base, connections) = warm_engine("refactor");
++    let home = home_with("home-refactor", true, "local", &base);
++    let started = Instant::now();
++    let output = hook(&root, "claude", TIDY, &with_home(&home));
++    let text = context(&output);
++    assert!(
++        connections.load(Ordering::SeqCst) >= 1,
++        "the engine was asked"
++    );
++    assert!(text.contains("\nintent: refactor (classify)\n"), "{text}");
++    assert!(
++        text.contains(
++            "\ncallers (impact d1): apps/web/page.tsx -> Page:2; apps/web/page.tsx -> Other:5\n"
++        ),
++        "{text}"
++    );
++    assert!(text.contains("\nconfidence: high | ops: 3/4\n"), "{text}");
++    assert!(
++        started.elapsed() < Duration::from_secs(10),
++        "{:?}",
++        started.elapsed()
++    );
++}
++
++#[test]
++fn an_explicit_caller_lookup_should_survive_a_question_verdict() {
++    let root = indexed("classify-who-uses");
++    let (base, _) = warm_engine("question");
++    let home = home_with("home-who-uses", true, "local", &base);
++    let output = hook(
++        &root,
++        "claude",
++        "who uses `handleError` in packages/ui/handleError.ts?",
++        &with_home(&home),
++    );
++    let text = context(&output);
++    assert!(
++        text.contains("\nintent: caller lookup (keywords)\n"),
++        "{text}"
++    );
++    assert!(
++        text.contains("\ncallers (impact d1): apps/web/page.tsx"),
++        "{text}"
++    );
++}
++
++#[test]
++fn without_a_usable_classifier_the_keywords_should_decide_and_no_intent_line_appears() {
++    let root = indexed("classify-fallback");
++    let (warm, connections) = warm_engine("question");
++    let cold = closed_base();
++    for (tag, enabled, engine, base) in [
++        ("home-cold", true, "local", cold.as_str()),
++        ("home-disabled", false, "local", warm.as_str()),
++        ("home-remote", true, "remote", warm.as_str()),
++    ] {
++        let home = home_with(tag, enabled, engine, base);
++        let output = hook(&root, "claude", RENAME, &with_home(&home));
++        let text = context(&output);
++        assert!(
++            text.contains("\ncallers (impact d1): apps/web/page.tsx -> Page:2"),
++            "{tag}: {text}"
++        );
++        assert!(!text.contains("intent:"), "{tag}: {text}");
++        assert!(
++            text.contains("\nconfidence: high | ops: 3/4\n"),
++            "{tag}: {text}"
++        );
++        assert_eq!(
++            connections.load(Ordering::SeqCst),
++            0,
++            "{tag}: a disabled or remote classify never touches the local engine"
++        );
++    }
++}

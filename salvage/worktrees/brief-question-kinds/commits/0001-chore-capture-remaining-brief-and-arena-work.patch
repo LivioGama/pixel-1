@@ -1,0 +1,1438 @@
+From 8fe6e10cedd2ebecd3bde78ba84c910cd1cd62e1 Mon Sep 17 00:00:00 2001
+From: Livio Gamassia <livio.gamassia@gmail.com>
+Date: Wed, 7 Oct 2026 20:14:37 +0200
+Subject: [PATCH 1/5] chore: capture remaining brief and arena work
+
+---
+ .../skills/agent-session-debugging/SKILL.md   |  23 ++
+ .pi-ultimate/fanout-metrics.jsonl             |   1 +
+ .../871-brief-zero-line-anchors.fixed.md      |   1 +
+ crates/pixel/src/execution_brief/chain.rs     |  97 ++++-
+ .../pixel/src/main_tests/daemon_ping_tests.rs |   7 +-
+ crates/pixel/tests/cli/prompt_brief_cli.rs    |  35 ++
+ docs/brief-question-kinds-experiment.md       | 382 ++++++++++++++++++
+ eval/arena.sh                                 | 337 +++++++++------
+ eval/arena/README.md                          |  35 +-
+ eval/arena/entrypoint.sh                      | 137 +++++--
+ eval/scenarios/s0-liza-hello-overview.json    |  12 +
+ eval/scenarios/s0-pi-simple-overview.json     |  12 +
+ eval/scenarios/s1-liza-rename-run-id.json     |  14 +
+ 13 files changed, 935 insertions(+), 158 deletions(-)
+ create mode 100644 .pi-ultimate/fanout-metrics.jsonl
+ create mode 100644 changelog.d/871-brief-zero-line-anchors.fixed.md
+ create mode 100644 docs/brief-question-kinds-experiment.md
+ create mode 100644 eval/scenarios/s0-liza-hello-overview.json
+ create mode 100644 eval/scenarios/s0-pi-simple-overview.json
+ create mode 100644 eval/scenarios/s1-liza-rename-run-id.json
+
+diff --git a/.agents/skills/agent-session-debugging/SKILL.md b/.agents/skills/agent-session-debugging/SKILL.md
+index 7c62b021..3d56fe59 100644
+--- a/.agents/skills/agent-session-debugging/SKILL.md
++++ b/.agents/skills/agent-session-debugging/SKILL.md
+@@ -51,6 +51,29 @@ Verify with `herdr pane layout` and `herdr pane list`; the main pane must remain
+ left, the four cells right, and all four intended agent kinds present. Do not
+ close the main pane or create another tab merely to make the layout fit.
+ 
++Run split and `agent start` commands sequentially, taking each new `pane_id`
++from the previous result. Parallel Herdr CLI calls race: two simultaneous
++`pane split` calls made both new panes vanish before `agent start` could use
++them, and a fresh pane is not immediately an "available shell" — if
++`agent start` fails with `agent_pane_busy`, wait a few seconds, close that
++pane, and split again.
++
++A newly started Codex in this repository opens Pixel's hook-review dialog
++("⚠ N hooks need review before they can run", footer `t trust all · esc close`)
++and Herdr classifies it `idle`, so the first `agent prompt` fails with
++`agent_prompt_stalled` while the dialog is up. Accept the hooks before the
++first prompt — the review is keyed by the `hooks.json` path, so every new
++worktree starts untrusted (the `repo.codex-hook-review` doctor check):
++
++```sh
++rtk env HERDR_ENV=1 herdr agent send-keys <codex-name> t   # mark reviews done: Review column drops to 0
++rtk env HERDR_ENV=1 herdr agent send-keys <codex-name> esc # close the dialog
++```
++
++`send-keys t` alone is not enough — the dialog stays up after `t` until `esc`.
++Only prompt after `herdr agent get` shows a changed `state_change_seq` and the
++dialog text is gone from `herdr agent read`.
++
+ Start or address agents with Herdr's `agent` commands, for example:
+ 
+ ```sh
+diff --git a/.pi-ultimate/fanout-metrics.jsonl b/.pi-ultimate/fanout-metrics.jsonl
+new file mode 100644
+index 00000000..e7104d1c
+--- /dev/null
++++ b/.pi-ultimate/fanout-metrics.jsonl
+@@ -0,0 +1 @@
++{"runId":"","artifacts":[],"timestamp":"2026-10-07T10:32:32.121Z","subtasks":{"dispatched":10,"succeeded":6,"failed":4},"wallMs":867932,"subagentWallMs":373973,"parallelismEfficiency":0.43,"tokens":{"input":579789,"output":32026,"total":611815,"contextPeak":95906},"p50LatencyMs":33233,"p95LatencyMs":113899,"agents":[{"id":"1.openai-preset","status":"failed","model":"GLM-5.3-Flash","wallMs":45245,"inputTokens":43999,"outputTokens":948,"contextPeak":10352,"turns":12},{"id":"1.openai-preset-parse","status":"done","model":"GLM-5.3-Flash","wallMs":37099,"inputTokens":76262,"outputTokens":10306,"contextPeak":12658,"turns":40},{"id":"2.openai-surface-1","status":"done","model":"GLM-5.3-Flash","wallMs":71558,"inputTokens":32708,"outputTokens":1537,"contextPeak":13796,"turns":14},{"id":"2.openai-surface-2","status":"failed","model":"GLM-5.3-Flash","wallMs":33619,"inputTokens":122268,"outputTokens":3828,"contextPeak":54237,"turns":34},{"id":"2.openai-surface-3","status":"done","model":"GLM-5.3-Flash","wallMs":7630,"inputTokens":4117,"outputTokens":137,"contextPeak":2678,"turns":4},{"id":"3.openai-docs-1","status":"failed","model":"GLM-5.3-Flash","wallMs":14408,"inputTokens":14881,"outputTokens":620,"contextPeak":13313,"turns":3},{"id":"3.openai-docs-2","status":"done","model":"GLM-5.3-Flash","wallMs":11623,"inputTokens":3859,"outputTokens":520,"contextPeak":3602,"turns":2},{"id":"3.openai-docs-3","status":"failed","model":"GLM-5.3-Flash","wallMs":5659,"inputTokens":8228,"outputTokens":1269,"contextPeak":3394,"turns":11},{"id":"4.openai-install-smoke","status":"done","model":"GLM-5.3-Flash","wallMs":113899,"inputTokens":61692,"outputTokens":9641,"contextPeak":8243,"turns":69},{"id":"5.reconcile-1","status":"done","model":"GLM-5.3-Flash","wallMs":33233,"inputTokens":211775,"outputTokens":3220,"contextPeak":95906,"turns":31}]}
+diff --git a/changelog.d/871-brief-zero-line-anchors.fixed.md b/changelog.d/871-brief-zero-line-anchors.fixed.md
+new file mode 100644
+index 00000000..1c0235dd
+--- /dev/null
++++ b/changelog.d/871-brief-zero-line-anchors.fixed.md
+@@ -0,0 +1 @@
++**evidence brief:** a file the search answered without a line number no longer renders as `path:0` in the `[PIXEL:BRIEF]` block — both the `files` list and the `likely definition` line name it by its bare path, the way a caller without a site already was. A `0` read as "line 0 of this file" and pointed an agent at a region the index never answered. Task #871.
+\ No newline at end of file
+diff --git a/crates/pixel/src/execution_brief/chain.rs b/crates/pixel/src/execution_brief/chain.rs
+index e8b83c0b..48a29813 100644
+--- a/crates/pixel/src/execution_brief/chain.rs
++++ b/crates/pixel/src/execution_brief/chain.rs
+@@ -547,7 +547,13 @@ pub(crate) fn run(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, de
+             && let Ok(head) = evidence.line_at(&path, line, deadline)
+         {
+             edit(state, |brief| {
+-                brief.likely_def = Some(format!("{path}:{line} — {head}"));
++                // A hit with no line of its own reads line 1, so it is named
++                // by bare path rather than by a `:0` that points nowhere.
++                brief.likely_def = Some(if line == 0 {
++                    format!("{path} — {head}")
++                } else {
++                    format!("{path}:{line} — {head}")
++                });
+             });
+         }
+     }
+@@ -764,10 +770,15 @@ fn render_with(brief: &Brief, shown: Shown) -> String {
+     }
+     if let Some(line) = list_line(
+         "files",
+-        brief
+-            .files
+-            .iter()
+-            .map(|hit| format!("{}:{}", clean(&hit.path), hit.line)),
++        brief.files.iter().map(|hit| {
++            // A file row the search answered without a line number is a
++            // bare path: `path:0` reads as a hit on line 0 of the file.
++            if hit.line == 0 {
++                clean(&hit.path)
++            } else {
++                format!("{}:{}", clean(&hit.path), hit.line)
++            }
++        }),
+         shown.files,
+         " ",
+         brief.searched,
+@@ -1150,6 +1161,9 @@ mod tests {
+         concept: Result<Found, String>,
+         symbols: Result<Vec<SymbolHit>, String>,
+         callers: Result<Vec<CallerHit>, String>,
++        /// Source line a `line_at` read answers with, when the fake models
++        /// source at all.
++        source: Option<String>,
+         pause: Duration,
+         log: Mutex<Vec<String>>,
+     }
+@@ -1161,6 +1175,7 @@ mod tests {
+                 concept: Ok(Found::default()),
+                 symbols: Ok(Vec::new()),
+                 callers: Ok(Vec::new()),
++                source: None,
+                 pause: Duration::ZERO,
+                 log: Mutex::new(Vec::new()),
+             }
+@@ -1193,6 +1208,10 @@ mod tests {
+             self.note(format!("callers {target}"));
+             self.callers.clone()
+         }
++        fn line_at(&self, path: &str, line: u64, _: Instant) -> Result<String, String> {
++            self.note(format!("line_at {path}:{line}"));
++            self.source.clone().ok_or_else(|| "no source".to_string())
++        }
+     }
+ 
+     fn chain(prompt: &str, fake: &Fake, window: Duration) -> Brief {
+@@ -1202,6 +1221,45 @@ mod tests {
+         state.into_inner().unwrap()
+     }
+ 
++    #[test]
++    fn likely_def_should_name_a_line_less_hit_by_its_path_alone() {
++        let mut fake = Fake::new();
++        // No symbol resolves, so the file whose stem matches the anchor is
++        // quoted as the likely definition — with no line number of its own.
++        fake.files = Ok(found(vec![hit("src/handleError.ts", 0)]));
++        fake.symbols = Ok(Vec::new());
++        fake.source = Some("export const handleError = (e) => e".to_string());
++        let brief = chain("where is `handleError` defined?", &fake, SECOND);
++        assert_eq!(
++            brief.likely_def.as_deref(),
++            Some("src/handleError.ts — export const handleError = (e) => e")
++        );
++        assert_eq!(fake.calls().last().unwrap(), "line_at src/handleError.ts:0");
++        let text = render(&brief).unwrap();
++        assert!(
++            text.contains("\nlikely definition: src/handleError.ts — export const handleError"),
++            "{text}"
++        );
++        assert!(!text.contains(":0"), "{text}");
++    }
++
++    #[test]
++    fn likely_def_should_keep_the_line_of_a_hit_that_has_one() {
++        let mut fake = Fake::new();
++        fake.files = Ok(found(vec![hit("src/handleError.ts", 7)]));
++        fake.symbols = Ok(Vec::new());
++        fake.source = Some("export const handleError = (e) => e".to_string());
++        let brief = chain("where is `handleError` defined?", &fake, SECOND);
++        assert!(
++            brief
++                .likely_def
++                .as_deref()
++                .is_some_and(|head| head.starts_with("src/handleError.ts:7 — ")),
++            "{:?}",
++            brief.likely_def
++        );
++    }
++
+     #[test]
+     fn chain_should_search_resolve_a_uid_and_run_impact_on_it_for_a_change_prompt() {
+         let mut fake = Fake::new();
+@@ -1221,7 +1279,8 @@ mod tests {
+             [
+                 "files_with handleError",
+                 "symbols handleError",
+-                "callers packages/ui/handleError.ts#handleError#function"
++                "callers packages/ui/handleError.ts#handleError#function",
++                "line_at packages/ui/handleError.ts:3"
+             ]
+         );
+         assert_eq!(brief.files, [hit("apps/web/page.tsx", 4)]);
+@@ -1238,7 +1297,14 @@ mod tests {
+         fake.files = Ok(found(vec![hit("src/a.ts", 2)]));
+         fake.symbols = Ok(vec![symbol("src/a.ts", "fetchUser")]);
+         let brief = chain("where is fetchUser defined", &fake, SECOND);
+-        assert_eq!(fake.calls(), ["files_with fetchUser", "symbols fetchUser"]);
++        assert_eq!(
++            fake.calls(),
++            [
++                "files_with fetchUser",
++                "symbols fetchUser",
++                "line_at src/a.ts:3"
++            ]
++        );
+         assert_eq!(brief.ops, 2);
+         assert!(brief.callers.is_empty());
+         assert!(!brief.impacted);
+@@ -1519,6 +1585,23 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn render_should_omit_the_line_number_of_a_file_without_one() {
++        let mut brief = full_brief();
++        brief.files = vec![
++            hit("apps/web/page.tsx", 0),
++            hit("packages/ui/handleError.ts", 1),
++        ];
++        let text = render(&brief).unwrap();
++        assert!(
++            text.contains("\nfiles: apps/web/page.tsx packages/ui/handleError.ts:1\n"),
++            "{text}"
++        );
++        // Every shape a `path:0` could take: the bare hit, and the pair with
++        // a real line beside it.
++        assert!(!text.contains(":0"), "{text}");
++    }
++
+     #[test]
+     fn render_should_say_none_for_an_answered_empty_list_and_omit_an_unrun_one() {
+         let brief = Brief {
+diff --git a/crates/pixel/src/main_tests/daemon_ping_tests.rs b/crates/pixel/src/main_tests/daemon_ping_tests.rs
+index 5f3bcc85..fa427669 100644
+--- a/crates/pixel/src/main_tests/daemon_ping_tests.rs
++++ b/crates/pixel/src/main_tests/daemon_ping_tests.rs
+@@ -327,8 +327,13 @@ fn unwrap_response_folds_envelope_warnings_only_when_there_are_some() {
+ #[test]
+ fn only_a_missing_or_refusing_socket_reads_as_no_daemon_to_upgrade() {
+     let root = scratch_root("upgrade-absent");
++    // On macOS /tmp is a symlink to /private/tmp, and canonicalize() resolves
++    // it into a path that already eats ~44 of sockaddr_un's ~104 usable bytes;
++    // keep the fixture socket short enough to stay under SUN_LEN.
++    let short = std::env::temp_dir().join(format!("px-upg-{}", std::process::id()));
++    let _ = std::fs::remove_file(&short);
+     assert_eq!(
+-        upgrade_daemon_request(&root.join("absent.sock"), &Request::Shutdown).map(|r| r.is_none()),
++        upgrade_daemon_request(&short, &Request::Shutdown).map(|r| r.is_none()),
+         Ok(true)
+     );
+     std::fs::write(root.join("file"), b"").unwrap();
+diff --git a/crates/pixel/tests/cli/prompt_brief_cli.rs b/crates/pixel/tests/cli/prompt_brief_cli.rs
+index 61d4d017..d2b10bc3 100644
+--- a/crates/pixel/tests/cli/prompt_brief_cli.rs
++++ b/crates/pixel/tests/cli/prompt_brief_cli.rs
+@@ -222,6 +222,41 @@ fn a_stale_graph_should_be_named_and_never_rebuilt_by_the_hook() {
+     assert_eq!(before, (stamp(&graph), stamp(&shard)));
+ }
+ 
++#[test]
++fn no_file_anchor_in_a_hook_brief_should_carry_a_zero_line() {
++    let root = indexed("no-zero-line");
++    for provider in ["claude", "codex"] {
++        let text = context(&hook(&root, provider, RENAME, &[])).to_string();
++        // Every `path:line` and `via:line` the block renders, in either list
++        // it can appear in. A row the search answered without a line number
++        // has to render as a bare path.
++        for anchor in anchors(&text) {
++            let line = anchor
++                .rsplit_once(':')
++                .unwrap_or_else(|| panic!("no line on {anchor:?} in\n{text}"));
++            assert_ne!(line.1, "0", "a zero line anchor {anchor:?} in\n{text}");
++            assert!(
++                line.1.chars().all(|ch| ch.is_ascii_digit()),
++                "a non-numeric line {anchor:?} in\n{text}"
++            );
++        }
++    }
++}
++
++/// The `path:line` and `via:line` tokens of a rendered brief.
++fn anchors(text: &str) -> Vec<String> {
++    text.lines()
++        .filter_map(|line| line.split_once(": "))
++        .find(|(label, _)| matches!(*label, "files" | "callers (impact d1)"))
++        .map(|(_, body)| body)
++        .unwrap_or_default()
++        .split([' ', ';'])
++        .map(str::trim)
++        .filter(|token| token.contains('.') && token.contains(':'))
++        .map(ToString::to_string)
++        .collect()
++}
++
+ #[test]
+ fn a_missing_graph_should_leave_the_text_evidence_and_build_nothing() {
+     let root = fixture("no-graph");
+diff --git a/docs/brief-question-kinds-experiment.md b/docs/brief-question-kinds-experiment.md
+new file mode 100644
+index 00000000..cea2569a
+--- /dev/null
++++ b/docs/brief-question-kinds-experiment.md
+@@ -0,0 +1,382 @@
++# Pixel brief: question-kind experiments and continuation
++
++Date: 2026-10-07
++Repository: /Users/livio/Documents/pixel
++Inspected HEAD: 14feba456b479be165ab40ec14dde3958a865368
++Branch during investigation: fix/brief-evidence-871
++Status: investigation complete; adaptations not implemented
++
++## Main conclusion
++
++The brief is worth extending. The initial recommendation to drop most
++question kinds was premature: it assessed the current brief's output rather
++than testing whether existing evidence could support better output.
++
++Useful evidence exists for lookup, impact, flow, tests, configuration,
++bounded diagnosis, recorded rationale, and bounded architecture questions.
++
++The current brief loses information during prompt parsing, evidence
++aggregation, and rendering. Correcting those losses is promising, but we
++have not demonstrated automatic retrieval quality or live latency for the
++proposed routes.
++
++## What the current prompt brief does
++
++This is the `[PIXEL:BRIEF]` returned by the prompt-submit task-event hook.
++It is distinct from the explicit `pixel execution-brief` command.
++
++The source path is:
++
++Codex/Claude prompt-submit
++→ task_hook::process
++→ start_brief
++→ chain::start
++→ prompt/config/index gates
++→ chain::run
++→ Pending::finish
++→ render
++→ with_brief
++→ host additionalContext
++
++Pi is excluded from this prompt-brief path.
++
++The brief requires an enabled feature, an existing index shard, a
++discoverable repository, and a qualifying code-related prompt.
++
++Limits:
++
++- Four index operations.
++- One shared 750 ms deadline.
++- 2,048 rendered bytes.
++- Up to four extracted anchors, but retrieval primarily uses the first.
++- Up to six words in the concept query.
++
++Current retrieval:
++
++1. Literal search for the first anchor.
++2. Concept search if no usable file was found.
++3. Symbol lookup.
++4. Direct upstream callers when change/caller intent is detected.
++5. A source-line read for the selected definition, outside the index-op count.
++
++Evidence comes from a compatible warm daemon or read-only local stores.
++Local concept lookup requires a daemon. The brief does not start a daemon,
++build indexes, or refresh graphs.
++
++A stale/missing graph can leave text evidence available, with graph failure
++reported under `unresolved`. If every operation fails, no brief is rendered.
++
++## Question kinds and revised assessment
++
++| Kind | Useful evidence | Remaining limitation |
++| --- | --- | --- |
++| Definition/value lookup | Declaration location and source line | Multiline or computed values may need more context |
++| Change impact | Definition, direct caller, direct test references | Graph and text evidence do not prove exhaustive impact |
++| Code flow | Ordered sequence supported by call sites and source | A function signature alone does not establish the sequence |
++| Diagnosis | Guard conditions, error sites, fallback behavior | Static evidence does not establish an arbitrary live root cause |
++| Configuration/install | Registrations, install destinations, setting precedence | Relevant evidence spans config and install code |
++| Tests/validation | Test names, assertions, workflow commands | Discovery does not prove tests ran or current CI passed |
++| History/rationale | Recorded commit messages and documentation | Authorship is not ownership; undocumented intent stays unknown |
++| Architecture | Component boundaries and bounded dependency paths | A retrieved path is not a complete system model |
++
++None of these kinds should be declared generally solved from this sample.
++The revised finding is that none is demonstrated to be a dead end.
++
++## Concrete information loss
++
++### Matching source text is discarded
++
++Search already supplies matching text. The adapter retains path/line
++locations rather than the matching content.
++
++Sources:
++
++- crates/pixel/src/execution_brief/evidence.rs:
++  local_files, search_files, file_rows
++- crates/pixel-index/src/verify.rs: MatchLine
++
++Preserving short excerpts could help without requiring another search.
++
++### Same-file matches collapse
++
++Brief::absorb deduplicates by file path. That hides separate production and
++test references when they occur in one Rust file.
++
++For `build_decisions_request`:
++
++- Definition: decide_remote.rs:538.
++- Production call: decide_remote.rs:341.
++- Direct test call: decide_remote.rs:1268.
++- Direct test call: decide_remote.rs:1351.
++
++The corresponding direct tests are:
++
++- the_decisions_request_maps_labels_to_choice_values_with_their_criteria
++  — decide_remote.rs:1261.
++- the_openai_preset_posts_to_decisions_not_chat_completions
++  — decide_remote.rs:1334.
++
++Indirect behavior coverage also exists through
++decide_routes_the_openai_preset_through_the_decisions_wire_end_to_end.
++
++These references show why the earlier file-only impact brief was incomplete.
++
++### Concept extraction drops important clauses
++
++A source-derived reproduction of the six-word extraction produced:
++
++| Prompt kind | Retained query | Important discarded words |
++| --- | --- | --- |
++| Flow | codex prompt reach pixel evidence brief | step |
++| Diagnosis | pixel prompt brief report stale graph | failure, surface |
++| Configuration | pixel install codex prompt hook config | layers, control |
++| Validation | tests cover start brief routing stale | graph, workspace, checks, release |
++| Architecture | boundaries prompt brief cross hook graph | evidence, downstream, readers, depend |
++
++This verifies query information loss. It does not measure resulting search
++quality.
++
++### Confidence describes evidence presence, not answer completeness
++
++Any nonempty callers list produces `high` confidence. A file or definition
++produces `medium`.
++
++The label does not establish that every requested subquestion was answered,
++all tests were found, or the graph is complete.
++
++### The footer restricts useful follow-up
++
++The fixed footer instructs the agent to open a file only if it contradicts
++the brief. That is too restrictive for evidence that supplies navigation
++without enough content to answer the question.
++
++An incomplete packet needs an explicit follow-up allowance, even when its
++existing facts are correct.
++
++### Generated-file filtering needs question-aware review
++
++The brief excludes JSON as generated/data evidence. Some configuration and
++hook questions concern meaningful JSON files. Reconsidering that exclusion
++requires care around credential paths and secret values.
++
++## Existing capabilities worth reusing
++
++Pixel already contains:
++
++- A composed locate recipe with resolve, source context, and caller-derived
++  test-file discovery.
++- Direct caller/callee and trace operations.
++- Repository mapping and context facilities.
++- Commit history and provenance operations.
++- Searchable architecture, workflow, and configuration documentation.
++
++The locate recipe is not a drop-in replacement for the hook chain: it can
++perform additional calls and has different execution/budget behavior.
++
++Its test discovery also has an explicit limitation: Rust inline `#[test]`
++functions are not indexed. Test-path naming heuristics miss tests embedded
++in production files.
++
++History can establish recorded changes and constraints. Provenance can
++establish authorship. Neither alone establishes the reason for a decision
++or its current owner.
++
++## Source-derived prototype packets
++
++Five packets were manually assembled in memory from inspected source and
++a verified commit message. UTF-8 size was measured using
++`len(packet.encode())`.
++
++| Packet | Bytes |
++| --- | ---: |
++| Rename and direct tests | 539 |
++| Ordered prompt-to-context flow | 520 |
++| Stale-graph guard explanation | 456 |
++| Named brief regression tests | 446 |
++| Recorded historical constraints | 517 |
++
++All fit the 2,048-byte cap.
++
++These are feasibility examples, not emitted hook outputs or automatically
++retrieved answers. They use manually selected source locations. They do
++not prove a four-operation route, 750 ms latency, or generalization to
++unfamiliar repositories.
++
++Recorded rationale was verified with:
++
++```sh
++rtk proxy git show -s --format='%h%n%B' \
++  14feba456b479be165ab40ec14dde3958a865368
++```
++
++That commit records the four-operation, 750 ms, read-only, 2 KiB design.
++It references #865 and includes documentation corrections for Pi exclusion
++and stale-graph fallback.
++
++## Earlier arena runs and hook-delivery problem
++
++The arena uses two Codex arms: raw and pixel. The runner, not ad hoc panes,
++should create the labeled Herdr sessions.
++
++Historical runs reported:
++
++| Run directory suffix | Raw score | Pixel score |
++| --- | ---: | ---: |
++| openai-brief-arena-20261007-01 | 78.6% | 85.7% |
++| openai-brief-arena-20261007-03 | 85.7% (12/14) | 100% (14/14) |
++
++However, the Pixel receipt reported:
++
++- response_valid: false
++- emitted_context: false
++- hook_event_name: null
++
++Therefore these scores do not establish a benefit from brief delivery.
++
++The arena entrypoint still invokes the legacy prompt-submit hook command.
++Current source documents that retired hook verbs exit successfully without
++output; the live brief is delivered through task-event prompt-submit.
++
++Two entrypoint lines were temporarily changed during an earlier attempt,
++then restored after the user objected. Do not silently reapply that change.
++Any future repair must be explicit, minimal, and independently validated.
++
++Relevant files:
++
++- eval/arena.sh
++- eval/arena/entrypoint.sh
++- eval/arena/README.md
++- eval/arena-results/openai-brief-arena-20261007-03
++
++## Previous local checks
++
++Earlier in the session, these focused suites were reported passing:
++
++| Command | Passed |
++| --- | ---: |
++| cargo test -p pixel-cli --bin pixel classify:: | 54 |
++| cargo test -p pixel-cli --bin pixel decide_remote:: | 31 |
++| cargo test -p pixel-cli --bin pixel execution_brief:: | 74 |
++| cargo test -p pixel-cli --test cli config_cli::classify_accepts_the_openai_preset_and_names_its_key_when_missing | 1 |
++| cargo test -p pixel-cli --test cli prompt_brief_cli:: | 9 |
++
++These are historical session results. They do not validate a future
++adaptation, current-head CI, installation, or arena hook delivery.
++
++## How to continue
++
++### 1. Establish a valid delivery baseline
++
++Confirm the arena's exact hook command and host envelope against current
++source. Obtain one captured Codex prompt where:
++
++- The correct task-event prompt-submit path runs.
++- A valid additional-context response contains `[PIXEL:BRIEF]`.
++- The transcript shows the agent actually received the block.
++
++Record emission, host relay, receipt, and model use separately.
++
++Keep this harness correction separate from question-kind adaptations so
++the experiment does not change both delivery and retrieval simultaneously.
++
++### 2. Freeze a reproducible question matrix
++
++Use the eight question kinds above. Include:
++
++- Exact identifiers and natural-language prompts.
++- Multiple requirements in one prompt.
++- Same-file Rust unit tests.
++- Missing and stale graphs.
++- No matching code.
++- Ambiguous symbol names.
++- Configuration files.
++- A rationale question with no recorded rationale.
++
++For each case, record expected evidence and what would count as an
++unsupported claim. Avoid equating a file hit with a complete answer.
++
++### 3. Compare parallel and ordered execution separately
++
++Use isolated raw/pixel Codex arms with identical model settings, repository
++snapshot, and task wording.
++
++Run kinds concurrently in isolated sessions for throughput. Run a separate
++ordered pass to check consistency and any effects of session history.
++
++Do not compare a fresh session against a session carrying earlier answers.
++Label question kind and raw/pixel arm visibly in Herdr.
++
++### 4. Adapt evidence selection before adding broad new providers
++
++Evaluate the smallest changes independently:
++
++- Retain bounded matching text.
++- Preserve distinct reference sites within a file.
++- Preserve important later clauses and multiple requested evidence types.
++- Distinguish direct test references from indirect behavior coverage.
++- Report missing evidence and coverage rather than answer-wide confidence.
++- Allow bounded follow-up reads when the packet is insufficient.
++
++Use the existing locate/context/trace/history machinery where appropriate,
++but preserve the hook's read-only behavior and explicit deadline.
++
++### 5. Measure the complete behavior
++
++For every run record:
++
++- Snapshot/commit, binary version, task, model, and settings.
++- Exact brief and rendered byte count.
++- Operations attempted and answered.
++- End-to-end hook latency.
++- Files and ranges read afterward.
++- Correct requested facts and unsupported claims.
++- Whether failure paths continue safely.
++- Tokens and commands, alongside answer quality.
++
++Keep a route when it improves supported answers or reduces necessary
++follow-up without increasing false confidence. Require more than one
++hand-selected example before calling a question kind solved.
++
++### 6. Implement and validate a focused candidate
++
++Preserve existing dirty work. Read CONTRIBUTING.md, applicable scoped
++rules, and the Rust guidelines before editing.
++
++Delegate independent work with disjoint write ownership. Use ordinary
++focused regression tests for the observed contracts. Publish a reviewable
++candidate; required current-head validation belongs to CI.
++
++Do not run local/manual mutation campaigns. Do not reinstall global hooks
++unless installed-behavior verification requires it. An installation check
++must follow the repository's documented workflow and be reported separately.
++
++## Workspace and operational constraints
++
++- Existing user changes remain in the working tree.
++- No adaptation edits or rebase were performed during the deeper investigation.
++- The branch was last observed behind origin/main; fetch had occurred, but
++  integration was not performed.
++- Preserve unrelated Herdr panes and the main operator pane.
++- User requested Codex, with visibly labeled raw/pixel arena arms.
++- The current session is read-only, blocking document persistence and
++  implementation.
++- No claim of a completed eight-kind live arena experiment is warranted.
++
++## Primary continuation sources
++
++- crates/pixel/src/execution_brief/chain.rs
++- crates/pixel/src/execution_brief/evidence.rs
++- crates/pixel/src/execution_brief.rs
++- crates/pixel/src/task_hook.rs
++- crates/pixel-proto/src/query.rs
++- crates/pixel/src/main.rs — run_locate and LOCATE_TESTS_NOTE
++- crates/pixel/src/decide_remote.rs
++- crates/pixel/tests/cli/prompt_brief_cli.rs
++- crates/pixel-install/src/codex_config.rs
++- crates/pixel-install/src/install.rs
++- crates/pixel-ops/src/history.rs
++- crates/pixel-ops/src/provenance.rs
++- ARCHITECTURE.md — hooks and prompt brief
++- CONTRIBUTING.md
++- .agents/rules/measuring.md
++- .agents/skills/agent-session-debugging/SKILL.md
+diff --git a/eval/arena.sh b/eval/arena.sh
+index a2a349a2..feda46fb 100755
+--- a/eval/arena.sh
++++ b/eval/arena.sh
+@@ -15,7 +15,8 @@
+ #                      [--assert-context-parity] [--prepare-pixel-graph]
+ #                      [--review-pixel-hooks] [--skill-candidate-dir DIR]
+ #   --watch opens one Herdr pane per arm container (when inside Herdr)
+-#   streaming the measured agent output; falls back to a tmux session otherwise.
++#   running `docker exec -it <c> codex` — interactive codex with and
++#   without pixel side by side; falls back to a tmux session otherwise.
+ # Results: <results-dir>/<arm>-<task>-<rep>.jsonl + rank table.
+ set -euo pipefail
+ ARENA_DIR="$(cd "$(dirname "$0")" && pwd)"
+@@ -89,6 +90,10 @@ if [ "$REVIEWED_PIXEL_HOOKS" = "1" ]; then
+     exit 2
+   fi
+ fi
++
++if [ "$REVIEWED_PIXEL_HOOKS" != "1" ] && [ " $ARMS " = " raw pixel " ]; then
++  echo "WARNING: live Pixel brief evidence is disabled; rerun with --review-pixel-hooks and a reviewed hook image" >&2
++fi
+ SKILL_PILOT=0
+ if [ -n "$SKILL_CANDIDATE_DIR" ]; then
+   SKILL_PILOT=1
+@@ -171,76 +176,8 @@ receipt = {
+ PY
+ : > "$RESULTS/.watch-panes"
+ 
+-
+-# --- --watch helpers (defined here; invoked per rep-1 container at launch) ---
+-# The pane follows the measured Codex task output; it never starts a second
+-# agent or submits another prompt against the measured repository.
+-open_watch_pane() {  # container arm
+-  local c="$1" arm="$2" wp task log_path monitor_cmd
+-  wp=$(herdr pane split --current --direction right --no-focus \
+-    | python3 -c "import json,sys;print(json.load(sys.stdin)['result']['pane']['pane_id'])" 2>/dev/null || true)
+-  if [ -z "$wp" ]; then
+-    echo "WARNING: herdr pane split failed; $c logs via 'docker logs -f $c'" >&2
+-    return 0
+-  fi
+-  echo "$wp" >> "$RESULTS/.watch-panes"
+-  herdr pane rename "$wp" "arena-$RUN_ID-$arm" >/dev/null 2>&1
+-  task="${TASKS%% *}"
+-  log_path="/out/${arm}-${task}-1.jsonl"
+-  printf -v monitor_cmd 'docker exec -it %q sh -c %q sh %q' "$c" \
+-    'while [ ! -f "$1" ]; do sleep 1; done; tail -n +1 -f "$1"' "$log_path"
+-  herdr pane run "$wp" "$monitor_cmd" >/dev/null 2>&1
+-}
+-
+-# Equalize all panes in the tab to identical column widths: probe the layout
+-# with a zero-delta resize (returns geometry, moves nothing), then drag each
+-# column boundary to i/N of the row width until every column matches.
+-equalize_watch_panes() {
+-  python3 - <<'PYEQ' 2>/dev/null || true
+-import json, subprocess, time
+-
+-def herdr(*a):
+-    try:
+-        return json.loads(subprocess.run(
+-            ["herdr", *a], capture_output=True, text=True, timeout=15).stdout)
+-    except Exception:
+-        return None
+-
+-def layout(pane):
+-    r = herdr("pane", "resize", "--pane", pane, "--direction", "left",
+-              "--amount", "0")
+-    try:
+-        return r["result"]["resize"]["layout"]
+-    except (TypeError, KeyError):
+-        return {}
+-
+-panes = herdr("pane", "list")
+-anchor = next((p["pane_id"] for p in (panes or {}).get("result", {}).get("panes", [])), "")
+-for _ in range(12):
+-    lay = layout(anchor)
+-    cols = sorted(lay.get("panes", []), key=lambda p: p["rect"]["x"])
+-    if len(cols) < 2:
+-        break
+-    width = lay["area"]["width"]
+-    moved = False
+-    for k in range(len(cols) - 1):
+-        gap = cols[k + 1]["rect"]["x"] - round(width * (k + 1) / len(cols))
+-        if abs(gap) <= 1:
+-            continue
+-        herdr("pane", "resize", "--pane", cols[k + 1]["pane_id"],
+-              "--direction", "left" if gap > 0 else "right",
+-              "--amount", str(round(abs(gap) / width, 3)))
+-        moved = True
+-        break
+-    if not moved:
+-        break
+-    time.sleep(0.1)
+-PYEQ
+-}
+-
+ prompt_for() { python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['prompt'])" "$SCENARIOS_DIR/$1.json"; }
+ 
+-
+ scrub_pixel_lines() {
+   local path="$1" temp="${1}.scrubbed" status
+   if grep -vEi 'pixel' "$path" > "$temp"; then
+@@ -329,6 +266,12 @@ launch_arm() {  # arm rep immutable-image-id — one container runs all tasks
+         return 1
+       fi
+     fi
++    if [ "$arm" = "pixel" ]; then
++      # Reviewed hook experiments must not inherit a repo-local Codex hook
++      # file from the source checkout; the disposable user-level registry is
++      # the only hook surface under audit.
++      rm -f "$snap/.codex/hooks.json" "$snap/.codex/pixel-composed-guard-backup.json"
++    fi
+   fi
+   local missing=0
+   for task in $TASKS; do
+@@ -346,6 +289,7 @@ launch_arm() {  # arm rep immutable-image-id — one container runs all tasks
+     -v "$RESULTS":/out \
+     -e ARM_TOOL="$arm" -e REP="$rep" -e TASKS="$TASKS" -e ARENA_RUN_ID="$RUN_ID" \
+     -e PIXEL_ARENA_PREP_GRAPH="$PREPARE_PIXEL_GRAPH" \
++    -e PIXEL_ARENA_REUSE_INDEX="${PIXEL_ARENA_REUSE_INDEX:-1}" \
+     -e ARENA_SKILL_PILOT="$SKILL_PILOT" \
+     -e ARENA_REVIEWED_PIXEL_HOOKS="$REVIEWED_PIXEL_HOOKS" \
+     -e CODEX_MODEL="${CODEX_MODEL:-}" -e CODEX_EFFORT="${CODEX_EFFORT:-}" \
+@@ -384,11 +328,6 @@ PY
+     return 1
+   fi
+   echo "launched arm=$arm container=$container image=$actual_image"
+-  # panes open the moment the container exists — never wait for reps to finish
+-  if [ "$rep" = "1" ] && [ "$WATCH" = "1" ] && [ -n "${HERDR_ENV:-}" ] \
+-    && command -v herdr >/dev/null 2>&1; then
+-    open_watch_pane "$container" "$arm"
+-  fi
+ }
+ 
+ ARM_IMAGE_IDS=()
+@@ -463,30 +402,186 @@ for arm in $ARMS; do
+   CODEX_VERSION="$image_codex_version"
+ done
+ 
++# --review-pixel-hooks requires the pixel image's install to write the full
++# audited 11-command Codex hook set. Pixel main's native-default install
++# writes task-event hooks only (no `run-hook prompt-submit`, no metrics), which
++# the paired audit rejects after containers have already spent minutes on
++# preparation. Probe the image once here, so the failure is immediate.
++if [ "$REVIEWED_PIXEL_HOOKS" = "1" ]; then
++  case " $ARMS " in *" pixel "*) ;;
++    *) echo "--review-pixel-hooks needs a pixel arm" >&2; exit 2 ;;
++  esac
++  pixel_image="${PIXEL_IMAGE_ID:-${PIXEL_IMAGE_REF:-pixel-arena:pixel}}"
++  if ! "$DOCKER_BIN" run --rm \
++      -v "$ARENA_DIR/arena/hook_audit.py":/usr/local/lib/arena-hook-audit.py:ro \
++      --entrypoint sh "$pixel_image" -c '
++        pixel install >/dev/null 2>&1 || exit 1
++        python3 /usr/local/lib/arena-hook-audit.py audit \
++          --arm pixel --codex-home "$HOME/.codex" \
++          --repo /tmp/preflight-repo --receipt /tmp/preflight.json
++      ' >/dev/null 2>&1; then
++    echo "ERROR: --review-pixel-hooks: the pixel image writes the native-default hook set (task-event only), which the paired audit rejects; this mode needs a pixel install that also writes the Codex prompt-submit and metrics hooks" >&2
++    exit 2
++  fi
++fi
++
++# --watch: open one Herdr pane per still-running container (inside Herdr,
++# splitting the current pane right — side by side). Must happen before `docker
++# wait`: after it, the containers have exited and `docker exec -it` fails with
++# "container is not running". The tmux fallback stays after that wait —
++# `docker logs -f` streams even for exited containers.
++launch_watch_panes() {  # <container>...
++  local watch_rep="$1"
++  shift
++  local c watch_pane watch_arm watch_owner
++  submit_codex_prompt() {
++    local pane_id="$1" prompt="$2" attempt screen
++    herdr pane send-text "$pane_id" "$prompt" >/dev/null 2>&1
++    sleep 1
++    for attempt in 1 2 3; do
++      herdr pane send-keys "$pane_id" Enter >/dev/null 2>&1
++      sleep 1
++      screen=$(herdr pane read "$pane_id" 2>/dev/null | tail -20)
++      case "$screen" in
++        *"Working"*|*"Explored"*|*"•"*) return 0 ;;
++      esac
++    done
++    echo "WARNING: Codex prompt was not visibly submitted in pane $pane_id" >&2
++    return 1
++  }
++  wait_for_live_hook() {
++    local rep="$1" receipt="$RESULTS/pixel-hook-${rep}.jsonl"
++    for _ in $(seq 1 90); do
++      if [ -s "$receipt" ] && python3 - "$receipt" <<'PY'
++import json
++import sys
++from pathlib import Path
++
++try:
++    rows = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]
++except (OSError, ValueError):
++    rows = []
++for row in rows:
++    if (
++        row.get("hook_event_name") == "UserPromptSubmit"
++        and row.get("response_valid") is True
++        and row.get("emitted_context") is True
++    ):
++        print("=== Live Pixel prompt-submit context ===")
++        print(row.get("additional_context", ""))
++        print("=== End live Pixel prompt-submit context ===")
++        raise SystemExit(0)
++raise SystemExit(1)
++PY
++      then
++        echo "verified: live Pixel UserPromptSubmit hook in $receipt"
++        return 0
++      fi
++      sleep 1
++    done
++    echo "WARNING: live Pixel UserPromptSubmit hook was not observed in $receipt" >&2
++    touch "$RESULTS/pixel-hook-live-${rep}.failed"
++    return 1
++  }
++  watch_owner="${HERDR_PANE_ID:-}"
++  if [ -z "$watch_owner" ]; then
++    watch_owner=$(herdr pane list | python3 -c \
++      "import json,sys; panes=json.load(sys.stdin)['result']['panes']; print(next((p['pane_id'] for p in panes if p.get('focused')), ''))" \
++      2>/dev/null || true)
++  fi
++  if [ -z "$watch_owner" ]; then
++    echo "WARNING: --watch could not identify the Herdr owner pane; set HERDR_PANE_ID" >&2
++    return 1
++  fi
++  local ready=1
++  for c in "$@"; do
++    watch_arm=${c#arena-}; watch_arm=${watch_arm%%-*}
++    for _ in $(seq 1 120); do
++      if "$DOCKER_BIN" exec "$c" test -e "/out/arena-ready-${watch_arm}-${watch_rep}" >/dev/null 2>&1; then
++        break
++      fi
++      sleep 1
++    done
++    if ! "$DOCKER_BIN" exec "$c" test -e "/out/arena-ready-${watch_arm}-${watch_rep}" >/dev/null 2>&1; then
++      echo "WARNING: $c did not finish setup before pane launch" >&2
++      ready=0
++    fi
++  done
++  [ "$ready" -eq 1 ] || return 1
++  for c in "$@"; do
++    watch_pane=$(HERDR_PANE_ID="$watch_owner" herdr pane split --current --direction right \
++      | python3 -c "import json,sys;print(json.load(sys.stdin)['result']['pane']['pane_id'])" 2>/dev/null || true)
++    if [ -n "$watch_pane" ]; then
++      echo "$watch_pane" >> "$RESULTS/.watch-panes"
++      watch_arm=${c#arena-}; watch_arm=${watch_arm%%-*}
++      herdr pane rename "$watch_pane" "arena-$watch_arm" >/dev/null 2>&1
++      # interactive Codex inside the arm's container, YOLO. The task is sent
++      # through the normal TUI after it reaches its input prompt.
++      local prompt
++      prompt=$(prompt_for "${TASKS%% *}")
++      herdr pane run "$watch_pane" \
++        "docker exec -it $c codex -m $CODEX_MODEL -c model_reasoning_effort=$CODEX_EFFORT --dangerously-bypass-approvals-and-sandbox"
++      # codex asks to trust /repo, then to trust installed hooks (pixel
++      # arm): answer both so the pane lands on the prompt, unattended.
++      (
++        pane_id="$watch_pane"
++        hook_trust_required=0
++        hook_trust_complete=0
++        for _ in $(seq 1 45); do
++          screen=$(herdr pane read "$pane_id" 2>/dev/null | tail -20)
++          case "$screen" in
++            *"Hooks need review"*|*"Trust all and continue"*)
++              hook_trust_required=1
++              herdr pane send-keys "$pane_id" Down >/dev/null 2>&1
++              sleep 1
++              herdr pane send-keys "$pane_id" Enter >/dev/null 2>&1
++              sleep 2
++              screen=$(herdr pane read "$pane_id" 2>/dev/null | tail -20)
++              case "$screen" in
++                *"Hooks need review"*|*"Trust all and continue"*) ;;
++                *) hook_trust_complete=1 ;;
++              esac ;;
++            *"Trust and continue"*)
++              herdr pane send-keys "$pane_id" Enter >/dev/null 2>&1 ;;
++            *"Ask Codex"*)
++              if [ "$watch_arm" = "pixel" ] && [ "$hook_trust_required" = "1" ] && [ "$hook_trust_complete" != "1" ]; then
++                echo "WARNING: Pixel hook trust was not confirmed in pane $pane_id" >&2
++                touch "$RESULTS/pixel-hook-trust-${watch_rep}.failed"
++                exit 1
++              fi
++              submit_codex_prompt "$pane_id" "$prompt" || true
++              [ "$watch_arm" = "pixel" ] && wait_for_live_hook "$watch_rep" || true
++              exit 0 ;;
++          esac
++          sleep 2
++        done
++      ) &
++    else
++      echo "WARNING: herdr pane split failed; $c logs via 'docker logs -f $c'" >&2
++    fi
++  done
++  echo "watching: herdr panes running interactive codex ($# containers)"
++}
++
++launch_watch_tmux() {  # <container>... — tiled tmux fallback
++  local c
++  WATCH_SESSION="arena-$$"
++  tmux new-session -d -s "$WATCH_SESSION" -x 220 -y 50 \
++    "docker logs -f $1; echo; echo 'container exited'; exec \${SHELL:-sh}"
++  for c in "${@:2}"; do
++    tmux split-window -t "$WATCH_SESSION" \
++      "docker logs -f $c; echo; echo 'container exited'; exec \${SHELL:-sh}"
++    tmux select-layout -t "$WATCH_SESSION" tiled >/dev/null
++  done
++  tmux select-layout -t "$WATCH_SESSION" tiled >/dev/null
++  echo "watching: tmux attach -t $WATCH_SESSION"
++}
++
+ # all arms in parallel: one container each, all tasks inside
+ CONTAINERS=()
+ CONTAINER_ARMS=()
+ CONTAINER_REPS=()
+ LAUNCH_FAIL=0
+-if [ "$WATCH" = "1" ] && [ -n "${HERDR_ENV:-}" ] && command -v herdr >/dev/null 2>&1; then
+-  # close prior arena/ab panes first — even ones this run did not create —
+-  # then each new rep-1 container opens its own pane as soon as it starts
+-  if [ -f "$RESULTS/.watch-panes" ]; then
+-    while IFS= read -r old_pane; do
+-      [ -n "$old_pane" ] && herdr pane close "$old_pane" >/dev/null 2>&1
+-    done < "$RESULTS/.watch-panes"
+-  fi
+-  for stale_pane in $(herdr pane list 2>/dev/null | python3 -c \
+-    "import json,sys
+-run_prefix = 'arena-' + sys.argv[1] + '-'
+-for p in json.load(sys.stdin)['result']['panes']:
+-    label = p.get('label') or ''
+-    if label.startswith(run_prefix):
+-        print(p['pane_id'])" "$RUN_ID" 2>/dev/null); do
+-    herdr pane close "$stale_pane" >/dev/null 2>&1
+-  done
+-fi
+-
+ for rep in $(seq 1 "$REPS"); do
+   # fresh snapshot per rep: prior reps' index artifacts and tool edits must
+   # not leak into the next rep's starting state. Rep-scoped names —
+@@ -508,40 +603,43 @@ for rep in $(seq 1 "$REPS"); do
+     CONTAINER_REPS+=("$rep")
+     rep_containers+=("arena-$arm-$RUN_ID-$rep")
+   done
+-  if [ "$rep" = "1" ] && [ "$WATCH" = "1" ] && [ -n "${HERDR_ENV:-}" ]; then
+-    # all rep-1 panes exist — flatten to equal columns and label the tab
+-    # immediately, before the serialized wait
+-    equalize_watch_panes
+-    herdr tab rename "$(herdr pane list 2>/dev/null | python3 -c \
+-      "import json,sys;print(json.load(sys.stdin)['result']['panes'][0]['tab_id'])" 2>/dev/null)" \
+-      "arena: $(echo "$ARMS" | tr ' ' '|')" >/dev/null 2>&1 || true
+-  fi
+   # serialize reps: waiting here keeps rep N+1 from racing rep N's still
+   # running containers for CPU — wall times stay comparable across reps
+   if [ "${#rep_containers[@]}" -gt 0 ]; then
++    # The Watch panes must open while the containers are still running: after
++    # `docker wait` they have exited and `docker exec -it` cannot attach.
++    if [ "$WATCH" = "1" ]; then
++      if [ -n "${HERDR_ENV:-}" ] && command -v herdr >/dev/null 2>&1; then
++        launch_watch_panes "$rep" "${rep_containers[@]}"
++      elif command -v tmux >/dev/null 2>&1; then
++        launch_watch_tmux "${rep_containers[@]}"
++      else
++        echo "WARNING: --watch needs herdr (HERDR_ENV) or tmux; neither found" >&2
++      fi
++    fi
+     "$DOCKER_BIN" wait "${rep_containers[@]}" >/dev/null 2>&1 || true
+   fi
+ done
+ 
+-# --watch: one pane per container streaming `docker logs -f`. Inside Herdr
+-# (HERDR_ENV=1) splits the current pane right, side by side with this one;
+-# otherwise falls back to a tiled tmux session you attach separately.
+-if [ "$WATCH" = "1" ]; then
+-  if [ -n "${HERDR_ENV:-}" ] && command -v herdr >/dev/null 2>&1; then
+-    echo "watching: herdr panes opened at launch (${#CONTAINERS[@]} containers)"
+-  elif ! command -v tmux >/dev/null 2>&1; then
+-    echo "WARNING: --watch needs herdr (HERDR_ENV) or tmux; neither found" >&2
+-  elif [ "${#CONTAINERS[@]}" -gt 0 ]; then
+-    WATCH_SESSION="arena-$$"
+-    tmux new-session -d -s "$WATCH_SESSION" -x 220 -y 50 \
+-      "docker logs -f ${CONTAINERS[0]}; echo; echo 'container exited'; exec \${SHELL:-sh}"
+-    for c in "${CONTAINERS[@]:1}"; do
+-      tmux split-window -t "$WATCH_SESSION" \
+-        "docker logs -f $c; echo; echo 'container exited'; exec \${SHELL:-sh}"
++# --watch, tmux fallback (no Herdr): streaming `docker logs -f` also works
++# after the containers exit, so it stays after the wait. The interactive herdr
++# panes open in launch_watch_panes, before the rep loop's `docker wait`.
++if [ "$WATCH" = "1" ] && { [ -z "${HERDR_ENV:-}" ] || ! command -v herdr >/dev/null 2>&1; }; then
++  if command -v tmux >/dev/null 2>&1; then
++    if [ "${#CONTAINERS[@]}" -gt 0 ]; then
++      WATCH_SESSION="arena-$$"
++      tmux new-session -d -s "$WATCH_SESSION" -x 220 -y 50 \
++        "docker logs -f ${CONTAINERS[0]}; echo; echo 'container exited'; exec \${SHELL:-sh}"
++      for c in "${CONTAINERS[@]:1}"; do
++        tmux split-window -t "$WATCH_SESSION" \
++          "docker logs -f $c; echo; echo 'container exited'; exec \${SHELL:-sh}"
++        tmux select-layout -t "$WATCH_SESSION" tiled >/dev/null
++      done
+       tmux select-layout -t "$WATCH_SESSION" tiled >/dev/null
+-    done
+-    tmux select-layout -t "$WATCH_SESSION" tiled >/dev/null
+-    echo "watching: tmux attach -t $WATCH_SESSION"
++      echo "watching: tmux attach -t $WATCH_SESSION"
++    fi
++  else
++    echo "WARNING: --watch needs herdr (HERDR_ENV) or tmux; neither found" >&2
+   fi
+ fi
+ 
+@@ -560,6 +658,7 @@ for i in "${!CONTAINERS[@]}"; do
+   fi
+   docker rm "$c" >/dev/null 2>&1
+ done
++[ -z "$(rtk find "$RESULTS" -maxdepth 1 \( -name 'pixel-hook-live-*.failed' -o -name 'pixel-hook-trust-*.failed' \) -print -quit 2>/dev/null)" ] || FAIL=1
+ [ "$FAIL" -ne 0 ] && echo "WARNING: some arm containers failed (see above)"
+ 
+ echo "=== ranking"
+diff --git a/eval/arena/README.md b/eval/arena/README.md
+index dda41275..11725fec 100644
+--- a/eval/arena/README.md
++++ b/eval/arena/README.md
+@@ -46,6 +46,17 @@ into each container, including when reusing a pinned image; harness-only edits
+ do not require an image rebuild. `harness-source.json` records SHA-256 values
+ and container paths for the runner files used in that run.
+ 
++With `--watch`, Herdr panes run the normal interactive `codex` TUI, submit the
++same first scenario prompt, and use Codex's
++`--dangerously-bypass-approvals-and-sandbox` flag for YOLO mode. Do not use
++`codex exec` or `--full-auto` for the visible pane run. When launched outside a
++Herdr pane, the runner discovers the focused pane; set `HERDR_PANE_ID` when
++that is ambiguous. The pane waits for the arm's setup-ready marker, so Pixel's
++hooks are installed before the visible Codex session starts.
++The repeatable stale-pane/layout/prompt-submit drill is also recorded in the
++`codex/700-native-default` history and its follow-up `wip: arena watch
++prompt-submit edits` stash.
++
+ Graph experiments use `--prepare-pixel-graph`; the saved setup receipt separates
+ index preparation from model time. Retrieval routing stays native by default,
+ including when a graph is prepared. A fresh Codex home may leave installed
+@@ -53,6 +64,22 @@ hooks untrusted: static context parity alone cannot establish hook delivery.
+ `--assert-context-parity` additionally expects no Pixel calls and is intended
+ for generic-question abstention controls.
+ 
++Every Pixel arm now runs a deterministic preflight after setup. It sends a
++fixed Codex `UserPromptSubmit` payload through `pixel run-hook prompt-submit`
++and requires a non-empty valid response. The result is saved as
++`pixel-brief-hook-<rep>.json`; `response_valid` is the pass/fail check and the
++receipt stores only context type, size, and hash, not the prompt. A valid
++prompt hook can return either `[PIXEL:BRIEF]` or `[PIXEL:EXECUTION_ROUTE]`;
++those are distinct context shapes and neither is inferred from a scenario name.
++The runner also prints the full returned context between explicit begin/end
++markers during preflight and after a live watched submission.
++Native-default installs intentionally do not register this retrieval hook.
++Use `--review-pixel-hooks` with a reviewed hook image to require the live
++Codex `UserPromptSubmit` wrapper receipt (`pixel-hook-<rep>.jsonl`) with a
++valid, forwarded, non-empty context.
++The default setup runs `pixel prepare-repo --no-daemon` so the brief gate sees
++the repository's Pixel shard before Codex starts.
++
+ ### Explicit reviewed-hook experiment
+ 
+ The default run keeps Pixel retrieval routing native and does not bypass Codex
+@@ -62,9 +89,11 @@ records delivery; it does not enable experimental caller facts. Both containers
+ must finish the audit before either model starts: raw must have no hooks; Pixel
+ must have exactly the 11 known Pixel Codex commands under
+ `/root/.codex/hooks.json`; project/global foreign hooks and plugin hook
+-declarations stop the pair. Only after both audits pass does the runner apply
+-the same Codex hook-trust bypass to both arms. It does not change host hook
+-trust. The Pixel prompt-hook wrapper records its validated `UserPromptSubmit`
++declarations stop the pair. Only after both audits pass does the visible Pixel
++Codex session answer the normal hook-review dialog with `Trust all and
++continue`, confirms that the dialog disappeared, and only then submits the
++scenario prompt. The runner never passes Codex's hook-trust bypass flag. The
++Pixel prompt-hook wrapper records its validated `UserPromptSubmit`
+ response, emitted context status and hook stderr in
+ `pixel-hook-<rep>.jsonl`; task stderr is retained as
+ `<arm>-<task>-<rep>.stderr`. Neither receipt stores prompt input or auth. A
+diff --git a/eval/arena/entrypoint.sh b/eval/arena/entrypoint.sh
+index a9b7023f..645c28cb 100755
+--- a/eval/arena/entrypoint.sh
++++ b/eval/arena/entrypoint.sh
+@@ -48,18 +48,107 @@ prep_gortex()  {
+   done
+   codex mcp add gortex -- gortex mcp
+ }
++verify_pixel_brief() {
++  local output_file receipt_file
++  output_file=$(mktemp)
++  receipt_file="/out/pixel-brief-hook-${REP:-1}.json"
++  if ! printf '%s' '{"session_id":"arena-brief-'"${REP:-1}"'","prompt":"How should a contributor approach this repository'"'"'"s setup and tests?","cwd":"'"$REPO_DIR"'","hook_event_name":"UserPromptSubmit"}' \
++    | pixel run-hook prompt-submit --provider codex > "$output_file"; then
++    rm -f "$output_file"
++    echo "Pixel prompt-submit hook invocation failed" >&2
++    return 1
++  fi
++  python3 - "$output_file" "$receipt_file" "${REP:-1}" <<'PY'
++import hashlib
++import json
++import sys
++from pathlib import Path
++
++output_path, receipt_path, rep = sys.argv[1:]
++try:
++    raw_response = Path(output_path).read_text().strip()
++    response = json.loads(raw_response) if raw_response else {}
++    hook_output = response.get("hookSpecificOutput", {})
++    context = hook_output.get("additionalContext", "")
++    valid = (
++        hook_output.get("hookEventName") == "UserPromptSubmit"
++        and isinstance(context, str)
++        and bool(context)
++    )
++    receipt = {
++        "arm": "pixel",
++        "rep": rep,
++        "provider": "codex",
++        "event": "prompt-submit",
++        "response_valid": valid,
++        "hook_event_name": hook_output.get("hookEventName"),
++        "brief_present": "[PIXEL:BRIEF]" in context if isinstance(context, str) else False,
++        "execution_route_present": "[PIXEL:EXECUTION_ROUTE]" in context if isinstance(context, str) else False,
++        "context_bytes": len(context.encode()) if isinstance(context, str) else 0,
++        "context_sha256": hashlib.sha256(context.encode()).hexdigest() if isinstance(context, str) else None,
++    }
++except (OSError, ValueError, TypeError):
++    receipt = {
++        "arm": "pixel",
++        "rep": rep,
++        "provider": "codex",
++        "event": "prompt-submit",
++        "response_valid": False,
++        "hook_event_name": None,
++        "brief_present": False,
++        "context_bytes": 0,
++        "context_sha256": None,
++    }
++Path(receipt_path).write_text(json.dumps(receipt, indent=2) + "\n")
++if not receipt["response_valid"]:
++    raise SystemExit("Pixel prompt-submit hook did not return valid context")
++print("=== Pixel prompt-submit context ===")
++print(context)
++print("=== End Pixel prompt-submit context ===")
++PY
++  rm -f "$output_file"
++}
++install_live_brief_hook() {
++  local codex_home hook_file receipt_file
++  codex_home="${CODEX_HOME:-$HOME/.codex}"
++  hook_file="$codex_home/hooks.json"
++  receipt_file="/out/pixel-hook-${REP:-1}.jsonl"
++  mkdir -p "$codex_home"
++  python3 - "$hook_file" "$receipt_file" <<'PY'
++import json
++import sys
++from pathlib import Path
++
++hook_path, receipt_path = map(Path, sys.argv[1:])
++try:
++    config = json.loads(hook_path.read_text()) if hook_path.exists() else {}
++except (OSError, ValueError):
++    config = {}
++hooks = config.setdefault("hooks", {})
++groups = hooks.setdefault("UserPromptSubmit", [])
++command = (
++    "python3 /usr/local/lib/arena-hook-audit.py --receipt "
++    + str(receipt_path)
++    + " -- /usr/local/bin/pixel run-hook prompt-submit --provider codex"
++)
++if not any(command in json.dumps(group) for group in groups):
++    groups.append({"hooks": [{"type": "command", "command": command}]})
++hook_path.write_text(json.dumps(config, indent=2) + "\n")
++PY
++}
+ prep_pixel() {
+   local prep_start_ms prep_end_ms graph_db setup_receipt
+   if [ "${PIXEL_ARENA_PREP_GRAPH:-0}" = "1" ]; then
+     prep_start_ms=$(date +%s%3N) || return $?
+   fi
+   pixel install || return $?
+-  # the classify skill is the conditional-routing surface Codex sees;
+-  # non-interactive installs skip the wizard, so deploy it explicitly —
+-  # without this the pixel arm has pixel installed but undiscoverable
+-  # optional on older binaries: ignore unknown-subcommand failures
++ if [ "${ARENA_REVIEWED_PIXEL_HOOKS:-0}" != "1" ]; then
++   pixel install --repo "$REPO_DIR" || return $?
++ fi
++  # The classify skill is the conditional-routing surface Codex sees;
++  # non-interactive installs skip the wizard, so deploy it explicitly.
+   pixel config install-helpers 2>/dev/null || true
+-  if [ "${PIXEL_ARENA_PREP_GRAPH:-0}" = "1" ]; then
++ if [ "${PIXEL_ARENA_PREP_GRAPH:-0}" = "1" ]; then
+     graph_db="$REPO_DIR/.pixel/graph.v2.db"
+     setup_receipt="/out/setup-pixel-${REP:-1}.json"
+     pixel prepare-repo --no-daemon "$REPO_DIR" || return $?
+@@ -68,11 +157,15 @@ prep_pixel() {
+       return 1
+     fi
+     prep_end_ms=$(date +%s%3N) || return $?
+-    python3 -c 'import json,sys; graph=sys.argv[1]; json.dump({"arm":"pixel","rep":sys.argv[4],"prepare_commands":["pixel install","pixel prepare-repo --no-daemon /repo"],"duration_ms":int(sys.argv[2])-int(sys.argv[3]),"graph_db":graph,"graph_db_bytes":__import__("pathlib").Path(graph).stat().st_size},open(sys.argv[5],"w"),indent=2); open(sys.argv[5],"a").write("\n")' \
++    python3 -c 'import json,sys; graph=sys.argv[1]; json.dump({"arm":"pixel","rep":sys.argv[4],"prepare_commands":["pixel install","pixel install --repo /repo","pixel prepare-repo --no-daemon /repo"],"duration_ms":int(sys.argv[2])-int(sys.argv[3]),"graph_db":graph,"graph_db_bytes":__import__("pathlib").Path(graph).stat().st_size},open(sys.argv[5],"w"),indent=2); open(sys.argv[5],"a").write("\n")' \
+       "$graph_db" "$prep_end_ms" "$prep_start_ms" "${REP:-1}" "$setup_receipt"
+   else
+-    pixel build-index --history "$REPO_DIR"
++    pixel prepare-repo --no-daemon "$REPO_DIR" || return $?
+   fi
++  if [ "${ARENA_REVIEWED_PIXEL_HOOKS:-0}" != "1" ]; then
++    install_live_brief_hook
++  fi
++  verify_pixel_brief
+ }
+ 
+ prep_skill_pilot() {
+@@ -95,7 +188,6 @@ if [ "$SKILL_PILOT" = "1" ]; then
+   prep_rc=$?
+ else
+ case "${ARM_TOOL:-raw}" in
+-  pixel-chain) prep_pixel ;;
+   raw)      : ;;
+   semble)   prep_semble ;;
+   graft)    prep_graft ;;
+@@ -119,7 +211,7 @@ if [ "$REVIEWED_PIXEL_HOOKS" = "1" ]; then
+     exit 1
+   fi
+   touch "$HOOK_AUDIT_READY"
+-  for _ in $(seq 1 90); do
++  for _ in $(seq 1 240); do
+     if [ -e "/out/hook-audit-raw-${HOOK_AUDIT_KEY}.failed" ] || \
+        [ -e "/out/hook-audit-pixel-${HOOK_AUDIT_KEY}.failed" ]; then
+       touch "/out/hook-audit-${ARM_TOOL:-raw}-${HOOK_AUDIT_KEY}.failed"
+@@ -144,6 +236,7 @@ fi
+ python3 /usr/local/lib/arena-context-manifest.py \
+   --repo "$REPO_DIR" --codex-home "${CODEX_HOME:-$HOME/.codex}" \
+   > "/out/context-${ARM_TOOL:-raw}-${REP:-1}.json"
++touch "/out/arena-ready-${ARM_TOOL:-raw}-${REP:-1}"
+ 
+ # MCP arms: register the tool's stdio server with codex
+ case "${ARM_TOOL:-raw}" in
+@@ -159,31 +252,15 @@ IFS=' ' read -r -a TASK_LIST <<< "${TASKS:-s1-hook-install s2-vector-recall s3-r
+ MODEL_ARGS=()
+ [ -n "${CODEX_MODEL:-}" ] && MODEL_ARGS+=(-m "$CODEX_MODEL")
+ [ -n "${CODEX_EFFORT:-}" ] && MODEL_ARGS+=(-c model_reasoning_effort="$CODEX_EFFORT")
+-HOOK_TRUST_ARGS=()
+-if [ "$REVIEWED_PIXEL_HOOKS" = "1" ]; then
+-  # Both paired arms use the same bypass; the allowlist was audited above.
+-  HOOK_TRUST_ARGS+=(--dangerously-bypass-hook-trust)
+-fi
+-
+ overall_rc=0
+ for task in "${TASK_LIST[@]}"; do
+   prompt=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['prompt'])" "/prompts/$task.json")
+-  t0=$(date +%s)
+-  if [ "${ARM_TOOL:-raw}" = "pixel-chain" ]; then
+-    # the evidence chain runs first; the agent gets the compact brief, not
+-    # raw command output — chain cost lands inside this task's wall time
+-    brief=$(python3 /usr/local/bin/arena-brief.py "$prompt" 2>/dev/null || true)
+-    if [ -n "$brief" ]; then
+-      prompt="$prompt
+-
+-$brief"
+-    fi
+-  fi
+   tag="${ARM_TOOL}-${task}-${REP}"
++  t0=$(date +%s)
+   # The container is the sandbox: docker's default seccomp blocks codex's
+   # bubblewrap namespaces, so read-only mode would fail every command.
+   codex exec --json --sandbox danger-full-access --skip-git-repo-check \
+-    "${HOOK_TRUST_ARGS[@]}" "${MODEL_ARGS[@]}" "$prompt" \
++    "${MODEL_ARGS[@]}" "$prompt" \
+     > "/out/$tag.jsonl" 2> "/out/$tag.stderr"
+   rc=$?
+   t1=$(date +%s)
+@@ -206,7 +283,11 @@ try:
+     rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+ except (OSError, ValueError):
+     rows = []
+-if not rows or any(row.get("response_valid") is not True for row in rows):
++if not rows or any(
++    row.get("response_valid") is not True
++    or row.get("emitted_context") is not True
++    for row in rows
++):
+     sys.exit(1)
+ PY
+   then
+diff --git a/eval/scenarios/s0-liza-hello-overview.json b/eval/scenarios/s0-liza-hello-overview.json
+new file mode 100644
+index 00000000..6cea59f2
+--- /dev/null
++++ b/eval/scenarios/s0-liza-hello-overview.json
+@@ -0,0 +1,12 @@
++{
++  "id": "s0-liza-hello-overview",
++  "kind": "repository-overview",
++  "brief_expected": false,
++  "prompt": "Explain this repository's purpose, identify its main application entry point, and describe where its tests and provider logic live.",
++  "must": [
++    {"pattern": "package\\.json", "points": 2, "why": "project manifest"},
++    {"pattern": "server/index\\.ts", "points": 2, "why": "application entry point"},
++    {"pattern": "server/providers", "points": 2, "why": "provider logic"}
++  ],
++  "never": []
++}
+diff --git a/eval/scenarios/s0-pi-simple-overview.json b/eval/scenarios/s0-pi-simple-overview.json
+new file mode 100644
+index 00000000..4f649e3b
+--- /dev/null
++++ b/eval/scenarios/s0-pi-simple-overview.json
+@@ -0,0 +1,12 @@
++{
++  "id": "s0-pi-simple-overview",
++  "kind": "repository-overview",
++  "brief_expected": false,
++  "prompt": "Explain this repository's purpose, identify its main dependency file and test layout, and name the focused commands a contributor should run first.",
++  "must": [
++    {"pattern": "requirements\\.txt", "points": 2, "why": "dependency file"},
++    {"pattern": "tests/test_ed_rns\\.py", "points": 2, "why": "ED/RNS test module"},
++    {"pattern": "tests/test_subprocess\\.py", "points": 2, "why": "subprocess test module"}
++  ],
++  "never": []
++}
+diff --git a/eval/scenarios/s1-liza-rename-run-id.json b/eval/scenarios/s1-liza-rename-run-id.json
+new file mode 100644
+index 00000000..8f522d5b
+--- /dev/null
++++ b/eval/scenarios/s1-liza-rename-run-id.json
+@@ -0,0 +1,14 @@
++{
++  "id": "s1-liza-rename-run-id",
++  "kind": "rename-impact",
++  "brief_expected": true,
++  "prompt": "Rename `generateRunId` to `createRunId` in server/index.ts and update every caller. Keep the generated identifier format unchanged.",
++  "must": [
++    {"pattern": "createRunId", "points": 3, "why": "renamed definition and caller"},
++    {"pattern": "run-", "points": 2, "why": "identifier format preserved"},
++    {"pattern": "server/index\\.ts", "points": 1, "why": "correct implementation file"}
++  ],
++  "never": [
++    {"pattern": "generateRunId\\s*\\(", "penalty": 2, "why": "old symbol must be removed"}
++  ]
++}
+-- 
+2.55.0
+

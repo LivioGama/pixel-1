@@ -1,0 +1,664 @@
+From 04dfad7a823f5675ea852fc8e016acb9965ec368 Mon Sep 17 00:00:00 2001
+From: Livio Gamassia <livio.gamassia@gmail.com>
+Date: Wed, 7 Oct 2026 01:22:04 +0200
+Subject: [PATCH 4/4] refactor(plugin): remove the pixel-impact skill, the
+ per-prompt brief replaces it
+
+The Claude, Codex and Qoder plugins no longer ship the pixel-impact skill:
+the [PIXEL:BRIEF] from the prompt-submit task event runs find-symbol and
+impact <uid> itself. The three old skill copies join RETIRED_FILES so a repo
+that still has them gets them cleaned. The Pi /pixel-impact command, the
+pixel-classify skill and the `pixel impact` command stay.
+
+Refs #865
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ .claude-plugin/plugin.json                    |  5 +-
+ .codex-plugin/plugin.json                     | 10 ++-
+ .github/workflows/ci.yml                      |  2 -
+ .qoder-plugin/plugin.json                     |  1 -
+ ARCHITECTURE.md                               | 11 ++--
+ README.md                                     |  8 +--
+ assets/plugin-skills/pixel-impact/SKILL.md    | 27 --------
+ .../pixel-impact/agents/openai.yaml           |  5 --
+ .../865-remove-impact-skill.removed.md        |  1 +
+ claude-skills/pixel-impact/SKILL.md           | 28 ---------
+ crates/pixel-install/tests/install_tests.rs   | 61 ++++++++-----------
+ docs/manual-setup.md                          | 38 ++++++------
+ package.json                                  |  2 -
+ scripts/gen-plugin-assets.sh                  | 28 ++-------
+ scripts/test-pi-impact.mjs                    |  4 +-
+ skills/pixel-impact/SKILL.md                  | 27 --------
+ skills/pixel-impact/agents/openai.yaml        |  5 --
+ website/content/docs.md                       |  2 +-
+ website/data/agents.toml                      |  6 +-
+ 19 files changed, 68 insertions(+), 203 deletions(-)
+ delete mode 100644 assets/plugin-skills/pixel-impact/SKILL.md
+ delete mode 100644 assets/plugin-skills/pixel-impact/agents/openai.yaml
+ create mode 100644 changelog.d/865-remove-impact-skill.removed.md
+ delete mode 100644 claude-skills/pixel-impact/SKILL.md
+ delete mode 100644 skills/pixel-impact/SKILL.md
+ delete mode 100644 skills/pixel-impact/agents/openai.yaml
+
+diff --git a/.claude-plugin/plugin.json b/.claude-plugin/plugin.json
+index 432cc739..9dffd13b 100644
+--- a/.claude-plugin/plugin.json
++++ b/.claude-plugin/plugin.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "pixel",
+   "version": "0.7.1",
+-  "description": "Explicit Pixel skill for assessing callers and change impact of a known symbol.",
++  "description": "Deterministic code retrieval layer: indexed search, concept resolve, impact analysis, task targets, plan generation, and git archaeology via the pixel CLI.",
+   "author": {
+     "name": "Livio Gama",
+     "url": "https://github.com/LivioGama"
+@@ -9,6 +9,5 @@
+   "homepage": "https://pixel-cli.dev/",
+   "repository": "https://github.com/Pixel-CLI/pixel",
+   "license": "MIT",
+-  "keywords": ["code-graph", "impact-analysis", "retrieval", "tree-sitter", "productivity"],
+-  "skills": "./claude-skills/"
++  "keywords": ["code-graph", "impact-analysis", "retrieval", "tree-sitter", "productivity"]
+ }
+diff --git a/.codex-plugin/plugin.json b/.codex-plugin/plugin.json
+index edfe9b39..25b51263 100644
+--- a/.codex-plugin/plugin.json
++++ b/.codex-plugin/plugin.json
+@@ -1,7 +1,7 @@
+ {
+   "name": "pixel",
+   "version": "0.7.1",
+-  "description": "Explicit Pixel skill for assessing callers and change impact of a known symbol.",
++  "description": "Deterministic code retrieval layer: indexed search, concept resolve, impact analysis, task targets, plan generation, and git archaeology via the pixel CLI.",
+   "author": {
+     "name": "Livio Gama",
+     "url": "https://github.com/LivioGama"
+@@ -10,17 +10,15 @@
+   "repository": "https://github.com/Pixel-CLI/pixel",
+   "license": "MIT",
+   "keywords": ["code-graph", "impact-analysis", "retrieval", "tree-sitter", "productivity"],
+-  "skills": "./skills/",
+   "interface": {
+     "displayName": "Pixel",
+-    "shortDescription": "Assess callers and change impact",
+-    "longDescription": "Use the explicit pixel-impact skill to assess callers and blast radius for a known symbol. Requires the pixel binary on PATH.",
++    "shortDescription": "Deterministic code retrieval layer",
++    "longDescription": "Pixel's code-graph retrieval layer. The plugin ships no skill or hook; `pixel install` wires the per-prompt evidence brief. Requires the pixel binary on PATH.",
+     "developerName": "Livio Gama",
+     "category": "Productivity",
+-    "capabilities": ["Instructions"],
+     "websiteURL": "https://github.com/Pixel-CLI/pixel",
+     "defaultPrompt": [
+-      "Use $pixel-impact to assess callers and change impact for a known symbol."
++      "Run pixel impact on the symbol I'm about to edit."
+     ]
+   }
+ }
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index f585a517..df857ed0 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -69,7 +69,6 @@ on:
+       # gen-plugin-assets.sh --check:
+       - "PIXEL.md"
+       - "PIXEL-SUBAGENT.md"
+-      - "skills/**"
+       - ".agents/skills/pixel/**"
+       - ".openclaw/**"
+       - ".clinerules/**"
+@@ -221,7 +220,6 @@ jobs:
+           ^docs/manual-setup\.md$
+           ^website/
+           ^\.agents/(rules|skills/(rust-guidelines|release|pixel))/
+-          ^skills/
+           ^\.(openclaw|clinerules|kiro|qoder|windsurf)/
+           ^scripts/gen-plugin-assets\.sh$
+           ^\.github/workflows/ci\.yml$
+diff --git a/.qoder-plugin/plugin.json b/.qoder-plugin/plugin.json
+index 91732587..9e9ceabd 100644
+--- a/.qoder-plugin/plugin.json
++++ b/.qoder-plugin/plugin.json
+@@ -10,6 +10,5 @@
+   "repository": "https://github.com/Pixel-CLI/pixel",
+   "license": "MIT",
+   "keywords": ["code-graph", "impact-analysis", "retrieval", "tree-sitter", "productivity"],
+-  "skills": "./skills/",
+   "rules": "./.qoder/rules/"
+ }
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index 20e9d15a..da7af85b 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -493,12 +493,12 @@ releases deployed, then handles each agent through its own extension point:
+ 
+ - **Claude Code**: task lifecycle hooks in `~/.claude/settings.json`. Retired
+   retrieval prompt, post-edit and metrics registrations are removed; task
+-  contracts and foreign hooks are preserved. The optional plugin exposes the
+-  explicit `pixel-impact` skill without registering automatic retrieval hooks.
++  contracts and foreign hooks are preserved. The optional plugin ships no
++  skill and registers no hooks; the per-prompt brief comes from the task hook.
+ - **Codex**: task lifecycle hooks in `$CODEX_HOME/hooks.json` (default
+   `~/.codex/hooks.json`). Retired permanent `developer_instructions` blocks,
+   retrieval prompt and metrics registrations are removed. The optional
+-  `pixel-impact` skill disables implicit invocation in its packaged metadata.
++  plugin ships no skill and registers no hooks.
+ - **Pi**: when Pi's agent directory (`$PI_CODING_AGENT_DIR`, else
+   `~/.pi/agent`) exists or `pi` is on `PATH`, a local Pi package under
+   `~/.local/share/pixel/pi-package/` (`package.json` and
+@@ -575,10 +575,7 @@ The same run removes two retired project files: Pixel's hooks in
+ --repo` also remove the MCP server entry releases up to 0.6.1 wrote into
+ `.warp/.mcp.json`, and `repo.warp-mcp` reports one still there.
+ 
+-Automatic Codex caller-facts injection is retired. Distribution defaults
+-remain explicit-only until independent paired measurements establish a benefit.
+-The arena can enable implicit skill invocation in an isolated copy, recording
+-both source and experimental policy hashes without changing the shipped skill.
++Automatic Codex caller-facts injection is retired.
+ Global and project installation remove the retired `<!-- pixel:managed:begin
+ -->`/`end` block from `developer_instructions` with `toml_edit`, preserving foreign
+ text, unrelated configuration and layout. A key with no remaining instructions
+diff --git a/README.md b/README.md
+index a906c8d6..75f838b5 100644
+--- a/README.md
++++ b/README.md
+@@ -36,7 +36,7 @@ The animation illustrates a workflow; it is not a timed agent comparison.
+ [Agent trials and their limits](https://pixel-cli.dev/benchmarks/#on-whole-agent-tasks) include a newer Opus trial with hooks that found no speed gain on one task.
+ 
+ - **A local index of signatures and callers that your agent queries before it greps**: 94.5% less read volume (median) for outline questions using `pixel list-signatures` than whole-file reads on 8 large open-source files. [How we measure](https://pixel-cli.dev/benchmarks/#well-known-files)
+-- **Native tools stay available**: Codex and Claude use an optional impact skill; Pi offers an explicit impact command. Other agent integrations retain their existing policies.
++- **Native tools stay available**: Claude and Codex get a bounded evidence brief with each code prompt; Pi offers an explicit `/pixel-impact` command. Other agent integrations retain their existing policies.
+ - **No account. No API key. No telemetry.** Your code stays on your machine.
+ - **13 languages, MIT**, macOS (Apple Silicon) and Linux, signed releases.
+ 
+@@ -116,17 +116,17 @@ Install Pixel (https://github.com/Pixel-CLI/pixel) for me: follow the
+ whether `pixel doctor .` is green.
+ ```
+ 
+-If you are that agent: run the Install one-liner, tell the user it writes to their home configuration, then run `pixel install` (idempotent) and `pixel doctor . --json` — report every check that is not green, do not claim success otherwise. Restart the session to load updated integrations. Codex and Claude keep native retrieval; their optional plugins expose the focused impact skill. Pi exposes `/pixel-impact <symbol>`. [Manual setup](docs/manual-setup.md) explains each surface.
++If you are that agent: run the Install one-liner, tell the user it writes to their home configuration, then run `pixel install` (idempotent) and `pixel doctor . --json` — report every check that is not green, do not claim success otherwise. Restart the session to load updated integrations. Codex and Claude keep native retrieval and receive a bounded evidence brief on each code prompt (`PIXEL_BRIEF=0` turns it off). Pi exposes `/pixel-impact <symbol>`. [Manual setup](docs/manual-setup.md) explains each surface.
+ 
+ ## Now build this harness
+ 
+-Codex and Claude keep ordinary search native. Invoke the focused impact skill when a known symbol's callers or blast radius matter; Pi provides `/pixel-impact <symbol>`. The bounded query uses an existing fresh graph and falls back without rebuilding it. Task lifecycle controls remain independent. Automatic skill selection is an arena experiment, not the shipped default.
++Codex and Claude keep ordinary search native; the per-prompt brief resolves a named symbol and its callers from an existing graph without rebuilding it. Run `pixel impact <symbol> --no-refresh` yourself when a known symbol's callers or blast radius matter; Pi provides `/pixel-impact <symbol>`. Task lifecycle controls remain independent.
+ 
+ **Ask about the code** — "find callers of X", "explain this flow":
+ 
+ ```mermaid
+ flowchart TD
+-    U["USER · callers or impact of a known symbol"] --> L["Agent · explicit impact skill or Pi command"]
++    U["USER · callers or impact of a known symbol"] --> L["Agent · pixel impact or Pi command"]
+     L --> P["pixel impact SYMBOL --no-refresh"]
+     P --> E{"Useful existing graph?"}
+     E -->|yes| A["Inspect cited source and verify caller coverage"]
+diff --git a/assets/plugin-skills/pixel-impact/SKILL.md b/assets/plugin-skills/pixel-impact/SKILL.md
+deleted file mode 100644
+index e6a5836c..00000000
+--- a/assets/plugin-skills/pixel-impact/SKILL.md
++++ /dev/null
+@@ -1,27 +0,0 @@
+----
+-name: pixel-impact
+-description: >
+-  Find callers or change impact for a named code symbol across files or
+-  call levels. Skip routine lookup, local renames, and broad implementation
+-  or policy questions.
+-license: MIT
+----
+-
+-# Pixel impact
+-
+-Use Pixel for an unresolved caller or blast radius question about a known
+-symbol. When a private helper and its references are already visible in one
+-file, native search is sufficient. File listing, literal lookup, UI-label
+-renames, API research, and general explanations stay with the usual tools.
+-
+-For a relationship question spanning files or call levels, query the symbol
+-once: `pixel impact '<symbol>' --no-refresh --depth 2 --json --metrics off`.
+-Use `--depth 1` when only direct callers are requested. Treat graph edges as
+-candidates and inspect the cited source; empty or incomplete results do not
+-prove that no callers exist. Distinguish production callers, test callers,
+-and textual references in the answer, citing the requested evidence.
+-
+-If Pixel is unavailable, rejects `--no-refresh`, or returns missing, stale,
+-ambiguous, empty, or unhelpful results, continue with native tools immediately.
+-Do not repair, refresh, retry, or expand the query during the task. Loading
+-this skill does not require a Pixel call when the source already answers it.
+diff --git a/assets/plugin-skills/pixel-impact/agents/openai.yaml b/assets/plugin-skills/pixel-impact/agents/openai.yaml
+deleted file mode 100644
+index b22b58db..00000000
+--- a/assets/plugin-skills/pixel-impact/agents/openai.yaml
++++ /dev/null
+@@ -1,5 +0,0 @@
+-interface:
+-  display_name: "Pixel Impact"
+-  short_description: "Assess callers and change impact"
+-policy:
+-  allow_implicit_invocation: false
+diff --git a/changelog.d/865-remove-impact-skill.removed.md b/changelog.d/865-remove-impact-skill.removed.md
+new file mode 100644
+index 00000000..78f1a10d
+--- /dev/null
++++ b/changelog.d/865-remove-impact-skill.removed.md
+@@ -0,0 +1 @@
++**plugin:** the `pixel-impact` skill is removed from the Claude, Codex and Qoder plugins, which now ship no skill (their manifests drop `skills`, `package.json` drops `skills/` and `claude-skills/`); the per-prompt `[PIXEL:BRIEF]` runs `find-symbol` then `impact <uid>` itself. The Pi `/pixel-impact` command and `pixel impact` stay. Task #865.
+diff --git a/claude-skills/pixel-impact/SKILL.md b/claude-skills/pixel-impact/SKILL.md
+deleted file mode 100644
+index 4a996e2e..00000000
+--- a/claude-skills/pixel-impact/SKILL.md
++++ /dev/null
+@@ -1,28 +0,0 @@
+----
+-disable-model-invocation: true
+-name: pixel-impact
+-description: >
+-  Find callers or change impact for a named code symbol across files or
+-  call levels. Skip routine lookup, local renames, and broad implementation
+-  or policy questions.
+-license: MIT
+----
+-
+-# Pixel impact
+-
+-Use Pixel for an unresolved caller or blast radius question about a known
+-symbol. When a private helper and its references are already visible in one
+-file, native search is sufficient. File listing, literal lookup, UI-label
+-renames, API research, and general explanations stay with the usual tools.
+-
+-For a relationship question spanning files or call levels, query the symbol
+-once: `pixel impact '<symbol>' --no-refresh --depth 2 --json --metrics off`.
+-Use `--depth 1` when only direct callers are requested. Treat graph edges as
+-candidates and inspect the cited source; empty or incomplete results do not
+-prove that no callers exist. Distinguish production callers, test callers,
+-and textual references in the answer, citing the requested evidence.
+-
+-If Pixel is unavailable, rejects `--no-refresh`, or returns missing, stale,
+-ambiguous, empty, or unhelpful results, continue with native tools immediately.
+-Do not repair, refresh, retry, or expand the query during the task. Loading
+-this skill does not require a Pixel call when the source already answers it.
+diff --git a/crates/pixel-install/tests/install_tests.rs b/crates/pixel-install/tests/install_tests.rs
+index ed5a8cbb..ced22070 100644
+--- a/crates/pixel-install/tests/install_tests.rs
++++ b/crates/pixel-install/tests/install_tests.rs
+@@ -3627,9 +3627,9 @@ fn wrappers_step(report: &InstallReport) -> &pixel_install::install::InstallStep
+         .expect("shell-wrappers step")
+ }
+ 
+-/// Plugin-manifest skill files come from the curated impact-skill asset;
+-/// other generated rule surfaces still come from `assets/pixel-agent-prompt.md`.
+-/// Keep both sets synchronized through the generator.
++/// Generated rule surfaces come from `assets/pixel-agent-prompt.md` and the
++/// Pi extension from `assets/pi-impact.ts`. Keep them synchronized through
++/// the generator.
+ #[test]
+ fn plugin_assets_are_in_sync() {
+     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+@@ -3651,51 +3651,38 @@ fn plugin_assets_are_in_sync() {
+ }
+ 
+ #[test]
+-fn plugin_skill_is_focused_explicit_and_replaces_the_broad_skill() {
++fn plugin_manifests_ship_no_skill_and_no_hook() {
+     let repo = repo_root();
+     let read =
+         |rel: &str| fs::read_to_string(repo.join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
+-    let claude: serde_json::Value =
+-        serde_json::from_str(&read(".claude-plugin/plugin.json")).unwrap();
+-    let codex: serde_json::Value =
+-        serde_json::from_str(&read(".codex-plugin/plugin.json")).unwrap();
+-    assert_eq!(codex["skills"], "./skills/");
+-    assert_eq!(claude["skills"], "./claude-skills/");
+-    assert!(
+-        codex.get("hooks").is_none(),
+-        "Codex registers a retrieval hook"
+-    );
+-    assert!(
+-        claude.get("hooks").is_none(),
+-        "Claude registers a retrieval hook"
+-    );
+-
+-    let codex_skill = read("skills/pixel-impact/SKILL.md");
+-    assert!(codex_skill.contains("name: pixel-impact"));
+-    assert!(codex_skill.contains("blast radius"));
+-    assert!(!codex_skill.contains("disable-model-invocation"));
+-    assert!(!codex_skill.contains("pixel build-index"));
+-    let claude_skill = read("claude-skills/pixel-impact/SKILL.md");
+-    assert!(claude_skill.contains("disable-model-invocation: true"));
+-    assert_eq!(
+-        claude_skill.replacen("disable-model-invocation: true\n", "", 1),
+-        codex_skill,
+-        "provider-specific copies must share one curated skill body"
+-    );
+-    let codex_policy = read("skills/pixel-impact/agents/openai.yaml");
+-    assert!(codex_policy.contains("allow_implicit_invocation: false"));
++    for rel in [
++        ".claude-plugin/plugin.json",
++        ".codex-plugin/plugin.json",
++        ".qoder-plugin/plugin.json",
++    ] {
++        let manifest: serde_json::Value = serde_json::from_str(&read(rel)).unwrap();
++        assert!(manifest.get("skills").is_none(), "{rel} registers a skill");
++        assert!(manifest.get("hooks").is_none(), "{rel} registers a hook");
++        assert!(
++            !manifest.to_string().contains("pixel-impact"),
++            "{rel} still advertises the retired pixel-impact skill"
++        );
++    }
+ 
+     let openclaw = read(".openclaw/skills/pixel/SKILL.md");
+     assert!(openclaw.contains("name: pixel\n"));
+     assert!(openclaw.ends_with(include_str!("../assets/pixel-agent-prompt.md")));
+     for retired in [
+         "skills/pixel/SKILL.md",
++        "skills/pixel-impact/SKILL.md",
++        "claude-skills/pixel-impact/SKILL.md",
++        "assets/plugin-skills/pixel-impact/SKILL.md",
+         ".agents/skills/pixel/SKILL.md",
+         ".agents/skills/pixel-impact/SKILL.md",
+     ] {
+         assert!(
+             !repo.join(retired).exists(),
+-            "retired broad skill remains: {retired}"
++            "retired skill remains: {retired}"
+         );
+     }
+ }
+@@ -3755,7 +3742,7 @@ fn repo_root() -> std::path::PathBuf {
+ }
+ 
+ /// Every manifest parses and every path it hands a harness exists in the
+-/// repository: a moved skills directory breaks the plugin silently at install
++/// repository: a moved rules directory breaks the plugin silently at install
+ /// time, never in a build.
+ #[test]
+ fn plugin_manifests_parse_and_point_at_files_that_exist() {
+@@ -3806,8 +3793,8 @@ fn plugin_manifests_parse_and_point_at_files_that_exist() {
+     assert!(
+         package_files
+             .iter()
+-            .any(|entry| entry.as_str() == Some("claude-skills/")),
+-        "npm package must include the Claude-specific explicit-only skill copy"
++            .any(|entry| entry.as_str() == Some("pi/")),
++        "npm package must include the distributed Pi command"
+     );
+     for entry in package_files {
+         exists("package.json", entry.as_str().unwrap());
+diff --git a/docs/manual-setup.md b/docs/manual-setup.md
+index 3bf609ac..ca4d2b2a 100644
+--- a/docs/manual-setup.md
++++ b/docs/manual-setup.md
+@@ -15,9 +15,9 @@ wire (Cursor, Copilot, ...)? You don't need `pixel install`.
+    prompts, guard hooks and plugins. It wires none of them, and every agent
+    keeps its native tools.
+ 
+-Native Codex and Claude plugins distribute a small, explicit-only
+-`pixel-impact` skill. They do not register automatic retrieval hooks.
+-The CLI and skill/plugin are separate installations.
++The Codex and Claude plugins ship no skill and register no hooks; the
++per-prompt evidence brief comes from the task hook `pixel install` writes.
++The CLI and the plugins are separate installations.
+ 
+ ## 1. Install the binary
+ 
+@@ -54,11 +54,11 @@ not under `~/.local/share/pixel/`: `pixel install` deletes the
+ 
+ ### Claude Code
+ 
+-Use the native Pixel plugin's `pixel-impact` skill explicitly when assessing
+-callers or the impact of a known symbol. Its description and instructions
+-are separated from the legacy full agent prompt; ordinary work keeps the
+-usual tools. The plugin does not inject a session prompt or register retrieval
+-hooks. It requires a compatible Pixel binary on PATH.
++To assess callers or the impact of a known symbol, run `pixel impact
++<symbol> --no-refresh` yourself; the per-prompt brief already runs it for a
++prompt that names a symbol and asks to change it or find its callers.
++Ordinary work keeps the usual tools. The native Pixel plugin ships no skill,
++injects no session prompt and registers no retrieval hooks.
+ 
+ `pixel install` removes its retired retrieval, post-edit advice, compaction
+ and metrics registrations from Claude's user settings. Independent task-event
+@@ -67,15 +67,13 @@ preserves foreign hooks and restores adopted RTK registrations, removing the
+ Pixel retrieval wrapper. Native reads need no Pixel retrieval callback.
+ 
+ Copying the full prompt into Claude's instructions by hand enables a
+-different profile with additional context; it is not the focused-skill
+-configuration.
++different profile with additional context.
+ 
+ ### Codex
+ 
+-Use `$pixel-impact` explicitly for a known symbol whose callers or change
+-impact matter. Automatic selection stays disabled until paired evaluation
+-supports enabling it. The native plugin declares only this focused skill;
+-its default manifest registers no retrieval hooks.
++For a known symbol whose callers or change impact matter, run `pixel impact
++<symbol> --no-refresh`; the per-prompt brief covers the common case. The
++native plugin ships no skill, and its manifest registers no retrieval hooks.
+ 
+ Global installation removes Pixel's old retrieval `UserPromptSubmit` and
+ metrics hooks and retains the independent task-event suite. The previous
+@@ -90,7 +88,7 @@ Existing sessions retain previously received context until a fresh session.
+ 
+ ### Pi
+ 
+-Pi uses a package rather than a duplicated skill. The explicit
++Pi uses a package. The explicit
+ `/pixel-impact <symbol>` command requests bounded graph evidence. It does
+ not query Pixel at startup, classify every prompt, or replace native tools.
+ By hand, add the package path to `packages` in Pi's `settings.json`, or
+@@ -105,7 +103,7 @@ instructions from `~/.pi/agent/APPEND_SYSTEM.md`, preserving user text.
+ 
+ ### Bounded graph queries
+ 
+-The skill and extension use:
++The Pi extension and the per-prompt brief use:
+ 
+ ```bash
+ pixel impact 'knownSymbol' --no-refresh --depth 2 --json --metrics off
+@@ -153,12 +151,10 @@ silence it together with the metrics line. Hook invocations stay silent.
+ 
+ ## Context and evaluation
+ 
+-A discoverable skill can have metadata cost even when its body is not loaded.
+-The focused skill stays explicit-only by default. Automatic activation is
+-evaluated separately from command execution and task quality; more Pixel
+-calls do not establish a benefit. See
++More Pixel calls do not establish a benefit. See
+ [the arena evidence](../eval/arena/native-default-evidence.md) for measured
+-runs and their limits.
++runs and their limits, including the explicit impact skill earlier releases
++shipped and later removed.
+ 
+ ## Uninstall
+ 
+diff --git a/package.json b/package.json
+index c870fcc8..a72c1916 100644
+--- a/package.json
++++ b/package.json
+@@ -30,8 +30,6 @@
+   "files": [
+     "PIXEL.md",
+     "PIXEL-SUBAGENT.md",
+-    "skills/",
+-    "claude-skills/",
+     "pi/",
+     ".opencode/",
+     ".agents/plugins/",
+diff --git a/scripts/gen-plugin-assets.sh b/scripts/gen-plugin-assets.sh
+index db9a638c..398ad765 100755
+--- a/scripts/gen-plugin-assets.sh
++++ b/scripts/gen-plugin-assets.sh
+@@ -9,9 +9,9 @@
+ # Sources of truth:
+ #   crates/pixel-install/assets/pixel-agent-prompt.md     → legacy prompt and rule surfaces
+ #   crates/pixel-install/assets/pixel-subagent-prompt.md  → PIXEL-SUBAGENT.md
+-#   assets/plugin-skills/pixel-impact/                   → focused plugin skill
+ #
+-# The plugin manifests register no hooks: a plugin ships skills only.
++# The plugin manifests register no hooks and ship no skill: the pixel-impact
++# skill is gone (the per-prompt brief covers it) and its old copies are retired.
+ #
+ # Usage:
+ #   scripts/gen-plugin-assets.sh          # write all derived files
+@@ -22,26 +22,22 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+ SRC="$ROOT/crates/pixel-install/assets/pixel-agent-prompt.md"
+ SUB_SRC="$ROOT/crates/pixel-install/assets/pixel-subagent-prompt.md"
+ PI_IMPACT_SRC="$ROOT/crates/pixel-install/assets/pi-impact.ts"
+-SKILL_SRC="$ROOT/assets/plugin-skills/pixel-impact/SKILL.md"
+-SKILL_CODEX_META="$ROOT/assets/plugin-skills/pixel-impact/agents/openai.yaml"
+ VERSION=$(grep -m1 '^version' "$ROOT/crates/pixel/Cargo.toml" | sed -E 's/.*"([^"]+)".*/\1/')
+ 
+ [ -f "$SRC" ] || { echo "missing $SRC" >&2; exit 1; }
+ [ -f "$SUB_SRC" ] || { echo "missing $SUB_SRC" >&2; exit 1; }
+ [ -f "$PI_IMPACT_SRC" ] || { echo "missing $PI_IMPACT_SRC" >&2; exit 1; }
+-[ -f "$SKILL_SRC" ] || { echo "missing $SKILL_SRC" >&2; exit 1; }
+-[ -f "$SKILL_CODEX_META" ] || { echo "missing $SKILL_CODEX_META" >&2; exit 1; }
+ 
+ # Every derived file, relative to the output root.
+-FILES="skills/pixel-impact/SKILL.md skills/pixel-impact/agents/openai.yaml
+-claude-skills/pixel-impact/SKILL.md
+-pi/extensions/pixel-impact.ts
++FILES="pi/extensions/pixel-impact.ts
+ .openclaw/skills/pixel/SKILL.md
+ .cursor/rules/pixel.mdc
+ .windsurf/rules/pixel.md .kiro/steering/pixel.md .qoder/rules/pixel.md .clinerules/pixel.md
+ rules/pixel.md PIXEL.md PIXEL-SUBAGENT.md"
+ RETIRED_FILES="skills/pixel/SKILL.md .agents/skills/pixel/SKILL.md
+-.agents/skills/pixel-impact/SKILL.md .agents/skills/pixel-impact/agents/openai.yaml"
++.agents/skills/pixel-impact/SKILL.md .agents/skills/pixel-impact/agents/openai.yaml
++skills/pixel-impact/SKILL.md skills/pixel-impact/agents/openai.yaml
++claude-skills/pixel-impact/SKILL.md"
+ 
+ # --check mode: render into a scratch dir and compare, without rewriting.
+ if [ "${1:-}" = "--check" ]; then
+@@ -114,15 +110,6 @@ write_file() { # $1 = rel path, $2 = frontmatter (may be empty), $3 = source, $4
+   echo "wrote $1"
+ }
+ 
+-write_claude_skill() { # $1 = rel path; adds Claude's explicit-invocation metadata to the curated skill
+-  dest="$OUT_ROOT/$1"
+-  mkdir -p "$(dirname "$dest")"
+-  tmp="${dest}.tmp.$$"
+-  awk 'NR == 1 { print; print "disable-model-invocation: true"; next } { print }' "$SKILL_SRC" >"$tmp"
+-  mv "$tmp" "$dest"
+-  echo "wrote $1"
+-}
+-
+ write_pi_extension() {
+   dest="$OUT_ROOT/pi/extensions/pixel-impact.ts"
+   mkdir -p "$(dirname "$dest")"
+@@ -160,9 +147,6 @@ trigger: always_on
+ ---
+ '
+ 
+-write_file "skills/pixel-impact/SKILL.md" "" "$SKILL_SRC" no
+-write_file "skills/pixel-impact/agents/openai.yaml" "" "$SKILL_CODEX_META" no
+-write_claude_skill "claude-skills/pixel-impact/SKILL.md"
+ write_pi_extension
+ write_file ".openclaw/skills/pixel/SKILL.md" "$OPENCLAW_SKILL_FRONT" "$SRC" yes
+ write_file ".cursor/rules/pixel.mdc"          "$CURSOR_FRONT" "$SRC" yes
+diff --git a/scripts/test-pi-impact.mjs b/scripts/test-pi-impact.mjs
+index 919d7f06..0d690862 100644
+--- a/scripts/test-pi-impact.mjs
++++ b/scripts/test-pi-impact.mjs
+@@ -47,9 +47,9 @@ try {
+     assert.deepEqual(h.events, [], "no lifecycle handler: nothing runs until the user types the command");
+   });
+ 
+-  await check("package includes both Claude skills and the distributed Pi command", () => {
++  await check("package includes the distributed Pi command and no skill directory", () => {
+     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+-    assert.ok(pkg.files.includes("claude-skills/"));
++    assert.ok(!pkg.files.includes("claude-skills/") && !pkg.files.includes("skills/"));
+     assert.ok(pkg.files.includes("pi/"));
+     assert.deepEqual(pkg.pi.extensions, ["./pi/extensions/pixel-impact.ts"]);
+     assert.deepEqual(pkg.pi.skills, [], "Pi must not auto-discover root skill packages");
+diff --git a/skills/pixel-impact/SKILL.md b/skills/pixel-impact/SKILL.md
+deleted file mode 100644
+index e6a5836c..00000000
+--- a/skills/pixel-impact/SKILL.md
++++ /dev/null
+@@ -1,27 +0,0 @@
+----
+-name: pixel-impact
+-description: >
+-  Find callers or change impact for a named code symbol across files or
+-  call levels. Skip routine lookup, local renames, and broad implementation
+-  or policy questions.
+-license: MIT
+----
+-
+-# Pixel impact
+-
+-Use Pixel for an unresolved caller or blast radius question about a known
+-symbol. When a private helper and its references are already visible in one
+-file, native search is sufficient. File listing, literal lookup, UI-label
+-renames, API research, and general explanations stay with the usual tools.
+-
+-For a relationship question spanning files or call levels, query the symbol
+-once: `pixel impact '<symbol>' --no-refresh --depth 2 --json --metrics off`.
+-Use `--depth 1` when only direct callers are requested. Treat graph edges as
+-candidates and inspect the cited source; empty or incomplete results do not
+-prove that no callers exist. Distinguish production callers, test callers,
+-and textual references in the answer, citing the requested evidence.
+-
+-If Pixel is unavailable, rejects `--no-refresh`, or returns missing, stale,
+-ambiguous, empty, or unhelpful results, continue with native tools immediately.
+-Do not repair, refresh, retry, or expand the query during the task. Loading
+-this skill does not require a Pixel call when the source already answers it.
+diff --git a/skills/pixel-impact/agents/openai.yaml b/skills/pixel-impact/agents/openai.yaml
+deleted file mode 100644
+index b22b58db..00000000
+--- a/skills/pixel-impact/agents/openai.yaml
++++ /dev/null
+@@ -1,5 +0,0 @@
+-interface:
+-  display_name: "Pixel Impact"
+-  short_description: "Assess callers and change impact"
+-policy:
+-  allow_implicit_invocation: false
+diff --git a/website/content/docs.md b/website/content/docs.md
+index 1530e865..c9c8662c 100644
+--- a/website/content/docs.md
++++ b/website/content/docs.md
+@@ -103,7 +103,7 @@ pixel doctor . --fix   # runs each repair a flagged check names, then re-checks
+ 
+ ## Plugins
+ 
+-Codex and Claude plugins provide an explicit impact skill without automatic retrieval hooks. Pi's package provides `/pixel-impact <symbol>`. The binary must be installed separately. These focused integrations make one bounded query against an existing fresh graph; missing binaries, unsupported versions or stale indexes fall back to native tools. Other agent packages retain their existing protocol integration.
++The Codex and Claude plugins ship no skill and no retrieval hooks; the per-prompt evidence brief comes from `pixel install`. Pi's package provides `/pixel-impact <symbol>`. The binary must be installed separately. The Pi command makes one bounded query against an existing fresh graph; missing binaries, unsupported versions or stale indexes fall back to native tools. Other agent packages retain their existing protocol integration.
+ 
+ | Tool | Install |
+ | --- | --- |
+diff --git a/website/data/agents.toml b/website/data/agents.toml
+index de1b72e7..7774067e 100644
+--- a/website/data/agents.toml
++++ b/website/data/agents.toml
+@@ -50,11 +50,11 @@ slug = "claude-code"
+ name = "Claude Code"
+ logo = "claude"
+ wiring = "install"
+-lede = "`pixel install` preserves task lifecycle hooks while removing automatic retrieval prompts and advice. The optional plugin exposes a focused impact skill; ordinary searches remain native."
++lede = "`pixel install` preserves task lifecycle hooks while removing automatic retrieval prompts and advice. Each code prompt gets a bounded evidence brief; ordinary searches remain native. The optional plugin ships no skill or hook."
+ global = ["~/.claude/settings.json"]
+ wires = "task lifecycle hooks in `~/.claude/settings.json`; retired Pixel retrieval hooks are removed and foreign hooks are preserved"
+ repo = [".claude/settings.local.json", ".claude/pixel-rtk-hooks.json"]
+-plugin = "`/plugin marketplace add Pixel-CLI/pixel`, then `/plugin install pixel@pixel`: an explicit impact skill without automatic retrieval hooks"
++plugin = "`/plugin marketplace add Pixel-CLI/pixel`, then `/plugin install pixel@pixel`: ships no skill or hook; `pixel install` wires the per-prompt brief"
+ checks = ["install.claude-hooks", "repo.claude-hooks"]
+ 
+ [[agent]]
+@@ -62,7 +62,7 @@ slug = "codex"
+ name = "Codex"
+ logo = "codex"
+ wiring = "install"
+-lede = "`pixel install` removes retired Pixel prompt and metrics hooks while retaining task lifecycle controls. The optional plugin exposes an explicit impact skill; ordinary searches remain native."
++lede = "`pixel install` removes retired Pixel prompt and metrics hooks while retaining task lifecycle controls. Each code prompt gets a bounded evidence brief; ordinary searches remain native. The optional plugin ships no skill or hook."
+ global = ["~/.codex/config.toml", "~/.codex/hooks.json"]
+ when = "in `$CODEX_HOME` instead of `~/.codex` when that variable is set"
+ wires = "task lifecycle hooks in `hooks.json`; removes Pixel's retired `developer_instructions` block while preserving foreign instructions"
+-- 
+2.55.0
+

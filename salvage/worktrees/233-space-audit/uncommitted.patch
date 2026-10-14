@@ -1,0 +1,614 @@
+# worktree /Users/livio/.codex/worktrees/233-space-audit/pixel [feat/233-space-audit] at 0c0b25cc1488a268f2d6b4c80e440ce6c0c69d1d
+diff --git a/.agents/skills/pixel/SKILL.md b/.agents/skills/pixel/SKILL.md
+index f6946fb8..c8e917c4 100644
+--- a/.agents/skills/pixel/SKILL.md
++++ b/.agents/skills/pixel/SKILL.md
+@@ -90,6 +90,7 @@ pixel commit --files <f1> --files <f2> -m "msg" --request-id "id"   # only when
+ | `pixel pack-context <uid>` | one symbol budget-fitted, not a whole file |
+ | `pixel plan "task"` | deterministic todo list for multi-file work |
+ | `pixel list-areas` / `pixel list-flows` / `pixel status` | modules, flows, index freshness |
++| `pixel space [PATH] [--json] [--delete [--yes]]` | audit `.pixel` disk use; deletion removes only `base.shard`, `delta.shard`, `state.json` and `base.sig`, keeps graph data/logs/configuration/unrecognized files, and refuses while a daemon or index build is active |
+ | `pixel web-search "<term>"` | a term the index cannot know |
+ | `pixel review-changes` | structured staged/unstaged diff |
+ | `pixel recall …` | past agent sessions — see below |
+diff --git a/.clinerules/pixel.md b/.clinerules/pixel.md
+index 765f7936..2c45dc7a 100644
+--- a/.clinerules/pixel.md
++++ b/.clinerules/pixel.md
+@@ -79,6 +79,7 @@ pixel commit --files <f1> --files <f2> -m "msg" --request-id "id"   # only when
+ | `pixel pack-context <uid>` | one symbol budget-fitted, not a whole file |
+ | `pixel plan "task"` | deterministic todo list for multi-file work |
+ | `pixel list-areas` / `pixel list-flows` / `pixel status` | modules, flows, index freshness |
++| `pixel space [PATH] [--json] [--delete [--yes]]` | audit `.pixel` disk use; deletion removes only `base.shard`, `delta.shard`, `state.json` and `base.sig`, keeps graph data/logs/configuration/unrecognized files, and refuses while a daemon or index build is active |
+ | `pixel web-search "<term>"` | a term the index cannot know |
+ | `pixel review-changes` | structured staged/unstaged diff |
+ | `pixel recall …` | past agent sessions — see below |
+diff --git a/.cursor/rules/pixel.mdc b/.cursor/rules/pixel.mdc
+index fe70213c..5e89c328 100644
+--- a/.cursor/rules/pixel.mdc
++++ b/.cursor/rules/pixel.mdc
+@@ -84,6 +84,7 @@ pixel commit --files <f1> --files <f2> -m "msg" --request-id "id"   # only when
+ | `pixel pack-context <uid>` | one symbol budget-fitted, not a whole file |
+ | `pixel plan "task"` | deterministic todo list for multi-file work |
+ | `pixel list-areas` / `pixel list-flows` / `pixel status` | modules, flows, index freshness |
++| `pixel space [PATH] [--json] [--delete [--yes]]` | audit `.pixel` disk use; deletion removes only `base.shard`, `delta.shard`, `state.json` and `base.sig`, keeps graph data/logs/configuration/unrecognized files, and refuses while a daemon or index build is active |
+ | `pixel web-search "<term>"` | a term the index cannot know |
+ | `pixel review-changes` | structured staged/unstaged diff |
+ | `pixel recall …` | past agent sessions — see below |
+diff --git a/.kiro/steering/pixel.md b/.kiro/steering/pixel.md
+index 765f7936..2c45dc7a 100644
+--- a/.kiro/steering/pixel.md
++++ b/.kiro/steering/pixel.md
+@@ -79,6 +79,7 @@ pixel commit --files <f1> --files <f2> -m "msg" --request-id "id"   # only when
+ | `pixel pack-context <uid>` | one symbol budget-fitted, not a whole file |
+ | `pixel plan "task"` | deterministic todo list for multi-file work |
+ | `pixel list-areas` / `pixel list-flows` / `pixel status` | modules, flows, index freshness |
++| `pixel space [PATH] [--json] [--delete [--yes]]` | audit `.pixel` disk use; deletion removes only `base.shard`, `delta.shard`, `state.json` and `base.sig`, keeps graph data/logs/configuration/unrecognized files, and refuses while a daemon or index build is active |
+ | `pixel web-search "<term>"` | a term the index cannot know |
+ | `pixel review-changes` | structured staged/unstaged diff |
+ | `pixel recall …` | past agent sessions — see below |
+diff --git a/.openclaw/skills/pixel/SKILL.md b/.openclaw/skills/pixel/SKILL.md
+index f6946fb8..c8e917c4 100644
+--- a/.openclaw/skills/pixel/SKILL.md
++++ b/.openclaw/skills/pixel/SKILL.md
+@@ -90,6 +90,7 @@ pixel commit --files <f1> --files <f2> -m "msg" --request-id "id"   # only when
+ | `pixel pack-context <uid>` | one symbol budget-fitted, not a whole file |
+ | `pixel plan "task"` | deterministic todo list for multi-file work |
+ | `pixel list-areas` / `pixel list-flows` / `pixel status` | modules, flows, index freshness |
++| `pixel space [PATH] [--json] [--delete [--yes]]` | audit `.pixel` disk use; deletion removes only `base.shard`, `delta.shard`, `state.json` and `base.sig`, keeps graph data/logs/configuration/unrecognized files, and refuses while a daemon or index build is active |
+ | `pixel web-search "<term>"` | a term the index cannot know |
+ | `pixel review-changes` | structured staged/unstaged diff |
+ | `pixel recall …` | past agent sessions — see below |
+diff --git a/.qoder/rules/pixel.md b/.qoder/rules/pixel.md
+index 765f7936..2c45dc7a 100644
+--- a/.qoder/rules/pixel.md
++++ b/.qoder/rules/pixel.md
+@@ -79,6 +79,7 @@ pixel commit --files <f1> --files <f2> -m "msg" --request-id "id"   # only when
+ | `pixel pack-context <uid>` | one symbol budget-fitted, not a whole file |
+ | `pixel plan "task"` | deterministic todo list for multi-file work |
+ | `pixel list-areas` / `pixel list-flows` / `pixel status` | modules, flows, index freshness |
++| `pixel space [PATH] [--json] [--delete [--yes]]` | audit `.pixel` disk use; deletion removes only `base.shard`, `delta.shard`, `state.json` and `base.sig`, keeps graph data/logs/configuration/unrecognized files, and refuses while a daemon or index build is active |
+ | `pixel web-search "<term>"` | a term the index cannot know |
+ | `pixel review-changes` | structured staged/unstaged diff |
+ | `pixel recall …` | past agent sessions — see below |
+diff --git a/.windsurf/rules/pixel.md b/.windsurf/rules/pixel.md
+index 765f7936..2c45dc7a 100644
+--- a/.windsurf/rules/pixel.md
++++ b/.windsurf/rules/pixel.md
+@@ -79,6 +79,7 @@ pixel commit --files <f1> --files <f2> -m "msg" --request-id "id"   # only when
+ | `pixel pack-context <uid>` | one symbol budget-fitted, not a whole file |
+ | `pixel plan "task"` | deterministic todo list for multi-file work |
+ | `pixel list-areas` / `pixel list-flows` / `pixel status` | modules, flows, index freshness |
++| `pixel space [PATH] [--json] [--delete [--yes]]` | audit `.pixel` disk use; deletion removes only `base.shard`, `delta.shard`, `state.json` and `base.sig`, keeps graph data/logs/configuration/unrecognized files, and refuses while a daemon or index build is active |
+ | `pixel web-search "<term>"` | a term the index cannot know |
+ | `pixel review-changes` | structured staged/unstaged diff |
+ | `pixel recall …` | past agent sessions — see below |
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index bc3ad8d9..e16f724f 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -97,6 +97,7 @@ ARCHITECTURE, CONTRIBUTING, `docs/manual-setup.md`, the site's `website/content/
+ | `pixel workspace` | Multi-repo registry (`.pixel/workspace.json` members add/remove/list); `--workspace` fans `impact`/`who-calls` out across registered repos with per-repo provenance |
+ | `pixel index-pack` | Freeze the index into one checksummed `.pxpack` bundle — CI builds once, teammates install instead of re-indexing |
+ | `pixel index-unpack` | Install a packed index bundle from a path or https:// URL, hash-verified, refusing to overwrite a live index without `--force` |
++| `pixel space` | Audit per-project `.pixel` storage beneath a path, including total and reclaimable text-index bytes; `--delete` removes only `base.shard`, `delta.shard`, `state.json` and `base.sig`, preserves graph/durable state and refuses active daemons/builds |
+ | `pixel status` | Index + graph freshness status |
+ | `pixel coverage` | Per-language index coverage: files on disk vs files indexed, with unrecognized extensions surfaced — the "what did the index miss?" answer |
+ | `pixel audit` | What an agent reads to learn what the largest source files contain: each whole file against its `list-signatures` outline in tokens (bytes / 4, floored), the total and the per-file median, files changed since indexing or with no signatures left out and counted, then per-language coverage. Builds the graph on a first run only; local, read-only, sends nothing |
+diff --git a/PIXEL.md b/PIXEL.md
+index 765f7936..2c45dc7a 100644
+--- a/PIXEL.md
++++ b/PIXEL.md
+@@ -79,6 +79,7 @@ pixel commit --files <f1> --files <f2> -m "msg" --request-id "id"   # only when
+ | `pixel pack-context <uid>` | one symbol budget-fitted, not a whole file |
+ | `pixel plan "task"` | deterministic todo list for multi-file work |
+ | `pixel list-areas` / `pixel list-flows` / `pixel status` | modules, flows, index freshness |
++| `pixel space [PATH] [--json] [--delete [--yes]]` | audit `.pixel` disk use; deletion removes only `base.shard`, `delta.shard`, `state.json` and `base.sig`, keeps graph data/logs/configuration/unrecognized files, and refuses while a daemon or index build is active |
+ | `pixel web-search "<term>"` | a term the index cannot know |
+ | `pixel review-changes` | structured staged/unstaged diff |
+ | `pixel recall …` | past agent sessions — see below |
+diff --git a/changelog.d/233-space-audit.added.md b/changelog.d/233-space-audit.added.md
+index 084bd5ca..1a28c55d 100644
+--- a/changelog.d/233-space-audit.added.md
++++ b/changelog.d/233-space-audit.added.md
+@@ -1 +1 @@
+-**cli:** `pixel space [PATH]` — audit how much disk pixel indexing takes across every project under a tree: per-project `.pixel` size plus the accumulated total (`--json` for structured output), and remove the rebuildable shards with `--delete` (one confirmation, or `--yes`). The audit writes nothing into the tree it measures; journal-only `.pixel` housekeeping is not counted.
+\ No newline at end of file
++**cli:** Task #468 adds `pixel space [PATH]` to report total and reclaimable bytes; `--delete` removes only `base.shard`, `delta.shard`, `state.json` and `base.sig`, preserving durable and graph state while refusing active daemons or builds.
+diff --git a/crates/pixel-install/assets/pixel-agent-prompt.md b/crates/pixel-install/assets/pixel-agent-prompt.md
+index 725d5b12..2a49216e 100644
+--- a/crates/pixel-install/assets/pixel-agent-prompt.md
++++ b/crates/pixel-install/assets/pixel-agent-prompt.md
+@@ -65,6 +65,7 @@ pixel commit --files <f1> --files <f2> -m "msg" --request-id "id"   # only when
+ | `pixel pack-context <uid>` | one symbol budget-fitted, not a whole file |
+ | `pixel plan "task"` | deterministic todo list for multi-file work |
+ | `pixel list-areas` / `pixel list-flows` / `pixel status` | modules, flows, index freshness |
++| `pixel space [PATH] [--json] [--delete [--yes]]` | audit `.pixel` disk use; deletion removes only `base.shard`, `delta.shard`, `state.json` and `base.sig`, keeps graph data/logs/configuration/unrecognized files, and refuses while a daemon or index build is active |
+ | `pixel web-search "<term>"` | a term the index cannot know |
+ | `pixel review-changes` | structured staged/unstaged diff |
+ | `pixel recall …` | past agent sessions — see below |
+diff --git a/crates/pixel/src/main.rs b/crates/pixel/src/main.rs
+index 9b917596..5e05567d 100644
+--- a/crates/pixel/src/main.rs
++++ b/crates/pixel/src/main.rs
+@@ -56,6 +56,7 @@ mod sniper_cmd;
+ mod task_runtime;
+ mod ultraflow_cmd;
+ 
++mod space_cmd;
+ mod update_notice;
+ mod web_search;
+ mod workspace_cmd;
+@@ -648,6 +649,20 @@ enum Command {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+     },
++    /// Audit `.pixel` disk usage and optionally remove rebuildable index files.
++    Space {
++        #[arg(default_value = ".")]
++        path: PathBuf,
++        /// Emit JSON instead of a table.
++        #[arg(long)]
++        json: bool,
++        /// Remove rebuildable index artifacts after one confirmation.
++        #[arg(long)]
++        delete: bool,
++        /// Skip confirmation (requires `--delete`).
++        #[arg(long, requires = "delete")]
++        yes: bool,
++    },
+     /// Index + graph freshness status.
+     Status {
+         #[arg(default_value = ".")]
+@@ -6595,6 +6610,12 @@ fn run_command(
+             force,
+             path,
+         }),
++        Command::Space {
++            path,
++            json,
++            delete,
++            yes,
++        } => space_cmd::run(path, json, delete, yes),
+         Command::Status {
+             path,
+             json,
+diff --git a/crates/pixel/src/space_cmd.rs b/crates/pixel/src/space_cmd.rs
+index a35148c1..5efa196c 100644
+--- a/crates/pixel/src/space_cmd.rs
++++ b/crates/pixel/src/space_cmd.rs
+@@ -10,7 +10,8 @@ use std::io::{BufRead, Write};
+ use std::path::{Path, PathBuf};
+ 
+ use pixel_daemon::api::GRAPH_DB_FILE;
+-use pixel_index::delta::DELTA_FILE;
++use pixel_index::BuildLock;
++use pixel_index::delta::{DELTA_FILE, STATE_FILE};
+ use pixel_index::index::{SHARD_DIR, SHARD_FILE};
+ use serde_json::json;
+ 
+@@ -26,6 +27,10 @@ const PRUNE: &[&str] = &[".git", "target", "node_modules", ".cache", ".pnpm-stor
+ /// no file here. A journal-only `.pixel` is not "indexing" and is skipped.
+ const INDEX_MARKERS: &[&str] = &[SHARD_FILE, DELTA_FILE, GRAPH_DB_FILE];
+ 
++/// Derived text-index files removed by `--delete`. Graph databases, locks,
++/// history, vectors, action logs, configuration, task records and unknown files stay.
++const REBUILDABLE_FILES: &[&str] = &[SHARD_FILE, DELTA_FILE, STATE_FILE, "base.sig"];
++
+ /// Does this `.pixel` directory hold at least one real index artifact?
+ fn has_index_marker(shard: &Path) -> bool {
+     INDEX_MARKERS
+@@ -105,6 +110,45 @@ fn dir_size(dir: &Path) -> u64 {
+     total
+ }
+ 
++/// Bytes occupied by the explicitly rebuildable index artifacts.
++fn reclaimable_size(pixel_dir: &Path) -> u64 {
++    let mut total = 0;
++    for path in rebuildable_paths(pixel_dir) {
++        if let Ok(metadata) = std::fs::symlink_metadata(path)
++            && metadata.file_type().is_file()
++        {
++            total += metadata.len();
++        }
++    }
++    total
++}
++
++fn rebuildable_paths(pixel_dir: &Path) -> Vec<PathBuf> {
++    REBUILDABLE_FILES
++        .iter()
++        .map(|name| pixel_dir.join(name))
++        .collect()
++}
++
++/// Remove only known derived files; never recursively delete a `.pixel` tree.
++fn remove_rebuildable_files(pixel_dir: &Path) -> Result<(usize, u64), String> {
++    let mut removed = 0;
++    let mut bytes = 0;
++    for path in rebuildable_paths(pixel_dir) {
++        let metadata = match std::fs::symlink_metadata(&path) {
++            Ok(metadata) if metadata.file_type().is_file() => metadata,
++            Ok(_) => continue,
++            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
++            Err(error) => return Err(format!("space: {}: {error}", path.display())),
++        };
++        std::fs::remove_file(&path)
++            .map_err(|error| format!("space: {}: {error}", path.display()))?;
++        removed += 1;
++        bytes += metadata.len();
++    }
++    Ok((removed, bytes))
++}
++
+ /// Is a typed confirmation a "yes"? Pure so the interactive prompt's
+ /// parsing is testable without driving stdin.
+ fn confirm_yes(answer: &str) -> bool {
+@@ -112,32 +156,39 @@ fn confirm_yes(answer: &str) -> bool {
+     a == "y" || a == "yes"
+ }
+ 
+-/// Audit the index disk usage under `path`. With `--delete`, remove every
+-/// found shard after a single confirmation (skipped by `--yes`).
++/// Audit index disk usage under `path`. With `--delete`, remove only known
++/// rebuildable index files after confirmation; durable state is kept.
+ pub fn run(path: PathBuf, json: bool, delete: bool, yes: bool) -> Result<(), String> {
+     let base = path
+         .canonicalize()
+         .map_err(|e| format!("space: {}: {e}", path.display()))?;
+     let shards = find_shards(&base);
+-    let mut rows: Vec<(PathBuf, u64)> = shards
++    let mut rows: Vec<(PathBuf, u64, u64)> = shards
+         .into_iter()
+         .map(|shard| {
+             let bytes = dir_size(&shard);
++            let reclaimable = reclaimable_size(&shard);
+             let project = shard.parent().map(Path::to_path_buf).unwrap_or_default();
+-            (project, bytes)
++            (project, bytes, reclaimable)
+         })
+         .collect();
+-    rows.sort_by(|(_, a), (_, b)| b.cmp(a)); // biggest first
+-    let total: u64 = rows.iter().map(|(_, bytes)| bytes).sum();
++    rows.sort_by(|(_, a_total, a_reclaimable), (_, b_total, b_reclaimable)| {
++        b_reclaimable
++            .cmp(a_reclaimable)
++            .then_with(|| b_total.cmp(a_total))
++    });
++    let total: u64 = rows.iter().map(|(_, bytes, _)| bytes).sum();
++    let reclaimable_total: u64 = rows.iter().map(|(_, _, bytes)| bytes).sum();
+ 
+     if json {
+         let entries: Vec<_> = rows
+             .iter()
+-            .map(|(project, bytes)| {
++            .map(|(project, bytes, reclaimable)| {
+                 json!({
+                     "project": project.display().to_string(),
+                     "shard": project.join(SHARD_DIR).display().to_string(),
+                     "bytes": bytes,
++                    "reclaimable_bytes": reclaimable,
+                     "human": human(*bytes),
+                 })
+             })
+@@ -147,6 +198,7 @@ pub fn run(path: PathBuf, json: bool, delete: bool, yes: bool) -> Result<(), Str
+             serde_json::to_string_pretty(&json!({
+                 "root": base.display().to_string(),
+                 "total_bytes": total,
++                "reclaimable_bytes": reclaimable_total,
+                 "entries": entries,
+             }))
+             .map_err(|e| e.to_string())?
+@@ -155,26 +207,67 @@ pub fn run(path: PathBuf, json: bool, delete: bool, yes: bool) -> Result<(), Str
+         println!("space: no `.pixel` index shards under {}", base.display());
+         return Ok(());
+     } else {
+-        for (project, bytes) in &rows {
+-            println!("{:>10}  {}", human(*bytes), project.display());
++        for (project, bytes, reclaimable) in &rows {
++            println!(
++                "{:>10} total  {:>10} reclaimable  {}",
++                human(*bytes),
++                human(*reclaimable),
++                project.display()
++            );
+         }
+         println!(
+-            "{:>10}  total across {} projects ({} bytes)",
++            "{:>10}  total across {} projects ({} bytes); {} bytes reclaimable",
+             human(total),
+             rows.len(),
+-            total
++            total,
++            reclaimable_total
+         );
+     }
+ 
++    if rows.is_empty() {
++        return Ok(());
++    }
++
+     if delete {
+-        if !(yes || interactive_confirm(rows.len(), total)?) {
++        if !(yes || interactive_confirm(rows.len(), reclaimable_total)?) {
+             return Err("space: aborted — nothing deleted".to_string());
+         }
+-        for (project, _) in &rows {
++
++        let mut lock_projects: Vec<&PathBuf> = rows.iter().map(|(project, _, _)| project).collect();
++        lock_projects.sort();
++        let mut _locks = Vec::with_capacity(lock_projects.len());
++        for project in lock_projects {
++            let lock = BuildLock::try_acquire(project)
++                .map_err(|error| format!("space: locking {}: {error}", project.display()))?
++                .ok_or_else(|| {
++                    format!(
++                        "space: index build already running for {}",
++                        project.display()
++                    )
++                })?;
++            _locks.push(lock);
++        }
++        if let Some((project, _, _)) = rows
++            .iter()
++            .find(|(project, _, _)| super::daemon_ping(project))
++        {
++            return Err(format!(
++                "space: daemon is running for {}; stop it before deleting index files",
++                project.display()
++            ));
++        }
++
++        for (project, _, _) in &rows {
+             let shard = project.join(SHARD_DIR);
+-            match std::fs::remove_dir_all(&shard) {
+-                Ok(()) => println!("removed {}", shard.display()),
+-                Err(e) => eprintln!("space: failed to remove {}: {e}", shard.display()),
++            let (count, bytes) = remove_rebuildable_files(&shard)?;
++            let message = format!(
++                "removed {count} rebuildable index files ({bytes} bytes) under {}",
++                shard.display()
++            );
++            if json {
++                eprintln!("{message}");
++            } else {
++                println!("{message}");
+             }
+         }
+     }
+diff --git a/crates/pixel/tests/cli/main.rs b/crates/pixel/tests/cli/main.rs
+index 1538a571..1828835b 100644
+--- a/crates/pixel/tests/cli/main.rs
++++ b/crates/pixel/tests/cli/main.rs
+@@ -28,6 +28,7 @@ mod renamed_commands;
+ mod rescue_cli;
+ mod scope_task_precision;
+ mod search_compat_cli;
++mod space_cli;
+ mod support;
+ mod targets_cli;
+ mod ultraflow_cli;
+diff --git a/crates/pixel/tests/cli/space_cli.rs b/crates/pixel/tests/cli/space_cli.rs
+index ac3ada5d..03178954 100644
+--- a/crates/pixel/tests/cli/space_cli.rs
++++ b/crates/pixel/tests/cli/space_cli.rs
+@@ -2,14 +2,18 @@
+ //! tree (table and `--json`), and `--delete --yes` remove them.
+ 
+ use std::path::PathBuf;
+-use std::process::Command;
++use std::process::{Command, Output};
+ 
+-fn pixel(args: &[&str]) -> (bool, String, String) {
+-    let out = Command::new(env!("CARGO_BIN_EXE_pixel"))
++fn pixel_output(args: &[&str]) -> Output {
++    Command::new(env!("CARGO_BIN_EXE_pixel"))
+         .args(args)
+         .env("PIXEL_DAEMON_AUTO_START", "0")
+         .output()
+-        .unwrap();
++        .unwrap()
++}
++
++fn pixel(args: &[&str]) -> (bool, String, String) {
++    let out = pixel_output(args);
+     (
+         out.status.success(),
+         String::from_utf8(out.stdout).unwrap(),
+@@ -55,21 +59,169 @@ fn json_reports_per_project_bytes_and_the_total() {
+     let value: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+     assert_eq!(value["total_bytes"], 1_024);
+     assert_eq!(value["entries"][0]["bytes"], 1_024);
++    assert_eq!(value["entries"][0]["reclaimable_bytes"], 1_024);
++    assert_eq!(value["reclaimable_bytes"], 1_024);
+     assert_eq!(value["entries"][0]["human"], "1.0 KiB");
+     let _ = std::fs::remove_dir_all(&base);
+ }
+ 
+ #[test]
+-fn delete_with_yes_removes_the_shards_but_keeps_the_projects() {
++fn delete_with_yes_removes_rebuildable_files_and_preserves_durable_state() {
+     let base = scratch("delete");
+     let proj = base.join("one");
+     shard_of(&proj, 100);
++    std::fs::write(proj.join(".pixel/delta.shard"), vec![0u8; 200]).unwrap();
++    std::fs::write(proj.join(".pixel/state.json"), b"state").unwrap();
++    std::fs::write(proj.join(".pixel/base.sig"), b"sig").unwrap();
++    std::fs::write(proj.join(".pixel/graph.v2.db"), b"keep graph").unwrap();
++    std::fs::write(proj.join(".pixel/graph.v2.db-wal"), b"keep wal").unwrap();
++    std::fs::write(proj.join(".pixel/actions.jsonl"), b"keep log").unwrap();
++    std::fs::write(proj.join(".pixel/config.json"), b"keep config").unwrap();
++    std::fs::write(proj.join(".pixel/history.db"), b"keep history").unwrap();
++    std::fs::write(proj.join(".pixel/targets.json"), b"keep task state").unwrap();
++    std::fs::write(proj.join(".pixel/unrecognized"), b"keep unknown").unwrap();
+     assert!(proj.join(".pixel").exists());
+     let (ok, stdout, _err) = pixel(&["space", "--delete", "--yes", base.to_str().unwrap()]);
+     assert!(ok, "{stdout}");
+-    assert!(!proj.join(".pixel").exists(), "shard removed");
++    for name in ["base.shard", "delta.shard", "state.json", "base.sig"] {
++        assert!(!proj.join(".pixel").join(name).exists(), "{name} removed");
++    }
+     assert!(proj.exists(), "project untouched");
+-    assert!(stdout.contains("removed "), "{stdout}");
++    assert!(
++        proj.join(".pixel").exists(),
++        "Pixel state directory preserved"
++    );
++    assert_eq!(
++        std::fs::read(proj.join(".pixel/actions.jsonl")).unwrap(),
++        b"keep log"
++    );
++    assert_eq!(
++        std::fs::read(proj.join(".pixel/config.json")).unwrap(),
++        b"keep config"
++    );
++    assert_eq!(
++        std::fs::read(proj.join(".pixel/history.db")).unwrap(),
++        b"keep history"
++    );
++    assert_eq!(
++        std::fs::read(proj.join(".pixel/graph.v2.db")).unwrap(),
++        b"keep graph"
++    );
++    assert_eq!(
++        std::fs::read(proj.join(".pixel/graph.v2.db-wal")).unwrap(),
++        b"keep wal"
++    );
++    assert_eq!(
++        std::fs::read(proj.join(".pixel/targets.json")).unwrap(),
++        b"keep task state"
++    );
++    assert_eq!(
++        std::fs::read(proj.join(".pixel/unrecognized")).unwrap(),
++        b"keep unknown"
++    );
++    assert!(
++        proj.join(".pixel/build.lock").exists(),
++        "build lock retained"
++    );
++    assert!(
++        stdout.contains("removed 4 rebuildable index files (308 bytes)"),
++        "{stdout}"
++    );
++    let _ = std::fs::remove_dir_all(&base);
++}
++
++#[test]
++fn delete_without_confirmation_preserves_the_index() {
++    let base = scratch("delete-confirm");
++    let proj = base.join("one");
++    shard_of(&proj, 10);
++
++    let out = pixel_output(&["space", "--delete", base.to_str().unwrap()]);
++    let stdout = String::from_utf8(out.stdout).unwrap();
++    let stderr = String::from_utf8(out.stderr).unwrap();
++    assert!(!out.status.success(), "{stdout}\n{stderr}");
++    assert!(
++        stderr.contains("space: aborted — nothing deleted"),
++        "{stderr}"
++    );
++    assert_eq!(
++        std::fs::read(proj.join(".pixel/base.shard")).unwrap().len(),
++        10
++    );
++    let _ = std::fs::remove_dir_all(&base);
++}
++
++#[test]
++fn json_delete_keeps_stdout_as_one_json_document() {
++    let base = scratch("json-delete");
++    let proj = base.join("one");
++    shard_of(&proj, 10);
++
++    let out = pixel_output(&[
++        "space",
++        "--json",
++        "--delete",
++        "--yes",
++        base.to_str().unwrap(),
++    ]);
++    let stderr = String::from_utf8(out.stderr).unwrap();
++    assert!(out.status.success(), "{stderr}");
++    let stdout = String::from_utf8(out.stdout).unwrap();
++    let value: serde_json::Value = serde_json::from_str(&stdout).expect("one valid JSON report");
++    assert_eq!(value["reclaimable_bytes"], 10);
++    assert!(!proj.join(".pixel/base.shard").exists());
++    assert!(
++        stderr.contains("removed 1 rebuildable index files"),
++        "{stderr}"
++    );
++    let _ = std::fs::remove_dir_all(&base);
++}
++
++#[cfg(unix)]
++#[test]
++fn delete_preserves_symlinks_named_like_rebuildable_files() {
++    use std::os::unix::fs::symlink;
++
++    let base = scratch("delete-symlink");
++    let proj = base.join("one");
++    let pixel_dir = proj.join(".pixel");
++    std::fs::create_dir_all(&pixel_dir).unwrap();
++    let target = base.join("outside.shard");
++    std::fs::write(&target, b"external state").unwrap();
++    symlink(&target, pixel_dir.join("base.shard")).unwrap();
++
++    let out = pixel_output(&["space", "--delete", "--yes", base.to_str().unwrap()]);
++    let stderr = String::from_utf8(out.stderr).unwrap();
++    assert!(out.status.success(), "{stderr}");
++    assert!(
++        std::fs::symlink_metadata(pixel_dir.join("base.shard"))
++            .unwrap()
++            .file_type()
++            .is_symlink()
++    );
++    assert_eq!(std::fs::read(target).unwrap(), b"external state");
++    let _ = std::fs::remove_dir_all(&base);
++}
++
++#[test]
++fn delete_refuses_an_active_index_build() {
++    let base = scratch("delete-locked");
++    let proj = base.join("one");
++    shard_of(&proj, 10);
++    let _lock = pixel_index::BuildLock::try_acquire(&proj)
++        .unwrap()
++        .expect("test owns the build lock");
++
++    let out = pixel_output(&["space", "--delete", "--yes", base.to_str().unwrap()]);
++    let stdout = String::from_utf8(out.stdout).unwrap();
++    let stderr = String::from_utf8(out.stderr).unwrap();
++    assert!(!out.status.success(), "{stdout}\n{stderr}");
++    assert!(stderr.contains("index build already running"), "{stderr}");
++    assert_eq!(
++        std::fs::read(proj.join(".pixel/base.shard")).unwrap().len(),
++        10
++    );
++    drop(_lock);
+     let _ = std::fs::remove_dir_all(&base);
+ }
+ 
+diff --git a/rules/pixel.md b/rules/pixel.md
+index 96cd9766..b803379a 100644
+--- a/rules/pixel.md
++++ b/rules/pixel.md
+@@ -83,6 +83,7 @@ pixel commit --files <f1> --files <f2> -m "msg" --request-id "id"   # only when
+ | `pixel pack-context <uid>` | one symbol budget-fitted, not a whole file |
+ | `pixel plan "task"` | deterministic todo list for multi-file work |
+ | `pixel list-areas` / `pixel list-flows` / `pixel status` | modules, flows, index freshness |
++| `pixel space [PATH] [--json] [--delete [--yes]]` | audit `.pixel` disk use; deletion removes only `base.shard`, `delta.shard`, `state.json` and `base.sig`, keeps graph data/logs/configuration/unrecognized files, and refuses while a daemon or index build is active |
+ | `pixel web-search "<term>"` | a term the index cannot know |
+ | `pixel review-changes` | structured staged/unstaged diff |
+ | `pixel recall …` | past agent sessions — see below |
+diff --git a/skills/pixel/SKILL.md b/skills/pixel/SKILL.md
+index f6946fb8..c8e917c4 100644
+--- a/skills/pixel/SKILL.md
++++ b/skills/pixel/SKILL.md
+@@ -90,6 +90,7 @@ pixel commit --files <f1> --files <f2> -m "msg" --request-id "id"   # only when
+ | `pixel pack-context <uid>` | one symbol budget-fitted, not a whole file |
+ | `pixel plan "task"` | deterministic todo list for multi-file work |
+ | `pixel list-areas` / `pixel list-flows` / `pixel status` | modules, flows, index freshness |
++| `pixel space [PATH] [--json] [--delete [--yes]]` | audit `.pixel` disk use; deletion removes only `base.shard`, `delta.shard`, `state.json` and `base.sig`, keeps graph data/logs/configuration/unrecognized files, and refuses while a daemon or index build is active |
+ | `pixel web-search "<term>"` | a term the index cannot know |
+ | `pixel review-changes` | structured staged/unstaged diff |
+ | `pixel recall …` | past agent sessions — see below |
