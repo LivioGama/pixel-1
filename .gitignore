@@ -39,3 +39,6 @@ stacklit.json
 stacklit.html
 DEPENDENCIES.md
 run-artifacts/
+
+# agent-browser verification captures
+.agent-visual/
