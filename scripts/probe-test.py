@@ -14,7 +14,7 @@ A probe is a directory ``probes/<name>/`` with a ``pixel-plugin.toml`` (``capabi
 
 A probe is read-only, uses no network and is deterministic (the same input gives the same bytes). ``.env*``
 files may be read only when git tracks them, with secret-looking values masked. ``mode = "lead"`` puts its
-blocks before the brief's, ``"append"`` after; ``budget_ms`` (at most 1000) is the wall time it gets, and a
+blocks before the brief's, ``"append"`` after; ``budget_ms`` (at most 2500) is the wall time it gets, and a
 probe that overruns, fails or prints nonsense is skipped.
 
     probe-test.py <probe-dir-or-name> [--set census|bench] [--bin PIXEL] [--ids a,b] [--report-dir D]
@@ -35,6 +35,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,7 +46,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 WORKTREE = HERE.parent
-MAX_BUDGET_MS = 1000
+MAX_BUDGET_MS = 2500
 MODES = ("append", "lead")
 KINDS = ("overview", "review", "flow", "history", "config", "lookup", "tests", "impact", "diagnosis",
          "error-origin", "feature", "bugfix", "rationale", "other")
@@ -675,6 +676,44 @@ def resolve_probe(text):
     return path if path.is_dir() else WORKTREE / "probes" / text
 
 
+def check_all(probes_dir=None):
+    """Contract check of every probe of ``probes/`` with no question set and no network: the manifest, then each probe
+    run twice on a small throwaway git repository (exit 0, within its budget, the same bytes, nothing but blocks and
+    directives, the repository untouched). Returns the problems, empty when every probe holds."""
+    probes_dir = Path(probes_dir or WORKTREE / "probes")
+    problems = []
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        (repo / "src").mkdir()
+        (repo / "src" / "lib.py").write_text("DEFAULT_ROWS = 100\n\ndef search(rows=DEFAULT_ROWS):\n    return rows\n")
+        (repo / "README.md").write_text("# Demo\n\nHow the search default rows setting works.\n")
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+               "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_GLOBAL": "/dev/null"}
+        for argv in (["init", "-q"], ["add", "."], ["commit", "-q", "-m", "search default rows"]):
+            subprocess.run(["git", *argv], cwd=repo, env=env, capture_output=True)
+        for directory in sorted(d for d in probes_dir.glob("*/") if not d.name.startswith(("_", "."))):
+            probe = Probe(directory)
+            problems += [f"{directory.name}: {p}" for p in probe.problems]
+            if probe.problems:
+                continue
+            request = {"prompt": "what is the default number of rows a search returns", "repo_root": str(repo),
+                       "brief": "[PIXEL:BRIEF]\n### src/lib.py:1-4 — DEFAULT_ROWS (constant)\n1| DEFAULT_ROWS = 100\n",
+                       "kind": "lookup", "session_files": []}
+            before = snapshot(repo)
+            first, ms, error = run_probe(probe, request, "pixel", tmp)
+            second, _, _ = run_probe(probe, request, "pixel", tmp)
+            if error:
+                problems.append(f"{directory.name}: {error}")
+            elif first != second:
+                problems.append(f"{directory.name}: not deterministic")
+            elif parse_output(first)[3]:
+                problems.append(f"{directory.name}: lines outside any block")
+            if snapshot(repo) != before:
+                problems.append(f"{directory.name}: modified the repository")
+    return problems
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("probe", nargs="?")
@@ -696,12 +735,20 @@ def main(argv=None):
     parser.add_argument("--live-jobs", type=int, default=4)
     parser.add_argument("--live-reps", type=int, default=1, help="Codex runs per arm (default 1; use 3 before claiming a 0 on a borderline result); the verdict reads the medians")
     parser.add_argument("--hook-shim", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--check-all", action="store_true",
+                        help="contract check of every probe of probes/ on a throwaway repository (CI)")
     parser.add_argument("--self-test", action="store_true")
     args, rest = parser.parse_known_args(argv)
     args.agent = args.agent or load_bc().default_agent()
     if args.self_test:
         return 0 if unittest.TextTestRunner(verbosity=2).run(
             unittest.defaultTestLoader.loadTestsFromTestCase(SelfTest)).wasSuccessful() else 1
+    if args.check_all:
+        problems = check_all()
+        for problem in problems:
+            print(problem)
+        print(f"probes/: {'ok' if not problems else str(len(problems)) + ' problem(s)'}")
+        return 1 if problems else 0
     if args.hook_shim:
         return hook_shim(args.hook_shim, ([args.probe] if args.probe else []) + rest)
     if not args.probe:
@@ -744,6 +791,60 @@ class SelfTest(unittest.TestCase):
         script.write_text(body)
         script.chmod(0o755)
         return directory
+
+    def test_check_all_holds_for_the_shipped_probes_and_names_a_broken_one(self):
+        self.assertEqual(check_all(), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            self.write_probe(tmp, "ok", body="#!/bin/sh\ncat >/dev/null\nprintf '### a — b\\nline\\n'\n")
+            self.write_probe(tmp, "noisy", body="#!/bin/sh\ncat >/dev/null\necho stray\n")
+            self.write_probe(tmp, "flaky", body="#!/bin/sh\ncat >/dev/null\nprintf '### a — %s\\n' $$\n")
+            problems = check_all(tmp)
+            self.assertTrue(any(p.startswith("noisy: lines outside") for p in problems), problems)
+            self.assertTrue(any(p.startswith("flaky: not deterministic") for p in problems), problems)
+            self.assertFalse(any(p.startswith("ok:") for p in problems), problems)
+
+    @unittest.skipUnless(shutil.which("rg"), "ripgrep is not installed")
+    def test_error_origin_finds_the_raise_site_its_callers_and_a_test_and_keeps_to_the_origins_directory(self):
+        probe = Path(__file__).resolve().parent.parent / "probes" / "error-origin"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            files = {
+                "crates/pixel/src/decide.rs": "// header\nfn parse(answer: &str) -> Result<(), String> {\n    if answer.is_empty() {\n"
+                                              "        return Err(\"remote decisions refused the decision: (no reason given)\".into());\n    }\n    Ok(())\n}\n"
+                                              "\n#[cfg(test)]\nfn helper() {}\n\nfn after_a_lone_cfg_test() { parse(\"\").ok(); }\n",
+                "crates/pixel/src/run.rs": "fn run(preset: u8) {\n    let decisions = preset == 3;\n    let x = (decisions, 1);\n    parse(\"a\").ok();\n}\n",
+                "crates/pixel/src/main.rs": "fn main() { run(3); }\n",
+                "crates/pixel-other/src/lib.rs": "fn run(p: u8) { other(p); }\nfn other(p: u8) { run(p); }\nfn caller_of_run() { run(1); }\n",
+                "crates/pixel/tests/decide_test.rs": "fn refuses_an_empty_answer() {\n    parse(\"\").ok();\n}\n",
+            }
+            for rel, text in files.items():
+                (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+                (repo / rel).write_text(text)
+            request = {"prompt": "where does 'remote decisions refused the decision: (nothing)' come from, what triggers it",
+                       "repo_root": str(repo), "brief": "[PIXEL:BRIEF]\n", "kind": None, "session_files": []}
+            done = subprocess.run([str(probe / "probe")], input=json.dumps(request), capture_output=True, text=True,
+                                  cwd=repo)
+            self.assertEqual(done.returncode, 0, done.stderr)
+            text = done.stdout
+            self.assertIn("### error origin — the quoted message is raised at crates/pixel/src/decide.rs:4 in parse", text)
+            self.assertIn("run → parse: the lines leading to the call", text)
+            self.assertIn("let decisions = preset == 3;", text, "the lines that select the path")
+            self.assertIn("test refuses_an_empty_answer exercising parse", text)
+            self.assertIn("after_a_lone_cfg_test", text, "a lone #[cfg(test)] does not make the rest of the file test code")
+            self.assertNotIn("pixel-other", text, "crates/pixel/ is not crates/pixel-other/")
+            self.assertNotIn("let x = (", text.split("test refuses")[0].split("run → parse")[0], "a Rust `let x = (` is not a JS arrow")
+            # A comment that mentions the message is not its raise site; an ambiguous function name only counts callers
+            # beside the selected definition; a second quote is tried when the first is raised nowhere.
+            (repo / "crates/pixel/src/notes.rs").write_text("// remote decisions refused the decision: see decide.rs\nfn notes() {}\n")
+            (repo / "crates/pixel-other/src/dup.rs").write_text("fn parse() {}\nfn uses_the_other_parse() { parse(); }\n")
+            second = dict(request, prompt="no 'a message that is nowhere in the code' but 'remote decisions refused the decision: x' yes")
+            again = subprocess.run([str(probe / "probe")], input=json.dumps(second), capture_output=True, text=True, cwd=repo).stdout
+            self.assertIn("raised at crates/pixel/src/decide.rs:4 in parse", again, "the comment is skipped, the second quote tried")
+            self.assertNotIn("uses_the_other_parse", again, "parse is defined twice: callers beside the selected one only")
+            self.assertIn("run → parse", again)
+            quiet = dict(request, prompt="where is the retry limit defined")
+            nothing = subprocess.run([str(probe / "probe")], input=json.dumps(quiet), capture_output=True, text=True, cwd=repo)
+            self.assertEqual(nothing.stdout, "", "no quoted message: nothing to add")
 
     def test_a_valid_probe_has_no_problems_and_each_broken_one_names_its_problem(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -812,6 +913,13 @@ class SelfTest(unittest.TestCase):
         two = merge(self.BRIEF, [("p", "append", big)], cap=130)
         self.assertEqual([l for l in two.splitlines() if l.startswith("### ")], ["### a.rs:1-2 — alpha"])
         self.assertTrue(two.rstrip().endswith("not shown above."))
+
+    def test_the_merge_matches_the_golden_cases_the_native_brief_is_tested_against(self):
+        cases = json.loads((WORKTREE / "crates/pixel/tests/fixtures/probe-merge.json").read_text())
+        self.assertGreaterEqual(len(cases), 10)
+        for case in cases:
+            outputs = [(o["name"], o["mode"], o["stdout"]) for o in case["outputs"]]
+            self.assertEqual(merge(case["brief"], outputs, case["cap"]), case["expected"], case["name"])
 
     def test_an_empty_brief_gets_the_tag_and_the_probe_blocks(self):
         text = merge("", [("p", "lead", "### a — b\nline\n")])

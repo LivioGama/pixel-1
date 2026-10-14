@@ -43,6 +43,7 @@ use super::decision_log::{self, Record};
 use super::feedback;
 use super::intent::Verdict;
 use super::kinds::{self, ChangeScope, Changes, FlowNode, KindInput, RepoMap};
+use super::probes;
 use super::region_pack;
 use super::relevance::{self, Basis, GateInput, RelevanceInput, Tier};
 use super::routes::QuestionKind;
@@ -2506,6 +2507,7 @@ pub(crate) fn declined_record(declined: Declined, prompt: &str) -> Record {
         elapsed_ms: 0,
         route: None,
         daemon: None,
+        probes: Vec::new(),
         typed: decision_log::logged_typed(typed),
         sha256: decision_log::sha256_hex(typed),
     }
@@ -2548,6 +2550,25 @@ pub(crate) struct Around {
     /// Where the ranges this pack sends are remembered: the repository and
     /// the session.
     pub(crate) sent: Option<(PathBuf, String)>,
+    /// Where the brief's probes are looked up and run, when they may be.
+    pub(crate) probes: Option<ProbeSetup>,
+}
+
+/// The repository whose brief is probed and the plugin host that offers the
+/// probes (the user's own plus the repository's trusted ones).
+pub(crate) struct ProbeSetup {
+    pub(crate) host: pixel_plugin::Host,
+    pub(crate) root: PathBuf,
+    /// Characters the merged brief may hold: the hook parts the host takes,
+    /// whatever the tier shrank the region pack to (a maybe's pack is one
+    /// part, but a probe that answers it may fill all of them).
+    pub(crate) cap: usize,
+    /// What the probes are given at least after the chain: [`PROBE_FLOOR`] for a
+    /// hook, nothing for the `brief` command (Pi kills it at 1.2 s).
+    pub(crate) floor: Duration,
+    /// Bytes the merged brief may hold when the host drops a longer one (the
+    /// `brief` command's Pi and OpenCode extensions drop above 4 000).
+    pub(crate) max_bytes: Option<usize>,
 }
 
 impl Around {
@@ -2560,6 +2581,24 @@ impl Around {
             ..Self::default()
         }
     }
+}
+
+/// What a probe is always given at least once the chain is done, even when
+/// the chain used the window up: a loaded machine slows the chain and the
+/// probes alike, and a probe that never gets to run is a brief without it.
+const PROBE_FLOOR: Duration = Duration::from_millis(1_200);
+/// No probe outlives this after the prompt arrived: under the six seconds the
+/// hook decision is given (`DECISION_TIMEOUT` in `task_hook.rs`) with room to
+/// print, and under what the parts after the first wait for part 1.
+const PROBE_CEILING: Duration = Duration::from_millis(5_000);
+/// What the `brief` command may print once probes added to it: the Pi and
+/// OpenCode extensions that run it drop a brief over 4 000 bytes.
+const COMMAND_MAX_BYTES: usize = 3_990;
+
+/// When the probes must be done: the end of the brief's window, or `now` plus
+/// the floor if the chain left less than that, and never past the ceiling.
+fn probe_deadline(started: Instant, window_end: Instant, now: Instant, floor: Duration) -> Instant {
+    window_end.max(now + floor).min(started + PROBE_CEILING)
 }
 
 /// A brief on its way: the worker is running, the deadline is fixed.
@@ -2577,6 +2616,8 @@ pub(crate) struct Pending {
     signal: Signal,
     /// Where the ranges the pack sends are remembered for the session.
     sent: Option<(PathBuf, String)>,
+    /// Where the probes are run, when they are.
+    probes: Option<ProbeSetup>,
 }
 
 /// A finished brief: the block, when there is one, and what was decided.
@@ -2606,6 +2647,37 @@ impl Pending {
         self.finish_with_record().text
     }
 
+    /// The probes' turn: when the gate let this prompt through, every
+    /// probe that fits its question runs inside what is left of the window and
+    /// the blocks they print are merged into `text` (or into an empty brief,
+    /// for a prompt the gate opened that the chain had nothing to say to).
+    fn probe_stage(
+        &self,
+        brief: &Brief,
+        text: Option<String>,
+    ) -> (Option<String>, Vec<probes::ProbeRun>) {
+        let Some(setup) = &self.probes else {
+            return (text, Vec::new());
+        };
+        if brief.admission.label() != "open" || brief.silenced {
+            return (text, Vec::new());
+        }
+        let kind = brief.kind.map(QuestionKind::as_str);
+        let stage = probes::Stage {
+            host: &setup.host,
+            root: &setup.root,
+            prompt: &self.task,
+            kind,
+            deadline: probe_deadline(self.started, self.deadline, Instant::now(), setup.floor),
+            cap: setup.cap,
+            max_bytes: setup.max_bytes,
+        };
+        match probes::apply(&stage, text.as_deref().unwrap_or("")) {
+            (Some(merged), runs) => (Some(merged), runs),
+            (None, runs) => (text, runs),
+        }
+    }
+
     /// [`Pending::finish`], and the decision it recorded.
     pub(crate) fn finish_with_record(self) -> Finished {
         let timed_out = matches!(
@@ -2621,6 +2693,7 @@ impl Pending {
             Some((text, stats)) => (Some(text), stats),
             None => (None, AnswerStats::default()),
         };
+        let (text, probe_runs) = self.probe_stage(&brief, text);
         let elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         // The daemon start has had the whole brief to launch; a hook about to
         // exit sees it through, for at most the hook bound.
@@ -2665,6 +2738,7 @@ impl Pending {
             elapsed_ms,
             route: brief.route,
             daemon,
+            probes: probe_runs,
             typed: decision_log::logged_typed(&self.task),
             sha256: decision_log::sha256_hex(&self.task),
         };
@@ -2747,6 +2821,16 @@ fn try_start_as(
         });
     let pack = region_pack::limit_from_env(command, parts);
     let window = window_for(&root, command);
+    let probes_setup = probes::enabled(std::env::var(probes::PROBES_ENV).ok().as_deref())
+        .then(|| crate::plugin_cmd::brief_host(&root))
+        .flatten()
+        .map(|host| ProbeSetup {
+            host,
+            root: root.clone(),
+            cap: pack.parts.max(1) * pack.chars,
+            floor: if command { Duration::ZERO } else { PROBE_FLOOR },
+            max_bytes: command.then_some(COMMAND_MAX_BYTES),
+        });
     try_start_with(
         prompt,
         gate,
@@ -2761,6 +2845,7 @@ fn try_start_as(
             context,
             seen,
             sent: sent_to,
+            probes: probes_setup,
         },
     )
 }
@@ -2816,6 +2901,7 @@ where
         context,
         seen,
         sent,
+        probes,
     } = around;
     if !gate.open() {
         return Err(if gate.enabled {
@@ -2888,6 +2974,7 @@ where
         task,
         signal,
         sent,
+        probes,
     })
 }
 
@@ -8907,6 +8994,41 @@ mod tests {
         assert!(
             fit(&brief).is_none(),
             "the packet of a kind admission says nothing"
+        );
+    }
+
+    #[test]
+    fn probes_get_the_rest_of_the_window_a_floor_when_the_chain_used_it_up_and_never_past_the_ceiling()
+     {
+        let started = Instant::now();
+        let at = |ms: u64| started + Duration::from_millis(ms);
+        // Plenty of window left: the end of the window.
+        assert_eq!(
+            probe_deadline(started, at(3_000), at(500), PROBE_FLOOR),
+            at(3_000)
+        );
+        // The chain used it up at 2.9 s: the floor is added from now.
+        assert_eq!(
+            probe_deadline(started, at(3_000), at(2_900), PROBE_FLOOR),
+            at(4_100)
+        );
+        // Late, and the floor would cross the ceiling: the ceiling wins.
+        assert_eq!(
+            probe_deadline(started, at(3_000), at(4_500), PROBE_FLOOR),
+            at(5_000)
+        );
+        assert_eq!(
+            probe_deadline(started, at(4_500), at(100), PROBE_FLOOR),
+            at(4_500)
+        );
+        // The `brief` command has no floor: the window is all there is, even when it is over.
+        assert_eq!(
+            probe_deadline(started, at(750), at(700), Duration::ZERO),
+            at(750)
+        );
+        assert_eq!(
+            probe_deadline(started, at(750), at(900), Duration::ZERO),
+            at(900)
         );
     }
 

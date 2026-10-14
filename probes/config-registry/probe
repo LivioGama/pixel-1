@@ -52,10 +52,13 @@ def tracked(clone, rel):
 
 def scan(clone):
     """[(path, line, text)] of every line that may define or read a config key; .env* admitted only as templates."""
-    cmd = ["rg", "-n", "--no-heading", "--no-messages", "--max-columns", "300", "--hidden", "-g", "!.git", "--max-filesize", "400K"]
+    cmd = ["rg", "-n", "--no-heading", "--no-messages", "--max-columns", "300", "--hidden", "-g", "!.git", "-g", "!.pixel", "--max-filesize", "400K"]
     for g in RG_EXCL: cmd += ["-g", g]
     for p in PATTERNS: cmd += ["-e", p]
-    out = subprocess.run(cmd + ["."], cwd=clone, capture_output=True, text=True, timeout=60).stdout
+    try:
+        out = subprocess.run(cmd + ["."], cwd=clone, capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []   # no ripgrep, or too slow: no registry
     rows = []
     for l in out.splitlines():
         m = re.match(r"\./(.+?):(\d+):(.*)$", l)
@@ -69,6 +72,8 @@ def scan(clone):
             continue
         if re.search(r"(^|/)(test|tests|__tests__|fixtures?|node_modules)/|\.(test|spec)\.", path): continue
         rows.append((path, n, text))
+    # rg searches files in parallel: a stable order makes the registry (first reads, first declarations) deterministic.
+    rows.sort(key=lambda row: (row[0], row[1]))
     return rows
 
 
