@@ -1,0 +1,369 @@
+# stash 7aba9b57471659cecec20a4fd5fdde62424fdf71 (2026-09-30 16:51:52 +0200) On fix/claude-handoff-imported-config: pixel-wip-20260930-inner-loop
+# base 70df0f6e9a0d86ce21353492920de3c0ecc309b4
+diff --git a/.agents/rules/integration-worktree.md b/.agents/rules/integration-worktree.md
+index 5a9a4678..92a8b013 100644
+--- a/.agents/rules/integration-worktree.md
++++ b/.agents/rules/integration-worktree.md
+@@ -5,115 +5,115 @@ paths:
+   - "**/Cargo.toml"
+ ---
+ 
+-# Two Trees, One Target — the Compile Discipline
++# One Editing Tree, One Union Per Branch, One Shared Cache
+ 
+-Always loaded: every change to a Cargo workspace lives in two trees and is
+-tested in one, and the difference is what keeps the dependency graph warm
+-without paying the rebuild cost for every feature branch.
++Always loaded: Cargo never runs in the editing tree; every pushed branch
++gets its own union worktree; every union shares one dependency cache.
+ 
+-## The two trees
++## The layout
+ 
+-- **`~/Documents/pixel`** is the *editing* tree, on whatever feature branch
+-  the agent checked out. **No `cargo build` and no `cargo test` run here.**
+-  Source isolation only. The hooks, the daemon, `pixel doctor`, and
+-  `pixel ai-cli-readify` run here because those are not Cargo's job.
+-- **`~/Documents/pixel-integration`** is the *union* tree, on the
+-  `integration` branch. **Cargo runs only here.** It tracks `origin/main`
+-  (`git checkout -B integration origin/main` to reset) and carries the
+-  union of every open PR as merge commits — a disposable test environment,
+-  never a PR, never pushed.
++- **`~/Documents/pixel`** — the *editing* tree, on whatever feature branch
++  the agent checked out. **No `cargo build`, no `cargo test`, no
++  `cargo nextest` here.** Source isolation only. The hooks, the daemon,
++  `pixel doctor`, and `pixel ai-cli-readify` run here because those are not
++  Cargo's job.
++- **`~/Documents/pixel-integration/`** — the shared dependency cache. Not
++  a checkout; only `target/` lives here. Every union symlinks it. The
++  SessionStart hook (`scripts/dev-stack-bootstrap.sh`) ensures it exists
++  and is warm.
++- **`~/Documents/pixel-<branch-slug>/`** — one *union* worktree per
++  pushed branch, on branch `integration/<slug>`. Created automatically by
++  the push hook (`scripts/dev-stack-on-push.sh`) the first time a branch
++  is pushed. Each union keeps its own merge graph; nothing resets another
++  union's history.
+ 
+-The reason the union exists at all: the dependency graph below the workspace
+-crates is large (~380 registry crates) and recompiling it for every feature
+-branch is what bloats the disk. The union compiles once and stays warm. A
+-member branch added later costs seconds; a fresh worktree always costs an
+-hour.
++Three issues pushed in parallel means three sibling unions, all building
++against the same `~/Documents/pixel-integration/target/` — the dependency
++graph stays warm and the workspace crates compile per-union.
+ 
+ ## The loop
+ 
+-When a feature branch moves (push, force-push, rebase, or new PR opened):
++You do nothing. The hooks fire on session start and on every push:
++
++- **SessionStart** → `dev-stack-bootstrap.sh` ensures the shared cache
++  exists and is warm.
++- **`git push`** → `dev-stack-on-push.sh` allocates or reuses the union
++  for that branch, merges `origin/<branch>` into `integration/<slug>`,
++  and kicks `cargo nextest --workspace --locked --profile ci` in the
++  background. Output goes to `<union>/dev-stack.log`.
++- **`git worktree add <bad-path>`** → `dev-stack-guard.sh` refuses with
++  the reason (see "What you never share" below).
++
++When the build finishes you see one of:
+ 
+-```bash
+-cd ~/Documents/pixel-integration
+-git fetch --prune origin
+-git checkout -B integration origin/main         # reset, discard the old merges
+-git merge --no-edit origin/<branch-that-moved>  # abort on conflict: git merge --abort
+-cargo nextest run --workspace --locked --profile ci
+ ```
++[dev-stack] <branch> green — log: /Users/livio/Documents/pixel-<slug>/dev-stack.log
++[dev-stack] <branch> RED  — log: /Users/livio/Documents/pixel-<slug>/dev-stack.log
++[dev-stack] CONFLICT on origin/<branch> in <union> — 'cd <union> && git merge origin/<branch>' to resolve
++```
++
++## When work is uncommitted
+ 
+-When work is uncommitted (the agent's diff is still in a feature worktree):
++Capture the diff with `add -N` (so new files appear) and apply it to the
++union:
+ 
+ ```bash
+-# in the feature worktree
+ cd <feature-tree>
+-git add -N .                                     # include new (untracked) files
+-git diff HEAD > /tmp/<branch>.patch              # capture the diff
++git add -N .
++git diff HEAD > /tmp/<branch>.patch
+ 
+-# in the union
+-cd ~/Documents/pixel-integration
+-git apply --index /tmp/<branch>.patch            # stage; --check first if uncertain
++cd ~/Documents/pixel-<slug>
++git apply --index /tmp/<branch>.patch
+ cargo nextest run --workspace --locked --profile ci
+ ```
+ 
+-`add -N` is what makes new files appear in the diff; without it, an agent's
+-brand-new file is silently missing. Always record the patch alongside the
+-worktree it came from, so a failure is attributable.
++Always record the patch alongside the worktree it came from, so a
++failure is attributable.
+ 
+-## What integration is for
++## What the union is for
+ 
+-- **Compile cost amortisation.** A member branch added to a warm union
+-  rebuilds only what its diff invalidated.
+-- **Conflict surfacing.** `main + A + B 💥` is reported here, in minutes,
+-  instead of at merge time across three PRs.
+-- **Cross-PR testing.** A depends on unfinished B: develop A in its own
+-  branch, test `A+B` in the union. A's PR body says `depends on B`.
++- **Compile cost amortisation.** A new union on a warm shared cache pays
++  only the workspace-crate cost; registry crates are reused across every
++  union, every push, every machine boot.
++- **Per-branch isolation.** Three issues → three unions, each builds in
++  parallel against the same cache. A failure in one does not contaminate
++  the others.
++- **Conflict surfacing.** `main + A + B 💥` reports in the union the
++  push hook created; resolution is local to that union.
+ 
+-It is **not** history, **not** a PR, **not** a place to commit. Merge
+-commits here are disposable test fixtures. The `integration` branch is
+-resettable on `origin/main` at any time, and doing so throws away no
+-*source* changes — every PR's commits live on its own branch.
++The union is **not** history, **not** a PR, **not** a place to commit
++outside the hook's merge. Its branch (`integration/<slug>`) is disposable.
+ 
+ ## What you never share
+ 
+-- **Never `export CARGO_TARGET_DIR` to a path inside a worktree.** Cargo's
+-  metadata hash for workspace/path crates does **not** include the worktree
+-  path, so two checkouts of the same crate collide in one slot. Freshness
+-  is then decided by mtime; the worktree that built less recently is
+-  declared `Fresh` and silently reuses the other's `.rlib`. Cargo prints
+-  `Fresh` while the binary came from a different checkout. The warm union
+-  `target/` lives inside the union worktree, owned by it, full stop.
+-- **Never nest worktrees under the main checkout.** Cargo's config walk
+-  finds both `.cargo/config.toml` files and concatenates their `rustflags`
+-  arrays — host root vs worktree get a different fingerprint and a full
+-  rebuild. Sibling worktrees (`~/Documents/pixel`, `~/Documents/pixel-plan-*`)
+-  sidestep this; child worktrees inside the repo do not.
+-- **Never `cargo build` in a feature worktree.** It doubles the rebuild cost
+-  and rarely finds anything the union did not. The exceptions are explicit
+-  isolation testing or `cargo mutants --in-diff` against a single change,
+-  which work on a committed snapshot with their own `--target-dir`.
+-- **Never build two trees at once.** One Cargo per `target/`. If you need to
+-  test two unions in parallel, the second is on a separate machine, or it
+-  waits, or it uses `cargo nextest --test-threads=1` against the same union
+-  with a different `--profile`. Parallel builds of overlapping work need
+-  separate build directories and a combined CPU/memory budget.
+-
+-## Resetting integration
+-
+-```bash
+-cd ~/Documents/pixel-integration
+-git checkout -B integration origin/main
+-rm -rf target/*/incremental                       # cold fingerprint, discard last build's incrementals
+-```
+-
+-Resetting throws away the merge commits on the `integration` branch; it
+-does not touch any feature branch. The next compile pays the workspace
+-crate cost again — that is why the rule above says don't run Cargo in
+-feature trees.
++- **Never `cargo build` in `~/Documents/pixel`.** The shared cache is
++  designed for the unions; building in the editing tree pays the registry
++  rebuild and never gets reused. Exceptions are explicit isolation tests
++  or `cargo mutants --in-diff` against a single change, which use their
++  own `--target-dir` on a committed snapshot.
++- **Never create a worktree inside the main repo.** Cargo's config walk
++  finds both `.cargo/config.toml` files and concatenates their
++  `rustflags` arrays — different fingerprint → full rebuild. Sibling
++  worktrees sidestep this; child worktrees do not. The guard refuses
++  with the reason.
++- **Never create a worktree from inside a union while on its
++  `integration/<slug>` branch.** Doing so contaminates the disposable
++  merge graph. The guard refuses with the reason.
++- **Never reset a union on `origin/main` by hand unless you mean to lose
++  every prior merge in it.** The hook does not reset; the union keeps its
++  merge history across pushes of the same branch.
++- **Never build two unions on the same `CARGO_TARGET_DIR` while one is
++  writing.** One Cargo per `target/` at a time. The shared cache is
++  read-mostly: Cargo takes its own per-process lock, so concurrent
++  unions build in parallel safely, but two unions writing to the same
++  `target/` from the same shell are a mistake.
+ 
+ ## Why this is a rule
+ 
+-Without it, every agent picks a workflow that works for it locally, and the
+-disk fills with cold `target/`s (`target/debug` reached 34 GB and aborted a
+-mutants run on a full disk; the eight largest feature targets are 43 GB).
+-The cost of the union is one tree to remember; the cost of skipping it is
+-recompiling the dependency graph every push.
++Without it, every agent picks a workflow that works for it locally, the
++disk fills with cold `target/`s (`target/debug` reached 34 GB and aborted
++a mutants run on a full disk; the eight largest feature targets are 43 GB),
++and "is the union green?" is unanswerable when three issues are in flight.
++The cost of this layout is one shared cache and one slug-named union per
++branch; the cost of skipping it is recompiling the dependency graph every
++push and never knowing which issue broke the build.
+diff --git a/scripts/dev-stack-bootstrap.sh b/scripts/dev-stack-bootstrap.sh
+index 84bf0037..2122fa77 100755
+--- a/scripts/dev-stack-bootstrap.sh
++++ b/scripts/dev-stack-bootstrap.sh
+@@ -1,34 +1,22 @@
+ #!/usr/bin/env bash
+-# pixel-dev-stack-bootstrap — ensure the union tree exists and is current.
++# pixel-dev-stack-bootstrap — ensure the shared dependency cache exists.
+ # Idempotent: safe to call from a SessionStart hook.
+ set -euo pipefail
+ 
+ REPO="$HOME/Documents/pixel"
+-UNION="$HOME/Documents/pixel-integration"
++SHARED_TARGET="$HOME/Documents/pixel-integration/target"
+ 
+-# 1. The union tree is absent (cold, never been built) → create it.
+-if [ ! -d "$UNION/.git" ] && ! git -C "$REPO" worktree list --porcelain | grep -q "worktree $UNION"; then
+-  echo "[dev-stack] creating $UNION on origin/main"
+-  git -C "$REPO" worktree add -B integration "$UNION" origin/main
+-  echo "[dev-stack] first build starts now (one-time cost)"
+-  ( cd "$UNION" && cargo nextest run --workspace --locked --profile ci >/dev/null 2>&1 || true )
+-  echo "[dev-stack] warm"
+-  exit 0
+-fi
+-
+-# 2. Union exists but the integration branch drifted from origin/main — reset.
+-#    This is the disposable-test-environment contract: integration is reset
+-#    on origin/main on every session start. Per-branch merges happen via the
+-#    push hook; this just guarantees the base.
+-git -C "$UNION" fetch --prune origin
+-git -C "$UNION" checkout -B integration origin/main >/dev/null 2>&1
++# 1. The shared cache root must exist so per-issue unions can symlink to it.
++#    This is the only "union" tree — a cache, not a build checkout.
++mkdir -p "$HOME/Documents/pixel-integration"
++mkdir -p "$SHARED_TARGET"
+ 
+-# 3. Sanity: if cargo has not run yet, kick a warm-up build so the first
+-#    real test in this session is fast.
+-if [ ! -d "$UNION/target/dev-release" ] && [ ! -d "$UNION/target/debug" ]; then
+-  echo "[dev-stack] union cold — starting warm-up build"
+-  ( cd "$UNION" && cargo build --workspace --profile dev-release >/dev/null 2>&1 || true )
+-  echo "[dev-stack] warm"
++# 2. Sanity: warm the registry crates if the cache is empty.
++if [ ! -d "$SHARED_TARGET/dev-release" ] && [ ! -d "$SHARED_TARGET/debug" ]; then
++  echo "[dev-stack] shared cache cold — starting one-time warm-up build (~10 min)"
++  # We need a real Cargo.toml to warm against. Use the main repo briefly.
++  ( cd "$REPO" && CARGO_TARGET_DIR="$SHARED_TARGET" cargo build --workspace --profile dev-release >/dev/null 2>&1 || true )
++  echo "[dev-stack] shared cache warm"
+ fi
+ 
+-echo "[dev-stack] union ready at $UNION"
++echo "[dev-stack] ready — per-issue unions will land in ~/Documents/pixel-<branch-slug>"
+diff --git a/scripts/dev-stack-on-push.sh b/scripts/dev-stack-on-push.sh
+index 38ff8f43..5291f342 100755
+--- a/scripts/dev-stack-on-push.sh
++++ b/scripts/dev-stack-on-push.sh
+@@ -1,49 +1,68 @@
+ #!/usr/bin/env bash
+-# pixel-dev-stack-on-push — invoked by the PostToolUse hook on `git push`.
+-# Resets integration on origin/main and merges the pushed branch.
++# pixel-dev-stack-on-push — one union worktree per pushed branch.
++# No reset: each branch keeps its own union, all share the dependency cache.
+ set -euo pipefail
+ 
+ REPO="$HOME/Documents/pixel"
+-UNION="$HOME/Documents/pixel-integration"
++SHARED_TARGET="$HOME/Documents/pixel-integration/target"
+ 
+-# Bail if the union does not exist yet (bootstrap will run on next session start).
+-if ! git -C "$REPO" worktree list --porcelain | grep -q "worktree $UNION"; then
+-  exit 0
+-fi
++# Bail if the shared-tree base does not exist yet (bootstrap will run on next session start).
++[ -d "$HOME/Documents/pixel-integration" ] || exit 0
+ 
+-# Extract the pushed branch from the just-completed command.
+-# `git push -u origin feature-x` — the last positional is the refspec.
+-# `git push` (no -u) — we cannot know; we merge origin/<current-branch> as a fallback.
+-pushed=""
+-for arg in "$@"; do :; done  # placeholder; the hook passes us the cmd via stdin below
+-case "${1:-}" in
+-  push)
+-    last="${@: -1}"
+-    case "$last" in
+-      origin/*) pushed="${last#origin/}" ;;
+-      *)        pushed="${last}" ;;
+-    esac
+-    ;;
++# Identify the pushed branch from the just-completed command.
++# Pass the entire argv via stdin as JSON: {"tool_input":{"command":"…"}}
++input="$(cat)"
++cmd="$(printf '%s' "$input" | python3 -c '
++import sys,json
++try:
++  d=json.load(sys.stdin).get("tool_input",{})
++  print(d.get("command",""))
++except Exception:
++  pass
++' 2>/dev/null || true)"
++
++case "$cmd" in
++  *git*push*) ;;
++  *) exit 0 ;;
+ esac
+ 
++# Find the branch refspec. `git push -u origin feat/x` → feat/x.
++pushed=""
++for arg in $cmd; do
++  case "$arg" in
++    origin/*) pushed="${arg#origin/}" ;;
++  esac
++done
++# Fallback: `git push` with no -u → current branch.
++if [ -z "$pushed" ]; then
++  pushed="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo)"
++fi
++[ -n "$pushed" ] || exit 0
++
++# Sanitize the branch name to a path-safe slug.
++slug="$(printf '%s' "$pushed" | tr '/' '-' | tr -c '[:alnum:]._-' '-')"
++UNION="$HOME/Documents/pixel-$slug"
++
++# Create the per-issue union if absent; otherwise leave the existing merge graph.
++if ! git -C "$REPO" worktree list --porcelain | grep -q "worktree $UNION"; then
++  git -C "$REPO" worktree add -B "integration/$slug" "$UNION" origin/main
++fi
++
+ cd "$UNION"
+ git fetch --prune origin
+ 
+-# Reset integration on origin/main — the disposable-test-environment contract.
+-git checkout -B integration origin/main >/dev/null
+-
+-# If we can identify the pushed branch, merge it.
+-if [ -n "$pushed" ] && git rev-parse --verify --quiet "origin/$pushed" >/dev/null; then
+-  if git merge --no-edit "origin/$pushed" >/dev/null 2>&1; then
+-    echo "[dev-stack] merged origin/$pushed into union"
+-    # Kick the build asynchronously so the calling shell is not held up.
+-    ( cargo nextest run --workspace --locked --profile ci > "$UNION/target/dev-stack.log" 2>&1 \
+-      && echo "[dev-stack] union green at origin/$pushed" \
+-      || echo "[dev-stack] union red — see $UNION/target/dev-stack.log" ) &
+-  else
+-    echo "[dev-stack] CONFLICT on origin/$pushed — left union on origin/main, run 'cd $UNION && git merge origin/$pushed' to resolve"
+-    git merge --abort
+-  fi
++# Merge into the existing per-issue branch — never reset, never overwrite.
++if git merge --no-edit "origin/$pushed" >/dev/null 2>&1; then
++  echo "[dev-stack] merged origin/$pushed into $UNION (branch integration/$slug)"
++  # Share the warm dependency cache with the canonical union tree.
++  mkdir -p "$SHARED_TARGET"
++  ln -sfn "$SHARED_TARGET" "$UNION/target-shared"
++  ( CARGO_TARGET_DIR="$SHARED_TARGET" \
++      cargo nextest run --workspace --locked --profile ci \
++      > "$UNION/dev-stack.log" 2>&1 \
++      && echo "[dev-stack] $pushed green — log: $UNION/dev-stack.log" \
++      || echo "[dev-stack] $pushed RED — log: $UNION/dev-stack.log" ) &
+ else
+-  echo "[dev-stack] union reset on origin/main (could not identify pushed branch)"
++  echo "[dev-stack] CONFLICT on origin/$pushed in $UNION — 'cd $UNION && git merge origin/$pushed' to resolve"
++  git merge --abort
+ fi

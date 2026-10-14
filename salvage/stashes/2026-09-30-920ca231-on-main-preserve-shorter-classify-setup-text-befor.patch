@@ -1,0 +1,45 @@
+# stash 920ca231f38f9bbd0c124d5892848e4ed580737e (2026-09-30 17:15:28 +0200) On main: preserve shorter classify setup text before integrating feat/install-exit-glory
+# base 4ba1607f8eb0843c286fd37f76a9ff24dd06934e
+diff --git a/crates/pixel/src/config_cmd.rs b/crates/pixel/src/config_cmd.rs
+index df734607..fcd81d68 100644
+--- a/crates/pixel/src/config_cmd.rs
++++ b/crates/pixel/src/config_cmd.rs
+@@ -601,18 +601,12 @@ fn classify_default_in(doc: &Value) -> Result<bool, String> {
+     }
+ }
+ 
+-/// The classify explanation the setup question is asked under. Jev is
+-/// named on purpose: this is Pixel's local answer to TypeSafe's Jev, and
+-/// the reader who knows Jev should not scroll past it.
++/// The short classify explanation shown before the setup question.
+ fn classify_blurb(color: bool) -> String {
+     format!(
+-        "{} is optional AI classification, separate from code search — Pixel's\n\
+-         local answer to TypeSafe's Jev. Ask it a bounded question about any\n\
+-         text — a prompt, a diff, a method — and it returns one probability\n\
+-         per label you name:\n\n{}\n{}\n\n\
+-         The local engine runs offline after a one-time model download and\n\
+-         costs nothing per call (0.722 typed-decisions accuracy vs Jev's\n\
+-         0.738); remote providers receive your input and may charge.",
++        "{} is optional AI classification, separate from code search.\n\
++         Ask a bounded question about text and get probabilities for your labels:\n\n{}\n{}\n\n\
++         Local runs offline after setup. Remote providers receive your text and may charge.",
+         paint(color, "1", "Classify"),
+         paint(
+             color,
+@@ -1441,8 +1435,13 @@ mod tests {
+         )
+         .unwrap();
+         let rendered = String::from_utf8(output).unwrap();
+-        assert!(rendered.contains("TypeSafe's Jev"), "{rendered}");
+-        assert!(rendered.contains("0.738"), "{rendered}");
++        assert!(
++            rendered.contains("optional AI classification, separate from code search."),
++            "{rendered}"
++        );
++        assert!(rendered.contains("Local runs offline after setup."), "{rendered}");
++        assert!(!rendered.contains("TypeSafe's Jev"), "{rendered}");
++        assert!(!rendered.contains("0.738"), "{rendered}");
+         assert!(rendered.contains("pixel classify"), "{rendered}");
+         assert!(rendered.contains("\x1b[1;36mPixel setup"), "{rendered}");
+         assert!(

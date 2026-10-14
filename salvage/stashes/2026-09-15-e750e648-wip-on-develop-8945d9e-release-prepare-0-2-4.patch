@@ -1,0 +1,1666 @@
+# stash e750e648e4803bb94ca2813b75c3bcd2ddb01bef (2026-09-15 04:19:56 +0200) WIP on develop: 8945d9e release: prepare 0.2.4
+# base 8945d9e79fbb7ee89b7dfbb2adacbad12eb18217
+diff --git a/crates/pixel-daemon/src/api.rs b/crates/pixel-daemon/src/api.rs
+index 9f892388..11e89809 100644
+--- a/crates/pixel-daemon/src/api.rs
++++ b/crates/pixel-daemon/src/api.rs
+@@ -2239,7 +2239,8 @@ impl Service {
+         let build_info = ensured.ok().flatten();
+         let Some(store) = self.graph.as_ref() else {
+             return Err(
+-                "graph unavailable — no index to map. Run `pixel rebuild-graph .` first".to_string(),
++                "graph unavailable — no index to map. Run `pixel rebuild-graph .` first"
++                    .to_string(),
+             );
+         };
+         let files = store.files().map_err(|e| e.to_string())?;
+diff --git a/crates/pixel-install/src/config.rs b/crates/pixel-install/src/config.rs
+index 3c1e1298..da340338 100644
+--- a/crates/pixel-install/src/config.rs
++++ b/crates/pixel-install/src/config.rs
+@@ -957,7 +957,11 @@ mod tests {
+     #[test]
+     fn merge_flat_hook_entry_replaces_the_pixel_entry_and_keeps_the_rest() {
+         let existing = serde_json::json!([flat("lint"), flat("pixel run-hook guard --old")]);
+-        let merged = merge_flat_hook_entry(Some(&existing), "pixel run-hook", flat("pixel run-hook guard"));
++        let merged = merge_flat_hook_entry(
++            Some(&existing),
++            "pixel run-hook",
++            flat("pixel run-hook guard"),
++        );
+         assert_eq!(
+             merged,
+             serde_json::json!([flat("lint"), flat("pixel run-hook guard")])
+@@ -968,7 +972,11 @@ mod tests {
+         );
+         // A scalar entry is wrapped, not dropped.
+         assert_eq!(
+-            merge_flat_hook_entry(Some(&flat("lint")), "pixel run-hook", flat("pixel run-hook guard")),
++            merge_flat_hook_entry(
++                Some(&flat("lint")),
++                "pixel run-hook",
++                flat("pixel run-hook guard")
++            ),
+             serde_json::json!([flat("lint"), flat("pixel run-hook guard")])
+         );
+     }
+diff --git a/crates/pixel-install/src/doctor.rs b/crates/pixel-install/src/doctor.rs
+index ef6cc0f5..344a3485 100644
+--- a/crates/pixel-install/src/doctor.rs
++++ b/crates/pixel-install/src/doctor.rs
+@@ -19,7 +19,13 @@ pub type Result<T> = std::result::Result<T, InstallError>;
+ /// it): targets (sniper scoping — mandatory first call, advisory fence),
+ /// resolve (phrase → code), rescue (history recovery, includes excavate),
+ /// reconcile (branch sync), impact (blast radius, includes changes).
+-pub const MANDATORY_SCENARIOS: &[&str] = &["scope-task", "find-code", "plan-rollback", "fetch-branch", "impact"];
++pub const MANDATORY_SCENARIOS: &[&str] = &[
++    "scope-task",
++    "find-code",
++    "plan-rollback",
++    "sync-branch",
++    "impact",
++];
+ 
+ /// Per-check status for the doctor report.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+@@ -207,6 +213,22 @@ pub fn doctor(options: &DoctorOptions) -> Result<DoctorReport> {
+         },
+     ));
+ 
++    let exe_for_antigravity = exe.clone();
++    let home_for_antigravity = home.clone();
++    checks.push(check(
++        "install.antigravity",
++        move || -> std::result::Result<DoctorCheckDetail, String> {
++            let (summary, detail) = crate::antigravity::check_antigravity_install(
++                &home_for_antigravity,
++                &exe_for_antigravity,
++            )?;
++            Ok(DoctorCheckDetail {
++                summary,
++                detail: Some(detail),
++            })
++        },
++    ));
++
+     let shell_override = options.shell.clone();
+     let claude = install::probe_claude(options.claude_executable.as_deref());
+     checks.push(check_status(
+@@ -911,7 +933,7 @@ fn probe_daemon_epistemics(sock: &Path) -> std::result::Result<bool, String> {
+         .set_write_timeout(Some(Duration::from_secs(2)))
+         .map_err(|e| e.to_string())?;
+     let req = serde_json::json!({
+-        "op": "search",
++        "op": "search-content",
+         "pattern": "fn ",
+         "json": true,
+         "limit": 1,
+@@ -1058,7 +1080,9 @@ git clone https://example.com/repo.git
+     #[test]
+     fn normalizes_placeholders_brackets_and_alternations() {
+         assert_eq!(
+-            normalize_rule_command("pixel find-code \"<phrase>\" /path/to/repo [--json] [--limit N]"),
++            normalize_rule_command(
++                "pixel find-code \"<phrase>\" /path/to/repo [--json] [--limit N]"
++            ),
+             Some(vec![
+                 "pixel".into(),
+                 "find-code".into(),
+@@ -1071,7 +1095,7 @@ git clone https://example.com/repo.git
+         );
+         assert_eq!(
+             normalize_rule_command(
+-                "pixel fetch-branch /path/to/repo [--strategy report|rebase-if-clean] [--push auto|never]"
++                "pixel sync-branch /path/to/repo [--strategy report|rebase-if-clean] [--push auto|never]"
+             ),
+             Some(vec![
+                 "pixel".into(),
+@@ -1113,7 +1137,10 @@ git clone https://example.com/repo.git
+     #[test]
+     fn unnormalizable_lines_are_reported_not_silently_passed() {
+         // Unbalanced quotes.
+-        assert_eq!(normalize_rule_command("pixel search-content \"unclosed"), None);
++        assert_eq!(
++            normalize_rule_command("pixel search-content \"unclosed"),
++            None
++        );
+         // Ellipsis placeholder syntax the normalizer doesn't understand.
+         assert_eq!(normalize_rule_command("pixel search-content a…b"), None);
+         // Not a pixel line at all.
+@@ -1125,7 +1152,7 @@ git clone https://example.com/repo.git
+     #[test]
+     fn scenario_agreement_is_empty_when_both_sides_name_all_five() {
+         let rule = "use pixel scope-task first, pixel find-code for phrases, \
+-                    pixel plan-rollback for history, pixel fetch-branch for sync, \
++                    pixel plan-rollback for history, pixel sync-branch for sync, \
+                     pixel impact before edits";
+         assert!(
+             scenario_mismatches(rule, pixel_proto::op::SESSION_USAGE).is_empty(),
+@@ -1135,9 +1162,11 @@ git clone https://example.com/repo.git
+ 
+     #[test]
+     fn scenario_drift_is_flagged_per_missing_side() {
+-        let rule_without_impact = "pixel scope-task, pixel find-code, pixel plan-rollback, pixel fetch-branch";
+-        let usage_without_impact = "targets resolve rescue reconcile — four scenarios only";
+-        // Rule lacks impact → usage-only drift message.
++        let rule_without_impact =
++            "pixel scope-task, pixel find-code, pixel plan-rollback, pixel sync-branch";
++        // Usage string names four scenarios but not impact.
++        let usage_without_impact = "use scope-task first, find-code for phrases, plan-rollback for history, sync-branch for sync — four scenarios only";
++        // Rule lacks impact → usage-only drift message (impact in usage but not in rule).
+         let drift = scenario_mismatches(rule_without_impact, pixel_proto::op::SESSION_USAGE);
+         assert_eq!(
+             drift.len(),
+@@ -1146,7 +1175,8 @@ git clone https://example.com/repo.git
+         );
+         assert!(drift[0].contains("impact"));
+         // Usage lacks impact while the rule mandates it → red-worthy drift.
+-        let rule_full = "pixel scope-task pixel find-code pixel plan-rollback pixel fetch-branch pixel impact";
++        let rule_full =
++            "pixel scope-task pixel find-code pixel plan-rollback pixel sync-branch pixel impact";
+         let drift = scenario_mismatches(rule_full, usage_without_impact);
+         assert_eq!(drift.len(), 1, "{drift:?}");
+         assert!(drift[0].contains("missing from the session usage string"));
+diff --git a/crates/pixel-install/src/install.rs b/crates/pixel-install/src/install.rs
+index 93f37398..30a61755 100644
+--- a/crates/pixel-install/src/install.rs
++++ b/crates/pixel-install/src/install.rs
+@@ -305,11 +305,20 @@ pub fn install(options: &InstallOptions) -> Result<InstallReport> {
+     let dry_run = options.dry_run;
+     let claude = probe_claude(options.claude_executable.as_deref());
+     let codex_home = crate::codex_config::codex_home(&home, options.home.is_some());
+-    let steps = vec![
++    let mut steps = vec![
+         deploy_agent_prompt(&home, dry_run)?,
+         install_shell_wrappers(&home, options.shell.as_deref(), &claude, dry_run)?,
+         crate::codex_config::install_developer_instructions(&codex_home, dry_run)?,
+     ];
++    if crate::antigravity::antigravity_config_dir(&home).is_dir() {
++        steps.push(crate::antigravity::deploy_plugin_assets(
++            &home, &exe, dry_run,
++        )?);
++        steps.push(crate::antigravity::enable_plugin_in_config(&home, dry_run)?);
++        steps.push(crate::antigravity::install_global_hooks(
++            &home, &exe, dry_run,
++        )?);
++    }
+ 
+     let green = steps
+         .iter()
+diff --git a/crates/pixel-install/src/lib.rs b/crates/pixel-install/src/lib.rs
+index d38da802..36a622ca 100644
+--- a/crates/pixel-install/src/lib.rs
++++ b/crates/pixel-install/src/lib.rs
+@@ -9,6 +9,7 @@ use std::path::PathBuf;
+ 
+ use thiserror::Error;
+ 
++pub mod antigravity;
+ pub mod codex_config;
+ pub mod config;
+ pub mod doctor;
+diff --git a/crates/pixel-install/src/routing.rs b/crates/pixel-install/src/routing.rs
+index e7d09673..b109ec77 100644
+--- a/crates/pixel-install/src/routing.rs
++++ b/crates/pixel-install/src/routing.rs
+@@ -805,7 +805,9 @@ mod tests {
+         assert!(is_pixel_hook(
+             "'/tmp/Pixel tools/pixel' run-hook guard --provider claude"
+         ));
+-        assert!(is_pixel_hook("'/tmp/Pixel'\\''s/pixel' run-hook prompt-submit"));
++        assert!(is_pixel_hook(
++            "'/tmp/Pixel'\\''s/pixel' run-hook prompt-submit"
++        ));
+         assert!(is_pixel_hook(
+             "'/tmp/Pixel'\\''s/pixel' run-hook prompt-submit --provider claude"
+         ));
+@@ -856,11 +858,16 @@ mod tests {
+                 assert!(prompt_command.ends_with("hook prompt-submit"));
+             }
+             if provider != Provider::Devin {
+-                assert_eq!(value["hooks"]["SessionStart"][2]["matcher"], "compact");
+-                assert!(value["hooks"].get("PostCompact").is_none());
+-                let compact_command = value["hooks"]["SessionStart"][2]["hooks"][0]["command"]
+-                    .as_str()
+-                    .unwrap();
++                // For Claude: compact key is "PostCompaction" (separate array).
++                // For Codex:  compact key is "SessionStart" (compact group appended as index 2).
++                let compact_key = provider.compact();
++                let compact_arr = value["hooks"][compact_key].as_array().unwrap();
++                let compact_group = compact_arr
++                    .iter()
++                    .find(|g| g.get("matcher").and_then(|m| m.as_str()) == Some("compact"))
++                    .unwrap_or_else(|| panic!("no compact group in {compact_key}"));
++                assert_eq!(compact_group["matcher"], "compact");
++                let compact_command = compact_group["hooks"][0]["command"].as_str().unwrap();
+                 if provider == Provider::Claude {
+                     assert!(compact_command.ends_with("hook post-compaction --provider claude"));
+                 } else {
+diff --git a/crates/pixel-install/src/uninstall.rs b/crates/pixel-install/src/uninstall.rs
+index d8d9f17e..ca5a864c 100644
+--- a/crates/pixel-install/src/uninstall.rs
++++ b/crates/pixel-install/src/uninstall.rs
+@@ -113,6 +113,8 @@ pub fn uninstall(options: &UninstallOptions) -> Result<InstallReport> {
+             &crate::codex_config::codex_home(&home, options.home.is_some()),
+             dry_run,
+         )?,
++        // 7c. Remove Antigravity plugin and hooks.
++        crate::antigravity::remove_antigravity(&home, dry_run)?,
+         // 8. Remove the pixel binary.
+         remove_binary(&binary_path, dry_run)?,
+     ];
+diff --git a/crates/pixel-install/tests/install_tests.rs b/crates/pixel-install/tests/install_tests.rs
+index 94918f5b..9675c938 100644
+--- a/crates/pixel-install/tests/install_tests.rs
++++ b/crates/pixel-install/tests/install_tests.rs
+@@ -514,7 +514,11 @@ fn dry_run_leaves_pre_existing_files_byte_identical() {
+ fn session_capabilities_registry_is_live_and_excludes_internal_ops() {
+     let caps = pixel_proto::op::SESSION_CAPABILITIES;
+     for expected in [
+-        "search", "targets", "publish", "push", "ship", "resolve", "impact",
++        "search-content",
++        "scope-task",
++        "push",
++        "impact",
++        "sync-branch",
+     ] {
+         assert!(
+             caps.contains(&expected),
+diff --git a/crates/pixel-proto/src/op.rs b/crates/pixel-proto/src/op.rs
+index a876c56b..11e9a84f 100644
+--- a/crates/pixel-proto/src/op.rs
++++ b/crates/pixel-proto/src/op.rs
+@@ -28,6 +28,7 @@ pub enum Op {
+         #[serde(default)]
+         params: Value,
+     },
++    #[serde(rename = "search-content")]
+     Search {
+         pattern: String,
+         #[serde(default)]
+@@ -49,6 +50,7 @@ pub enum Op {
+     },
+     /// Sniper target list: task description in, closed prioritized file
+     /// list (P0/P1/P2) out.
++    #[serde(rename = "scope-task")]
+     Targets {
+         task: String,
+         #[serde(default)]
+@@ -58,13 +60,16 @@ pub enum Op {
+         #[serde(default)]
+         precision: bool,
+     },
++    #[serde(rename = "find-symbol")]
+     Symbol {
+         name: String,
+     },
+     /// All signatures in a file — the "list-signatures" view at ~10% of Read cost.
++    #[serde(rename = "list-signatures")]
+     Skeleton {
+         file: String,
+     },
++    #[serde(rename = "pack-context")]
+     Context {
+         uid: String,
+         #[serde(default)]
+@@ -76,6 +81,7 @@ pub enum Op {
+         #[serde(default)]
+         depth: Option<u32>,
+     },
++    #[serde(rename = "who-calls")]
+     Uses {
+         uid_or_name: String,
+         /// "callers" | "callees"
+@@ -83,18 +89,22 @@ pub enum Op {
+         #[serde(default)]
+         offset: Option<usize>,
+     },
++    #[serde(rename = "call-path")]
+     Trace {
+         from: String,
+         to: String,
+     },
++    #[serde(rename = "list-flows")]
+     Processes {
+         #[serde(default)]
+         offset: Option<usize>,
+     },
++    #[serde(rename = "list-areas")]
+     Clusters {
+         #[serde(default)]
+         offset: Option<usize>,
+     },
++    #[serde(rename = "what-changed")]
+     Changes {
+         #[serde(default)]
+         base: Option<String>,
+@@ -106,6 +116,7 @@ pub enum Op {
+         #[serde(default)]
+         include_tests: bool,
+     },
++    #[serde(rename = "rebuild-graph")]
+     Graph {},
+     Status {},
+     /// Force a rebuild of the text index shard. Returns BuildStats.
+@@ -116,6 +127,7 @@ pub enum Op {
+     /// cascade-ranked match list (T0 exact-unique → T1 kind-directed → T2
+     /// word intersection → T3 trigram), each tier short-circuiting, with
+     /// explicit confidence.
++    #[serde(rename = "find-code")]
+     Resolve {
+         phrase: String,
+         #[serde(default)]
+@@ -123,6 +135,7 @@ pub enum Op {
+     },
+     /// M3 / Engine 2: history-wide fact + diff search. `scope` selects
+     /// "message" | "path" | "diff" | "all" (default "all").
++    #[serde(rename = "commit-history")]
+     History {
+         query: String,
+         #[serde(default)]
+@@ -132,6 +145,7 @@ pub enum Op {
+     },
+     /// Engine 2: lifecycle of a path or token — first-seen, last-changed,
+     /// removed-in, present-at-HEAD.
++    #[serde(rename = "file-history")]
+     Lifecycle {
+         #[serde(default)]
+         path: Option<String>,
+@@ -140,6 +154,7 @@ pub enum Op {
+     },
+     /// Engine 2: history-wide discovery ("dig-history"). `phrase` may be empty
+     /// to list the ingest checkpoint/state only.
++    #[serde(rename = "dig-history")]
+     Excavate {
+         #[serde(default)]
+         phrase: Option<String>,
+@@ -154,6 +169,7 @@ pub enum Op {
+     },
+     /// Engine 4: one-call deterministic branch sync. `strategy` is
+     /// "report" (default) or "rebase-if-clean" (explicit opt-in).
++    #[serde(rename = "sync-branch")]
+     Reconcile {
+         #[serde(default)]
+         strategy: Option<String>,
+@@ -168,6 +184,7 @@ pub enum Op {
+         request_id: Option<String>,
+     },
+     /// M5: journal a session event into the session db (fire-and-forget).
++    #[serde(rename = "record-event")]
+     Journal {
+         kind: String,
+         #[serde(default)]
+@@ -177,12 +194,14 @@ pub enum Op {
+     },
+     // -- M2: git ops -----------------------------------------------------
+     /// Repo state snapshot: HEAD, branch, dirty files, fingerprints.
++    #[serde(rename = "repo-state")]
+     Inspect {
+         #[serde(default)]
+         files: Option<Vec<String>>,
+     },
+     /// Show working-tree changes as structured items (staged, unstaged,
+     /// untracked, conflicted).
++    #[serde(rename = "review-changes")]
+     Review {
+         #[serde(default)]
+         cursor: Option<String>,
+@@ -215,6 +234,7 @@ pub enum Op {
+         byte_cap: Option<usize>,
+     },
+     /// Stage files, commit, and optionally push. Crash-safe via journal.
++    #[serde(rename = "commit")]
+     Publish {
+         message: String,
+         files: Vec<String>,
+@@ -235,6 +255,7 @@ pub enum Op {
+         request_id: String,
+     },
+     /// Publish + push in one op (convenience wrapper).
++    #[serde(rename = "commit-and-push")]
+     Ship {
+         message: String,
+         files: Vec<String>,
+@@ -251,12 +272,14 @@ pub enum Op {
+         request_id: String,
+     },
+     /// Fast-forward merge with expectedHead + targetOid.
++    #[serde(rename = "fast-forward")]
+     Update {
+         expected_head: String,
+         target_oid: String,
+         request_id: String,
+     },
+     /// Explicit-refspec fetch (idempotent).
++    #[serde(rename = "fetch")]
+     Sync {
+         remote: String,
+         #[serde(default)]
+@@ -280,6 +303,7 @@ pub enum Op {
+     /// P2·2: structural repo map — every indexed file with its symbols.
+     /// `markdown` emits the exportable document form (per-file headings +
+     /// symbol bullets); otherwise a compact per-file outline.
++    #[serde(rename = "repo-map")]
+     Map {
+         #[serde(default)]
+         markdown: bool,
+@@ -390,7 +414,7 @@ pub const SESSION_CAPABILITIES: &[&str] = &[
+ /// advisory fence — the guard warns on out-of-scope files rather than
+ /// silently allowing drift), resolve, rescue/excavate, reconcile, and
+ /// impact/changes (blast radius before edits).
+-pub const SESSION_USAGE: &str = "pixel is the unified retrieval + git engine. Use `pixel <verb>` for search, resolve, targets, history, and safe git ops. Five mandatory scenarios: (1) `pixel scope-task \"<task>\"` — mandatory first call before the first file read (advisory fence: the guard warns on out-of-list files); (2) `pixel find-code \"<phrase>\"` before any free-text search; (3) `pixel plan-rollback`/`pixel dig-history` the moment code was working before; (4) `pixel fetch-branch` for any branch sync; (5) `pixel impact <symbol>` before editing any symbol and `pixel what-changed` before any edit batch — measure the blast radius before edits.";
++pub const SESSION_USAGE: &str = "pixel is the unified retrieval + git engine. Use `pixel <verb>` for search, resolve, targets, history, and safe git ops. Five mandatory scenarios: (1) `pixel scope-task \"<task>\"` — mandatory first call before the first file read (advisory fence: the guard warns on out-of-list files); (2) `pixel find-code \"<phrase>\"` before any free-text search; (3) `pixel plan-rollback`/`pixel dig-history` the moment code was working before; (4) `pixel sync-branch` for any branch sync; (5) `pixel impact <symbol>` before editing any symbol and `pixel what-changed` before any edit batch — measure the blast radius before edits.";
+ 
+ #[cfg(test)]
+ mod tests {
+@@ -431,7 +455,7 @@ mod tests {
+     #[test]
+     fn targets_omits_defaulted_limit_on_deserialize() {
+         let op: Op =
+-            serde_json::from_value(json!({"op": "scope-task", "task-state": "fix the bug"})).unwrap();
++            serde_json::from_value(json!({"op": "scope-task", "task": "fix the bug"})).unwrap();
+         assert_eq!(
+             op,
+             Op::Targets {
+diff --git a/crates/pixel/src/call_guard.rs b/crates/pixel/src/call_guard.rs
+index be74ac45..c3881762 100644
+--- a/crates/pixel/src/call_guard.rs
++++ b/crates/pixel/src/call_guard.rs
+@@ -66,7 +66,13 @@ const SOFT_LOOP_THRESHOLD: usize = 5;
+ /// because re-running targets with a different task description is
+ /// legitimate (task evolution). `index`, `daemon`, `install`, `doctor`
+ /// are infrastructure commands, not retrieval.
+-const GUARDED_COMMANDS: &[&str] = &["search-content", "find-code", "pack-context", "impact", "what-changed"];
++const GUARDED_COMMANDS: &[&str] = &[
++    "search-content",
++    "find-code",
++    "pack-context",
++    "impact",
++    "what-changed",
++];
+ 
+ /// Stable hash for call args (FNV-1a 64, hex, first 12 chars — same
+ /// scheme as `targets_task_id`). This is NOT a cryptographic hash; it
+@@ -319,9 +325,11 @@ mod tests {
+     #[test]
+     fn allows_first_call() {
+         let dir = temp_dir();
+-        with_session(None, || match check_and_record("search-content", "foo .", &dir) {
+-            CallGuardResult::Allow => {}
+-            CallGuardResult::Warn(msg) => panic!("first call should be allowed: {msg}"),
++        with_session(None, || {
++            match check_and_record("search-content", "foo .", &dir) {
++                CallGuardResult::Allow => {}
++                CallGuardResult::Warn(msg) => panic!("first call should be allowed: {msg}"),
++            }
+         });
+         std::fs::remove_dir_all(&dir).ok();
+     }
+@@ -408,9 +416,11 @@ mod tests {
+     fn fails_open_without_pixel_dir() {
+         let dir = std::env::temp_dir().join(format!("pixel-no-dotdir-{}", now_unix()));
+         std::fs::create_dir_all(&dir).unwrap();
+-        with_session(None, || match check_and_record("search-content", "foo .", &dir) {
+-            CallGuardResult::Allow => {}
+-            CallGuardResult::Warn(msg) => panic!("must fail open without .pixel/: {msg}"),
++        with_session(None, || {
++            match check_and_record("search-content", "foo .", &dir) {
++                CallGuardResult::Allow => {}
++                CallGuardResult::Warn(msg) => panic!("must fail open without .pixel/: {msg}"),
++            }
+         });
+         std::fs::remove_dir_all(&dir).ok();
+     }
+@@ -575,9 +585,11 @@ mod tests {
+         std::fs::write(&calls_path, old.to_string()).unwrap();
+ 
+         // A new call should NOT trigger the hard loop (old entry pruned).
+-        with_session(None, || match check_and_record("search-content", "old .", &dir) {
+-            CallGuardResult::Allow => {}
+-            CallGuardResult::Warn(msg) => panic!("expired entry must be pruned: {msg}"),
++        with_session(None, || {
++            match check_and_record("search-content", "old .", &dir) {
++                CallGuardResult::Allow => {}
++                CallGuardResult::Warn(msg) => panic!("expired entry must be pruned: {msg}"),
++            }
+         });
+         std::fs::remove_dir_all(&dir).ok();
+     }
+diff --git a/crates/pixel/src/guard.rs b/crates/pixel/src/guard.rs
+index caf1fad0..4ef815a3 100644
+--- a/crates/pixel/src/guard.rs
++++ b/crates/pixel/src/guard.rs
+@@ -61,6 +61,7 @@ pub enum Provider {
+     Claude,
+     Codex,
+     Devin,
++    Antigravity,
+ }
+ 
+ const MANIFEST_MAX_AGE_SECS: u64 = 24 * 3600;
+@@ -306,6 +307,7 @@ fn provider_rewrite(provider: Provider, payload: &Value) -> Option<Value> {
+         Provider::Claude => tool == "Bash",
+         Provider::Codex => matches!(tool, "Bash" | "shell" | "unified_exec" | "local_shell"),
+         Provider::Devin => tool == "exec" || tool == "Bash",
++        Provider::Antigravity => tool == "run_command",
+     };
+     if !shell {
+         return None;
+@@ -339,10 +341,169 @@ fn provider_rewrite(provider: Provider, payload: &Value) -> Option<Value> {
+     Some(rewrite_json(provider, updated))
+ }
+ 
++fn antigravity_guard_response(payload: &Value) -> Value {
++    // 1. Resolve workspace root/CWD
++    let cwd = payload
++        .get("workspacePaths")
++        .and_then(Value::as_array)
++        .and_then(|arr| arr.first())
++        .and_then(Value::as_str)
++        .or_else(|| payload.get("cwd").and_then(Value::as_str))
++        .map_or_else(
++            || std::env::current_dir().unwrap_or_default(),
++            PathBuf::from,
++        );
++
++    let idx_root = find_up(&cwd, ".pixel");
++
++    // 2. PreInvocation event
++    if payload.get("invocationNum").is_some() {
++        if idx_root.is_some() {
++            let msg = "Pixel Retrieval Protocol is active. In this indexed repository, DO NOT use grep_search or find_by_name, and DO NOT read whole files with view_file for symbol discovery or caller tracing. Use `pixel search-content`, `pixel find-code`, `pixel find-symbol`, `pixel impact`, and `pixel scope-task` via run_command.";
++            return serde_json::json!({
++                "injectSteps": [
++                    { "ephemeralMessage": msg }
++                ]
++            });
++        }
++        return serde_json::json!({});
++    }
++
++    // 3. PostInvocation or Stop event
++    if payload.get("executionNum").is_some() || payload.get("initialNumSteps").is_some() {
++        return serde_json::json!({});
++    }
++
++    // 4. PreToolUse event (carries toolCall)
++    let Some(tool_call) = payload.get("toolCall").and_then(Value::as_object) else {
++        return serde_json::json!({});
++    };
++    let tool_name = tool_call.get("name").and_then(Value::as_str).unwrap_or("");
++    let args = tool_call
++        .get("args")
++        .or_else(|| tool_call.get("parameters"))
++        .and_then(Value::as_object);
++
++    match tool_name {
++        "run_command" => {
++            let cmd_raw = args
++                .and_then(|a| a.get("CommandLine"))
++                .and_then(Value::as_str)
++                .unwrap_or("");
++            let cmd = unwrap_shell_c(cmd_raw);
++
++            // Safety advisories: destructive git / git substitute / transcript store
++            if let Some(lines) = bash_deny_lines(&cmd, idx_root.as_deref()) {
++                let adv = non_blocking_advisory_lines(&lines);
++                return serde_json::json!({
++                    "decision": "allow",
++                    "reason": adv.join("\n")
++                });
++            }
++            if let Some(lines) = git_mutation_substitute_lines(&cmd, idx_root.as_deref(), &cwd) {
++                let adv = non_blocking_advisory_lines(&lines);
++                return serde_json::json!({
++                    "decision": "allow",
++                    "reason": adv.join("\n")
++                });
++            }
++            if let Some(store) = transcript_store_hit(&cmd) {
++                return serde_json::json!({
++                    "decision": "allow",
++                    "reason": transcript_archaeology_advisory_lines(store).join("\n")
++                });
++            }
++
++            // Transparent search rewrite
++            if idx_root.is_some()
++                && let Some(rewritten) = crate::search_compat::rewrite(cmd_raw, &cwd)
++            {
++                return serde_json::json!({
++                    "decision": "allow",
++                    "overwrite": {
++                        "CommandLine": rewritten
++                    }
++                });
++            }
++
++            // Normal command allowed
++            serde_json::json!({ "decision": "allow" })
++        }
++
++        "grep_search" => {
++            if idx_root.is_some() {
++                let query = args
++                    .and_then(|a| a.get("Query"))
++                    .and_then(Value::as_str)
++                    .unwrap_or("");
++                let reason = format!(
++                    "grep_search is prohibited in indexed repositories. Use `pixel search-content \"{query}\" .` via run_command instead for deterministic, capped AST search."
++                );
++                serde_json::json!({
++                    "decision": "deny",
++                    "reason": reason
++                })
++            } else {
++                serde_json::json!({ "decision": "allow" })
++            }
++        }
++
++        "find_by_name" => {
++            if idx_root.is_some() {
++                let pattern = args
++                    .and_then(|a| a.get("Pattern"))
++                    .and_then(Value::as_str)
++                    .unwrap_or("");
++                let reason = format!(
++                    "find_by_name is prohibited in indexed repositories. Use `pixel repo-state` or `pixel search-content \"{pattern}\" .` via run_command instead."
++                );
++                serde_json::json!({
++                    "decision": "deny",
++                    "reason": reason
++                })
++            } else {
++                serde_json::json!({ "decision": "allow" })
++            }
++        }
++
++        "view_file" => {
++            let path_str = args
++                .and_then(|a| a.get("AbsolutePath"))
++                .and_then(Value::as_str)
++                .unwrap_or("");
++            if idx_root.is_some()
++                && let Some(manifest_root) = find_up(&cwd, Path::new(".pixel").join("targets.json"))
++                && let ManifestState::Active(m) = load_manifest_state(&manifest_root)
++            {
++                let p = resolve(path_str, &cwd).unwrap_or_else(|| canonical(&cwd));
++                if !allowed(&p, &m) {
++                    let lines = scoping_advisory_lines(&p, &m);
++                    return serde_json::json!({
++                        "decision": "allow",
++                        "reason": lines.join("\n")
++                    });
++                }
++            }
++            serde_json::json!({ "decision": "allow" })
++        }
++
++        _ => serde_json::json!({ "decision": "allow" }),
++    }
++}
++
++fn run_antigravity_guard(payload: &Value, _raw: &str) -> ! {
++    let resp = antigravity_guard_response(payload);
++    print!("{resp}");
++    std::process::exit(0);
++}
++
+ fn run_provider_guard(provider: Provider, delegate_rtk: bool, raw: &str) -> ! {
+     let Ok(payload) = serde_json::from_str::<Value>(raw) else {
+         std::process::exit(0);
+     };
++    if provider == Provider::Antigravity || payload.get("toolCall").is_some() {
++        run_antigravity_guard(&payload, raw);
++    }
+     if let Some(response) = provider_rewrite(provider, &payload) {
+         print!("{response}");
+         std::process::exit(0);
+@@ -733,6 +894,9 @@ pub fn run(provider: Option<Provider>, delegate_rtk: bool) -> ! {
+     let Ok(payload) = serde_json::from_str::<Value>(&input) else {
+         std::process::exit(0);
+     };
++    if payload.get("toolCall").is_some() || payload.get("invocationNum").is_some() {
++        run_antigravity_guard(&payload, &input);
++    }
+     if !payload.is_object() {
+         std::process::exit(0);
+     }
+@@ -1033,14 +1197,32 @@ pub fn run_post_tool_use(provider: Option<Provider>) -> ! {
+     };
+     let tool = payload
+         .get("tool_name")
++        .or_else(|| payload.get("toolCall").and_then(|t| t.get("name")))
+         .and_then(Value::as_str)
+         .unwrap_or("");
+-    let cwd = payload.get("cwd").and_then(Value::as_str).map_or_else(
+-        || std::env::current_dir().unwrap_or_default(),
+-        PathBuf::from,
+-    );
+-    let tool_input = payload.get("tool_input").cloned().unwrap_or(Value::Null);
++    let cwd = payload
++        .get("cwd")
++        .and_then(Value::as_str)
++        .or_else(|| {
++            payload
++                .get("workspacePaths")
++                .and_then(Value::as_array)
++                .and_then(|a| a.first())
++                .and_then(Value::as_str)
++        })
++        .map_or_else(
++            || std::env::current_dir().unwrap_or_default(),
++            PathBuf::from,
++        );
++    let tool_input = payload
++        .get("tool_input")
++        .or_else(|| payload.get("toolCall").and_then(|t| t.get("args")))
++        .cloned()
++        .unwrap_or(Value::Null);
+     let Some(tool_input) = tool_input.as_object() else {
++        if provider == Some(Provider::Antigravity) || payload.get("toolCall").is_some() {
++            print!("{{}}");
++        }
+         std::process::exit(0);
+     };
+     let raw_path = tool_input
+@@ -1054,6 +1236,10 @@ pub fn run_post_tool_use(provider: Option<Provider>) -> ! {
+         .unwrap_or("");
+     let anchor = resolve(raw_path, &cwd).unwrap_or_else(|| canonical(&cwd));
+     let idx_root = find_up(&anchor, ".pixel");
++    if provider == Some(Provider::Antigravity) || payload.get("toolCall").is_some() {
++        print!("{{}}");
++        std::process::exit(0);
++    }
+     post_tool_use_blast_radius(&anchor, idx_root.as_deref(), tool);
+     std::process::exit(0);
+ }
+@@ -1399,8 +1585,9 @@ fn scoping_advisory_lines(abs: &Path, m: &Manifest) -> Vec<String> {
+             .iter()
+             .map(|t| format!("  - '{}'", short_task(&t.task, 70))),
+     );
+-    lines
+-        .push("Proceeding. If scope has drifted, re-run `pixel scope-task \"<refined task>\"`".into());
++    lines.push(
++        "Proceeding. If scope has drifted, re-run `pixel scope-task \"<refined task>\"`".into(),
++    );
+     lines.push("to refresh your task's list, or `pixel scope-task --clear` to end scoping.".into());
+     lines
+ }
+@@ -2334,9 +2521,7 @@ fn git_substitute_deny(sub: &str, args: &[String], root: &Path) -> Option<Vec<St
+                     "BLOCKED [PIXEL_SUBSTITUTE] by pixel-guard: raw {what} bypasses pixel's snapshot-gated, journaled mutation surface."
+                 ),
+                 "Run the exact equivalent instead (--files repeated once per file):".into(),
+-                format!(
+-                    "  pixel commit {amend}{files} --message {msg} --request-id <id> {root_q}"
+-                ),
++                format!("  pixel commit {amend}{files} --message {msg} --request-id <id> {root_q}"),
+             ];
+             if c.all {
+                 lines.push(
+@@ -3139,7 +3324,9 @@ mod tests {
+             "a multi-line --message mentioning `git add` must not deny pixel's own substitute"
+         );
+         // …but a genuinely unquoted chained invocation is still caught.
+-        assert!(bash_deny_lines("pixel search-content 'x' . && git reset --hard", Some(repo)).is_some());
++        assert!(
++            bash_deny_lines("pixel search-content 'x' . && git reset --hard", Some(repo)).is_some()
++        );
+     }
+ 
+     #[test]
+@@ -3416,8 +3603,7 @@ mod tests {
+ 
+     #[test]
+     fn substitute_commit_pathspecs_become_files_flags() {
+-        let msg =
+-            assert_substitute_contract("git commit -m fix src/a.rs src/b.rs", "pixel commit");
++        let msg = assert_substitute_contract("git commit -m fix src/a.rs src/b.rs", "pixel commit");
+         assert!(
+             msg.contains("--files src/a.rs --files src/b.rs"),
+             "each pathspec must be its own --files: {msg}"
+@@ -3940,4 +4126,140 @@ mod tests {
+         let (dir, body) = strip_cd_prefix("cd sub", cwd);
+         assert_eq!((dir.as_path(), body), (Path::new("/repo"), "cd sub"));
+     }
++
++    #[test]
++    fn antigravity_pre_invocation_in_indexed_repo() {
++        let repo = scratch_repo("agy-pre-invocation");
++        std::fs::create_dir_all(repo.join(".pixel")).unwrap();
++        let payload = serde_json::json!({
++            "invocationNum": 1,
++            "workspacePaths": [repo.display().to_string()]
++        });
++        let resp = antigravity_guard_response(&payload);
++        assert!(
++            resp["injectSteps"][0]["ephemeralMessage"]
++                .as_str()
++                .unwrap()
++                .contains("Pixel Retrieval Protocol is active")
++        );
++        let _ = std::fs::remove_dir_all(&repo);
++    }
++
++    #[test]
++    fn antigravity_grep_search_denied_in_indexed_repo() {
++        let repo = scratch_repo("agy-grep-deny");
++        std::fs::create_dir_all(repo.join(".pixel")).unwrap();
++        let payload = serde_json::json!({
++            "toolCall": {
++                "name": "grep_search",
++                "args": {
++                    "Query": "test_fn",
++                    "SearchPath": repo.display().to_string()
++                }
++            },
++            "workspacePaths": [repo.display().to_string()]
++        });
++        let resp = antigravity_guard_response(&payload);
++        assert_eq!(resp["decision"], "deny");
++        assert!(
++            resp["reason"]
++                .as_str()
++                .unwrap()
++                .contains("grep_search is prohibited in indexed repositories")
++        );
++        let _ = std::fs::remove_dir_all(&repo);
++    }
++
++    #[test]
++    fn antigravity_find_by_name_denied_in_indexed_repo() {
++        let repo = scratch_repo("agy-find-deny");
++        std::fs::create_dir_all(repo.join(".pixel")).unwrap();
++        let payload = serde_json::json!({
++            "toolCall": {
++                "name": "find_by_name",
++                "args": {
++                    "Pattern": "*.rs",
++                    "SearchDirectory": repo.display().to_string()
++                }
++            },
++            "workspacePaths": [repo.display().to_string()]
++        });
++        let resp = antigravity_guard_response(&payload);
++        assert_eq!(resp["decision"], "deny");
++        assert!(
++            resp["reason"]
++                .as_str()
++                .unwrap()
++                .contains("find_by_name is prohibited in indexed repositories")
++        );
++        let _ = std::fs::remove_dir_all(&repo);
++    }
++
++    #[test]
++    fn antigravity_run_command_destructive_git_advisory() {
++        let repo = scratch_repo("agy-git-advisory");
++        std::fs::create_dir_all(repo.join(".pixel")).unwrap();
++        let payload = serde_json::json!({
++            "toolCall": {
++                "name": "run_command",
++                "args": {
++                    "CommandLine": "git reset --hard HEAD~1"
++                }
++            },
++            "workspacePaths": [repo.display().to_string()]
++        });
++        let resp = antigravity_guard_response(&payload);
++        assert_eq!(resp["decision"], "allow");
++        assert!(
++            resp["reason"]
++                .as_str()
++                .unwrap()
++                .contains("pixel-guard advisory")
++        );
++        let _ = std::fs::remove_dir_all(&repo);
++    }
++
++    #[test]
++    fn antigravity_unindexed_allows_grep() {
++        let empty_dir =
++            std::env::temp_dir().join(format!("pixel-agy-unindexed-{}", std::process::id()));
++        std::fs::create_dir_all(&empty_dir).unwrap();
++        let payload = serde_json::json!({
++            "toolCall": {
++                "name": "grep_search",
++                "args": {
++                    "Query": "test_fn",
++                    "SearchPath": empty_dir.display().to_string()
++                }
++            },
++            "workspacePaths": [empty_dir.display().to_string()]
++        });
++        let resp = antigravity_guard_response(&payload);
++        assert_eq!(resp["decision"], "allow");
++        let _ = std::fs::remove_dir_all(&empty_dir);
++    }
++
++    #[test]
++    fn antigravity_run_command_rewrites_literal_search() {
++        let repo = scratch_repo("agy-rewrite");
++        std::fs::create_dir_all(repo.join(".pixel")).unwrap();
++        std::fs::write(repo.join("src").join("main.rs"), "hello world\n").unwrap();
++        let payload = serde_json::json!({
++            "toolCall": {
++                "name": "run_command",
++                "args": {
++                    "CommandLine": "grep -n hello src/main.rs"
++                }
++            },
++            "workspacePaths": [repo.display().to_string()]
++        });
++        let resp = antigravity_guard_response(&payload);
++        assert_eq!(resp["decision"], "allow");
++        let cmd = resp["overwrite"]["CommandLine"].as_str().unwrap();
++        assert!(
++            cmd.contains("pixel search-like-rg") || cmd.contains("pixel search-compat"),
++            "rewritten command: {cmd}"
++        );
++        let _ = std::fs::remove_dir_all(&repo);
++    }
+ }
+diff --git a/crates/pixel/src/main.rs b/crates/pixel/src/main.rs
+index e6e4783e..10eb6d70 100644
+--- a/crates/pixel/src/main.rs
++++ b/crates/pixel/src/main.rs
+@@ -27,11 +27,11 @@ mod call_guard;
+ mod claude_controller;
+ mod guard;
+ mod operation_metrics;
+-mod rename;
+ mod plan_cmd;
+ mod post_compaction;
+ mod prompt_submit;
+ mod recall_cmd;
++mod rename;
+ mod rescue_cmd;
+ mod search_compat;
+ mod sniper_cmd;
+@@ -99,6 +99,7 @@ enum RoleArg {
+ #[derive(Subcommand)]
+ enum Command {
+     /// Build (or rebuild) the text index for a directory tree.
++    #[command(alias = "index")]
+     BuildIndex {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -114,6 +115,7 @@ enum Command {
+     /// Search the indexed tree with a regex pattern. Accepts any number of
+     /// paths (repo roots, subdirectories, or files) — ripgrep-style; the repo
+     /// root is discovered automatically for each.
++    #[command(alias = "search")]
+     SearchContent {
+         pattern: String,
+         /// Paths to search: repo roots, subdirectories, or files (any mix).
+@@ -154,6 +156,7 @@ enum Command {
+     },
+     /// Native-output literal file search for automatic routing; unsupported
+     /// inputs execute the original rg/grep command without modification.
++    #[command(alias = "search-compat")]
+     SearchLikeRg {
+         #[arg(value_enum)]
+         tool: search_compat::SearchTool,
+@@ -161,6 +164,7 @@ enum Command {
+         args: Vec<String>,
+     },
+     /// Compile and execute one bounded deterministic retrieval recipe.
++    #[command(alias = "query")]
+     RunRecipe {
+         intent: String,
+         #[arg(long, default_value = ".")]
+@@ -180,6 +184,7 @@ enum Command {
+     /// the answer is a ranked list, not a resolved certainty. First use
+     /// downloads the embedding model into the shared recall model cache
+     /// (once; subsequent calls are offline).
++    #[command(alias = "ask")]
+     SearchMeaning {
+         /// The natural-language question.
+         question: String,
+@@ -197,6 +202,7 @@ enum Command {
+     /// Sniper target list: task description in, closed prioritized file list
+     /// out (P0 = start here, P1 = likely, P2 = droppable). Writes the
+     /// enforcement manifest .pixel/targets.json unless --no-manifest.
++    #[command(alias = "targets")]
+     ScopeTask {
+         /// Task/feature description (omit with --clear).
+         task: Option<String>,
+@@ -225,6 +231,7 @@ enum Command {
+     /// recent versions with the likely-breaking commit flagged, recommend a
+     /// last-known-good candidate. Plan only — nothing is written without
+     /// --apply. Never resets; never touches the index or HEAD.
++    #[command(alias = "rescue")]
+     PlanRollback {
+         /// Problem description ("login was working before ...").
+         problem: Option<String>,
+@@ -253,6 +260,7 @@ enum Command {
+         json: bool,
+     },
+     /// Look up symbols by name in the code graph.
++    #[command(alias = "symbol")]
+     FindSymbol {
+         name: String,
+         #[arg(default_value = ".")]
+@@ -261,6 +269,7 @@ enum Command {
+         json: bool,
+     },
+     /// All signatures in a file — the skeleton view at ~10% of Read cost.
++    #[command(alias = "skeleton")]
+     ListSignatures {
+         file: String,
+         #[arg(default_value = ".")]
+@@ -289,6 +298,7 @@ enum Command {
+     /// Structural repo map: every indexed file with its symbols. `--markdown`
+     /// emits the exportable document form — the human-editable projection of
+     /// the graph that `note` annotations key onto.
++    #[command(alias = "map")]
+     RepoMap {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -299,6 +309,7 @@ enum Command {
+         json: bool,
+     },
+     /// Budget-fitted context for a symbol uid.
++    #[command(alias = "context")]
+     PackContext {
+         uid: String,
+         #[arg(default_value = ".")]
+@@ -321,6 +332,7 @@ enum Command {
+         json: bool,
+     },
+     /// Direct callers or callees of a symbol.
++    #[command(alias = "uses")]
+     WhoCalls {
+         uid_or_name: String,
+         #[arg(default_value = ".")]
+@@ -334,6 +346,7 @@ enum Command {
+         json: bool,
+     },
+     /// Call path between two symbols.
++    #[command(alias = "trace")]
+     CallPath {
+         from: String,
+         to: String,
+@@ -343,6 +356,7 @@ enum Command {
+         json: bool,
+     },
+     /// Discovered execution flows.
++    #[command(alias = "processes")]
+     ListFlows {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -352,6 +366,7 @@ enum Command {
+         json: bool,
+     },
+     /// Functional-area clusters.
++    #[command(alias = "clusters")]
+     ListAreas {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -361,6 +376,7 @@ enum Command {
+         json: bool,
+     },
+     /// Symbols/flows affected by working-tree changes.
++    #[command(alias = "changes")]
+     WhatChanged {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -375,6 +391,7 @@ enum Command {
+         json: bool,
+     },
+     /// Force (re)build of the code graph db.
++    #[command(alias = "graph")]
+     RebuildGraph {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -392,6 +409,7 @@ enum Command {
+         statusline: bool,
+     },
+     /// Make a repository ready for agent work: index, graph, and warm daemon.
++    #[command(alias = "ready")]
+     PrepareRepo {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -402,6 +420,7 @@ enum Command {
+         json: bool,
+     },
+     /// Show raw shard metadata (legacy).
++    #[command(alias = "stats")]
+     IndexStats {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -417,6 +436,7 @@ enum Command {
+         cmd: recall_cmd::RecallCmd,
+     },
+     /// One-look error capture: query the sniper error sink.
++    #[command(alias = "sniper")]
+     ListErrors {
+         #[command(subcommand)]
+         cmd: sniper_cmd::SniperCmd,
+@@ -425,6 +445,7 @@ enum Command {
+     // M2 — safe git mutation ops (pixel-ops)
+     // -----------------------------------------------------------------
+     /// Show repo state: HEAD, branch, dirty files, fingerprints.
++    #[command(alias = "inspect")]
+     RepoState {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -435,6 +456,7 @@ enum Command {
+         json: bool,
+     },
+     /// Review working-tree changes (staged, unstaged, untracked, conflicted).
++    #[command(alias = "review")]
+     ReviewChanges {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -448,6 +470,7 @@ enum Command {
+         json: bool,
+     },
+     /// Commit history with detail levels and byte caps.
++    #[command(alias = "history")]
+     CommitHistory {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -486,6 +509,7 @@ enum Command {
+         json: bool,
+     },
+     /// Stage files, commit, and optionally push (crash-safe, idempotent).
++    #[command(alias = "publish")]
+     Commit {
+         /// Commit message. Use `--message-file` for a multi-paragraph body.
+         #[arg(
+@@ -536,6 +560,7 @@ enum Command {
+         json: bool,
+     },
+     /// Publish + push in one op (commit then leased push).
++    #[command(alias = "ship")]
+     CommitAndPush {
+         /// Commit message. Use `--message-file` for a multi-paragraph body.
+         #[arg(
+@@ -572,6 +597,7 @@ enum Command {
+         json: bool,
+     },
+     /// Create a new branch from HEAD (or --from <ref>).
++    #[command(alias = "branch")]
+     NewBranch {
+         name: String,
+         #[arg(default_value = ".")]
+@@ -586,6 +612,7 @@ enum Command {
+         json: bool,
+     },
+     /// Fast-forward merge to a target OID (refuses non-ff + dirty intersection).
++    #[command(alias = "update")]
+     FastForward {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -602,6 +629,7 @@ enum Command {
+         json: bool,
+     },
+     /// Fetch from a remote (idempotent).
++    #[command(alias = "sync")]
+     Fetch {
+         remote: String,
+         #[arg(default_value = ".")]
+@@ -616,6 +644,7 @@ enum Command {
+     // M3/M4 — engines (resolve, history, lifecycle, excavate, reconcile)
+     // -----------------------------------------------------------------
+     /// Engine 1: resolve a phrase to code via the concept index.
++    #[command(alias = "resolve")]
+     FindCode {
+         phrase: String,
+         #[arg(default_value = ".")]
+@@ -626,6 +655,7 @@ enum Command {
+         json: bool,
+     },
+     /// M3: history-wide fact + diff search.
++    #[command(alias = "history-search")]
+     SearchHistory {
+         query: String,
+         #[arg(default_value = ".")]
+@@ -639,6 +669,7 @@ enum Command {
+         json: bool,
+     },
+     /// Engine 2: lifecycle of a path or token.
++    #[command(alias = "lifecycle")]
+     FileHistory {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -652,6 +683,7 @@ enum Command {
+         json: bool,
+     },
+     /// Engine 2: history-wide discovery (rescue v2).
++    #[command(alias = "excavate")]
+     DigHistory {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -682,6 +714,7 @@ enum Command {
+         json: bool,
+     },
+     /// Engine 4: one-call deterministic branch sync.
++    #[command(alias = "reconcile")]
+     SyncBranch {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -703,6 +736,7 @@ enum Command {
+         json: bool,
+     },
+     /// M5: journal a session event (fire-and-forget).
++    #[command(alias = "journal")]
+     RecordEvent {
+         kind: String,
+         #[arg(default_value = ".")]
+@@ -757,6 +791,7 @@ enum Command {
+     /// Cargo.lock is fresh for every workspace member, CHANGELOG.md has the
+     /// `## [x.y.z]` heading and an empty Unreleased section. Exit 1 on any
+     /// failed check.
++    #[command(alias = "release-check")]
+     CheckRelease {
+         /// The version or tag: `1.2.3`, `v1.2.3` or `refs/tags/v1.2.3`.
+         version: String,
+@@ -770,6 +805,7 @@ enum Command {
+     /// Rebuild the binary, stop the daemon, copy the new binary to the
+     /// install path, and optionally restart the daemon. Solves the
+     /// "Text file busy" error when the daemon holds the binary open.
++    #[command(alias = "upgrade")]
+     SelfUpdate {
+         /// Cargo build command to run (default: `cargo build --release -p pixel-cli`).
+         /// The built binary is read from `target/<profile>/pixel`, with the
+@@ -803,11 +839,13 @@ enum Command {
+         shell: Option<String>,
+     },
+     /// Hook entrypoints (guard, session-start) invoked by Claude hooks.
++    #[command(alias = "hook")]
+     RunHook {
+         #[command(subcommand)]
+         cmd: HookCmd,
+     },
+     /// Inspect or reset Claude Code's local Pixel task-runtime packet.
++    #[command(alias = "task")]
+     TaskState {
+         #[command(subcommand)]
+         cmd: TaskCmd,
+@@ -815,6 +853,7 @@ enum Command {
+     /// Self-assessment: pixel's own action log (what ran, what went wrong).
+     /// Reads <path>/.pixel/actions.jsonl, written asynchronously by every
+     /// pixel invocation.
++    #[command(alias = "log")]
+     ActionLog {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -835,6 +874,7 @@ enum Command {
+     /// fraction of the candidate pool the agent did NOT have to read. A
+     /// measured counter to semble's '99% fewer tokens' claim — own numbers,
+     /// same format.
++    #[command(alias = "savings")]
+     TokenSavings {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -846,6 +886,7 @@ enum Command {
+     },
+     /// Squash every commit on the current branch since its base into ONE
+     /// commit (crash-safe, backup-ref'd), optionally force-pushing with lease.
++    #[command(alias = "rewrite")]
+     SquashBranch {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -876,6 +917,7 @@ enum Command {
+         json: bool,
+     },
+     /// Per-region blame attribution: who introduced/owns each region of a file.
++    #[command(alias = "provenance")]
+     WhoWrote {
+         /// Repo-relative file to attribute.
+         file: String,
+@@ -896,6 +938,7 @@ enum Command {
+     },
+     /// One-call read-only branch inventory: ahead/behind, merged, stale,
+     /// unpushed — the deterministic "did you push everything?" answer.
++    #[command(alias = "branches")]
+     ListBranches {
+         #[arg(default_value = ".")]
+         path: PathBuf,
+@@ -913,6 +956,7 @@ enum Command {
+     },
+     /// Additive-only, key-level .env mutations with snapshots and restore.
+     /// Values are NEVER printed in any output.
++    #[command(alias = "env")]
+     EditEnv {
+         #[command(subcommand)]
+         cmd: EnvCmd,
+@@ -947,6 +991,7 @@ enum Command {
+     /// Save, retrieve, list, revise, and replay proven agent-browser paths
+     /// (auth flows, config flows) so the agent follows a deterministic
+     /// shortcut instead of re-discovering the UI from scratch every time.
++    #[command(alias = "flow")]
+     ReplayFlow {
+         #[command(subcommand)]
+         cmd: FlowCmd,
+@@ -5460,9 +5505,16 @@ fn run_command(command: Command, logger: &pixel_actionlog::ActionLog) -> Result<
+             let pairs = rename::load_mapping(&mapping)?;
+             let report = rename::run(&root, &pairs, dry_run, regen)?;
+             if json {
+-                print_data(&serde_json::to_value(&report).map_err(|e| e.to_string())?, true)
++                print_data(
++                    &serde_json::to_value(&report).map_err(|e| e.to_string())?,
++                    true,
++                )
+             } else {
+-                println!("rename: {} edits across {} files", report.total_edits, report.files_changed.len());
++                println!(
++                    "rename: {} edits across {} files",
++                    report.total_edits,
++                    report.files_changed.len()
++                );
+                 for f in &report.files_changed {
+                     println!("  {f}");
+                 }
+diff --git a/crates/pixel/src/operation_metrics.rs b/crates/pixel/src/operation_metrics.rs
+index 23ba69ae..ed31615f 100644
+--- a/crates/pixel/src/operation_metrics.rs
++++ b/crates/pixel/src/operation_metrics.rs
+@@ -129,10 +129,11 @@ pub fn observe(value: &Value) {
+ /// v1 command counts are explicit workflow policy, not measured executions.
+ fn native_commands(command: &str) -> Option<u64> {
+     match command {
+-        "search-content" | "run-recipe" | "search-meaning" | "find-code" | "find-symbol" | "pack-context" | "list-signatures" | "repo-map"
+-        | "scope-task" | "who-calls" | "impact" | "call-path" | "what-changed" | "list-areas" | "list-flows"
+-        | "commit-history" | "search-history" | "dig-history" | "file-history" | "who-wrote" | "diff"
+-        | "list-branches" | "fetch" | "new-branch" | "fast-forward" => Some(1),
++        "search-content" | "run-recipe" | "search-meaning" | "find-code" | "find-symbol"
++        | "pack-context" | "list-signatures" | "repo-map" | "scope-task" | "who-calls"
++        | "impact" | "call-path" | "what-changed" | "list-areas" | "list-flows"
++        | "commit-history" | "search-history" | "dig-history" | "file-history" | "who-wrote"
++        | "diff" | "list-branches" | "fetch" | "new-branch" | "fast-forward" => Some(1),
+         "repo-state" | "review-changes" | "commit" => Some(3),
+         "commit-and-push" => Some(4),
+         // Recovery/task/flow/reconcile depend on the actual guarded plan; do not
+diff --git a/crates/pixel/src/rename.rs b/crates/pixel/src/rename.rs
+index 6fa6408a..43d1a6f2 100644
+--- a/crates/pixel/src/rename.rs
++++ b/crates/pixel/src/rename.rs
+@@ -22,7 +22,7 @@
+ 
+ use std::collections::BTreeMap;
+ use std::fs;
+-use std::path::{Path, PathBuf};
++use std::path::Path;
+ 
+ /// Convert kebab-case CLI name to PascalCase enum variant name.
+ fn kebab_to_pascal(s: &str) -> String {
+@@ -77,8 +77,8 @@ pub struct RenamePairReport {
+ pub fn load_mapping(path: &Path) -> Result<Vec<RenamePair>, String> {
+     let content = fs::read_to_string(path)
+         .map_err(|e| format!("cannot read mapping file {}: {e}", path.display()))?;
+-    let map: BTreeMap<String, String> = serde_json::from_str(&content)
+-        .map_err(|e| format!("cannot parse mapping JSON: {e}"))?;
++    let map: BTreeMap<String, String> =
++        serde_json::from_str(&content).map_err(|e| format!("cannot parse mapping JSON: {e}"))?;
+     Ok(map
+         .into_iter()
+         .map(|(old, new)| RenamePair::new(&old, &new))
+@@ -350,7 +350,11 @@ fn rename_in_main_rs(path: &Path, pairs: &[RenamePair], dry_run: bool) -> Result
+ 
+ /// Rename command labels in string literals within specific function contexts.
+ /// Only renames strings that are command labels, not JSON fields or agent tool names.
+-fn rename_command_labels(path: &Path, pairs: &[RenamePair], dry_run: bool) -> Result<usize, String> {
++fn rename_command_labels(
++    path: &Path,
++    pairs: &[RenamePair],
++    dry_run: bool,
++) -> Result<usize, String> {
+     let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+     let mut new_content = content.clone();
+     let mut edits = 0;
+@@ -550,8 +554,6 @@ fn rename_in_config(path: &Path, pairs: &[RenamePair], dry_run: bool) -> Result<
+     for pair in pairs {
+         if pair.old_kebab == "hook" {
+             // `pixel run-hook` in comments and test strings
+-            let old_cmd = "pixel run-hook";
+-            let new_cmd = "pixel hook";
+             // Actually, the current code (post-rename) uses "run-hook" in config.rs
+             // We need to revert it to "hook" when going backwards, or keep it if going forwards
+             // Since we're building on top of the renamed code, and will use this on the
+@@ -632,9 +634,8 @@ fn rename_in_test_file(path: &Path, pairs: &[RenamePair], dry_run: bool) -> Resu
+ 
+     for line in &mut lines {
+         // Skip lines that are git command invocations (not pixel commands)
+-        let is_git_context = line.contains("git(")
+-            || line.contains("git ")
+-            || line.contains("\"git\"");
++        let is_git_context =
++            line.contains("git(") || line.contains("git ") || line.contains("\"git\"");
+         if is_git_context {
+             continue;
+         }
+diff --git a/crates/pixel/tests/cli/flow_cli.rs b/crates/pixel/tests/cli/flow_cli.rs
+index d3c157e2..b396dcba 100644
+--- a/crates/pixel/tests/cli/flow_cli.rs
++++ b/crates/pixel/tests/cli/flow_cli.rs
+@@ -115,7 +115,10 @@ fn flow_json_lifecycle_emits_documents_and_executes_only_when_requested() {
+         assert!(value.is_object() || value.is_array(), "{args:?}: {value}");
+     }
+     assert!(!fixture.0.join("calls").exists());
+-    let output = fixture.run(&["replay-flow", "replay", "audit", "--execute", "--json"], false);
++    let output = fixture.run(
++        &["replay-flow", "replay", "audit", "--execute", "--json"],
++        false,
++    );
+     assert!(output.status.success(), "{output:?}");
+     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+     assert_eq!(value["success"], true, "{value}");
+@@ -136,7 +139,10 @@ fn flow_json_lifecycle_emits_documents_and_executes_only_when_requested() {
+ #[test]
+ fn flow_execute_failure_is_nonzero_and_never_a_success_document() {
+     let fixture = Fixture::new("failure");
+-    let output = fixture.run(&["replay-flow", "replay", "audit", "--execute", "--json"], true);
++    let output = fixture.run(
++        &["replay-flow", "replay", "audit", "--execute", "--json"],
++        true,
++    );
+     assert!(
+         !output.status.success(),
+         "browser failure must fail CLI: {output:?}"
+diff --git a/crates/pixel/tests/cli/json_contract.rs b/crates/pixel/tests/cli/json_contract.rs
+index 8ac74ac2..48cb7c13 100644
+--- a/crates/pixel/tests/cli/json_contract.rs
++++ b/crates/pixel/tests/cli/json_contract.rs
+@@ -88,7 +88,13 @@ fn json_commands_emit_only_json_on_stdout() {
+         (&["find-symbol", "login_user", ".", "--json"], &[]),
+         (&["impact", "login_user", ".", "--json"], &["epistemics"]),
+         (
+-            &["scope-task", "fix login_user", ".", "--json", "--no-manifest"],
++            &[
++                "scope-task",
++                "fix login_user",
++                ".",
++                "--json",
++                "--no-manifest",
++            ],
+             &["targets", "epistemics"],
+         ),
+         (&["repo-state", ".", "--json"], &["head", "branch"]),
+@@ -142,7 +148,10 @@ fn json_commands_emit_only_json_on_stdout() {
+ #[test]
+ fn failing_json_command_leaves_stdout_empty() {
+     let dir = fixture("fail");
+-    let out = pixel(&dir, &["find-symbol", "no_such_symbol_anywhere", ".", "--json"]);
++    let out = pixel(
++        &dir,
++        &["find-symbol", "no_such_symbol_anywhere", ".", "--json"],
++    );
+     // `symbol` on an unknown name may answer with an empty candidate set or
+     // fail; either way stdout must be parseable and stderr must carry any
+     // failure. Force a definite failure with a malformed regex on search.
+@@ -201,7 +210,10 @@ fn big_untracked_tree_keeps_json_answers_structured() {
+             assert!(doc["snapshot"].get("dirty").is_none(), "{args:?}: {doc}");
+             doc["snapshot"]["dirty_count"].as_u64()
+         } else {
+-            assert!(doc.get("status").is_none(), "prepare-repo must not embed status");
++            assert!(
++                doc.get("status").is_none(),
++                "prepare-repo must not embed status"
++            );
+             doc["dirty_count"].as_u64()
+         };
+         assert_eq!(dirty_count, Some(3000), "{args:?}: {doc}");
+@@ -215,7 +227,14 @@ fn big_untracked_tree_keeps_json_answers_structured() {
+         &["find-symbol", "login_user", ".", "--json"][..],
+         &["find-code", "login user", ".", "--json"][..],
+         &["impact", "login_user", ".", "--json"][..],
+-        &["who-calls", "login_user", ".", "--role", "callers", "--json"][..],
++        &[
++            "who-calls",
++            "login_user",
++            ".",
++            "--role",
++            "callers",
++            "--json",
++        ][..],
+         &["what-changed", ".", "--json"][..],
+     ] {
+         let out = pixel(&dir, args);
+diff --git a/crates/pixel/tests/cli/metrics_cli.rs b/crates/pixel/tests/cli/metrics_cli.rs
+index 8bceb692..8ec7956f 100644
+--- a/crates/pixel/tests/cli/metrics_cli.rs
++++ b/crates/pixel/tests/cli/metrics_cli.rs
+@@ -454,7 +454,14 @@ fn operation_error_precedes_metrics_and_preserves_failure() {
+     assert!(events[0]["metrics"]["native_workflow_bytes"].is_null());
+     assert_metric_identity(&lines[0], &events[0]);
+ 
+-    let disabled = fixture.run(&["--metrics=off", "search-content", "(", ".", "--json", "--no-daemon"]);
++    let disabled = fixture.run(&[
++        "--metrics=off",
++        "search-content",
++        "(",
++        ".",
++        "--json",
++        "--no-daemon",
++    ]);
+     assert_eq!(output.status.code(), disabled.status.code());
+     assert_eq!(disabled.stdout, output.stdout);
+     assert_eq!(disabled.stderr, diagnostics.as_bytes());
+@@ -781,7 +788,8 @@ fn metrics_preserve_safe_publication_replay_and_head_guard() {
+     ]);
+     assert_eq!(refused.status.code(), Some(1));
+     assert_eq!(metric_lines(&refused).len(), 1);
+-    let after: Value = serde_json::from_slice(&fixture.run(&["repo-state", "--json"]).stdout).unwrap();
++    let after: Value =
++        serde_json::from_slice(&fixture.run(&["repo-state", "--json"]).stdout).unwrap();
+     assert_eq!(after["head"], published["head"]);
+     let events = fixture.events("commit");
+     assert_eq!(events.len(), 3);
+diff --git a/crates/pixel/tests/cli/post_edit_cli.rs b/crates/pixel/tests/cli/post_edit_cli.rs
+index 8e465085..c49063d1 100644
+--- a/crates/pixel/tests/cli/post_edit_cli.rs
++++ b/crates/pixel/tests/cli/post_edit_cli.rs
+@@ -188,7 +188,14 @@ fn unresolved_receiver_evidence_stays_uncertain_without_inflating_known_callers(
+     let store = pixel_graph::GraphStore::open(&fixture.0.join(".pixel/graph.db")).unwrap();
+     let caller = store.file_by_path("src/caller_00.rs").unwrap().unwrap();
+     store
+-        .insert_unresolved_call(caller.id, "saved", None, 3, Some("unknown_receiver"), "call")
++        .insert_unresolved_call(
++            caller.id,
++            "saved",
++            None,
++            3,
++            Some("unknown_receiver"),
++            "call",
++        )
+         .unwrap();
+     drop(store);
+     let note = fixture.note();
+diff --git a/crates/pixel/tests/cli/rescue_cli.rs b/crates/pixel/tests/cli/rescue_cli.rs
+index 1a37a526..57f4cbb8 100644
+--- a/crates/pixel/tests/cli/rescue_cli.rs
++++ b/crates/pixel/tests/cli/rescue_cli.rs
+@@ -204,7 +204,14 @@ fn apply_restores_working_tree_only() {
+     let (dir, v1, _) = fixture("apply");
+     let out = gitpixel(
+         &dir,
+-        &["plan-rollback", "--apply", &v1, "--file", "src/calc.rs", "."],
++        &[
++            "plan-rollback",
++            "--apply",
++            &v1,
++            "--file",
++            "src/calc.rs",
++            ".",
++        ],
+     );
+     assert!(out.status.success(), "apply failed: {out:?}");
+     assert_eq!(
+@@ -228,7 +235,14 @@ fn apply_refuses_dirty_without_strategy() {
+ 
+     let out = gitpixel(
+         &dir,
+-        &["plan-rollback", "--apply", &v1, "--file", "src/calc.rs", "."],
++        &[
++            "plan-rollback",
++            "--apply",
++            &v1,
++            "--file",
++            "src/calc.rs",
++            ".",
++        ],
+     );
+     assert!(!out.status.success(), "must refuse dirty overwrite");
+     let err = String::from_utf8_lossy(&out.stderr);
+diff --git a/crates/pixel/tests/cli/search_compat_cli.rs b/crates/pixel/tests/cli/search_compat_cli.rs
+index 8e3289f9..95800f89 100644
+--- a/crates/pixel/tests/cli/search_compat_cli.rs
++++ b/crates/pixel/tests/cli/search_compat_cli.rs
+@@ -203,7 +203,13 @@ fn repeated_search_keeps_executing_and_reports_changed_file() {
+         let output = fixture
+             .command(PIXEL)
+             .env_remove("PIXEL_TEST")
+-            .args(["search-content", "needle", "a file.rs", "--json", "--no-daemon"])
++            .args([
++                "search-content",
++                "needle",
++                "a file.rs",
++                "--json",
++                "--no-daemon",
++            ])
+             .output()
+             .unwrap();
+         assert!(
+diff --git a/scripts/gen-plugin-assets.sh b/scripts/gen-plugin-assets.sh
+index ec936c79..32d687a4 100755
+--- a/scripts/gen-plugin-assets.sh
++++ b/scripts/gen-plugin-assets.sh
+@@ -54,6 +54,7 @@ if [ "${1:-}" = "--check" ]; then
+   stale=0
+   for f in \
+     "skills/pixel/SKILL.md" \
++    ".agents/skills/pixel/SKILL.md" \
+     ".openclaw/skills/pixel/SKILL.md" \
+     ".cursor/rules/pixel.mdc" \
+     ".windsurf/rules/pixel.md" \
+@@ -66,7 +67,8 @@ if [ "${1:-}" = "--check" ]; then
+   done
+   # Rebuild into a scratch dir and diff each file
+   TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+-  for f in skills/pixel/SKILL.md .openclaw/skills/pixel/SKILL.md \
++  for f in skills/pixel/SKILL.md .agents/skills/pixel/SKILL.md \
++           .openclaw/skills/pixel/SKILL.md \
+            .cursor/rules/pixel.mdc .windsurf/rules/pixel.md \
+            .kiro/steering/pixel.md .qoder/rules/pixel.md \
+            .clinerules/pixel.md .agents/rules/pixel.md PIXEL.md; do
+@@ -74,7 +76,8 @@ if [ "${1:-}" = "--check" ]; then
+   done
+   # shellcheck disable=SC2034 # ROOT switch for the emit pass below
+   OUT_ROOT="$TMP" "$0" >/dev/null
+-  for f in skills/pixel/SKILL.md .openclaw/skills/pixel/SKILL.md \
++  for f in skills/pixel/SKILL.md .agents/skills/pixel/SKILL.md \
++           .openclaw/skills/pixel/SKILL.md \
+            .cursor/rules/pixel.mdc .windsurf/rules/pixel.md \
+            .kiro/steering/pixel.md .qoder/rules/pixel.md \
+            .clinerules/pixel.md .agents/rules/pixel.md PIXEL.md; do
+@@ -117,6 +120,7 @@ write_file() { # $1 = rel path, $2 = frontmatter
+ }
+ 
+ write_file "skills/pixel/SKILL.md"            "$SKILL_FRONT"
++write_file ".agents/skills/pixel/SKILL.md"    "$SKILL_FRONT"
+ write_file ".openclaw/skills/pixel/SKILL.md"  "$SKILL_FRONT"
+ write_file ".cursor/rules/pixel.mdc"          "$CURSOR_FRONT"
+ write_file ".windsurf/rules/pixel.md"         ""

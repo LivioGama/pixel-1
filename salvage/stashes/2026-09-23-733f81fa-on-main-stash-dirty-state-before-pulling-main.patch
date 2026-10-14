@@ -1,0 +1,98 @@
+# stash 733f81faeaeed18b03864339aba9d97b8b0b25db (2026-09-23 21:15:04 +0200) On main: stash dirty state before pulling main
+# base b5d0b1b81b1d12a17f73aa847a53d56f87f40397
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index 49e845a5..59fc8e56 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -131,6 +131,7 @@ ARCHITECTURE, CONTRIBUTING, `docs/manual-setup.md` or the bundled agent prompts
+ | `pixel edit-env` | Additive-only, key-level .env mutations with snapshots and restore. |
+ | `pixel plan` | Deterministic todo list generation from code analysis; persists findings in `.pixel/plan.json` so `--status`/`--done N`/`--undone N`/`--prune` track execution state across re-plans without the daemon |
+ | `pixel coverage` | Per-language index coverage: files on disk vs files indexed, with unrecognized extensions surfaced — the "what did the index miss?" answer |
++| `pixel space` | Audit the disk taken by pixel index shards (`.pixel/`) across every project under a tree — per-project size and the accumulated total (`--json` for structured output) — and `--delete` them to reclaim space (one confirmation, or `--yes`; indexes rebuild via `pixel build-index .`). The audit writes nothing into the tree it measures |
+ | `pixel workspace` | Multi-repo registry (`.pixel/workspace.json` members add/remove/list); `--workspace` fans `impact`/`who-calls` out across registered repos with per-repo provenance |
+ | `pixel index-pack` | Freeze the index into one checksummed `.pxpack` bundle — CI builds once, teammates install instead of re-indexing |
+ | `pixel index-unpack` | Install a packed index bundle from a path or https:// URL, hash-verified, refusing to overwrite a live index without `--force` |
+diff --git a/crates/pixel/src/main.rs b/crates/pixel/src/main.rs
+index 34e90f16..d1e7d08b 100644
+--- a/crates/pixel/src/main.rs
++++ b/crates/pixel/src/main.rs
+@@ -43,6 +43,7 @@ mod recall_cmd;
+ mod rescue_cmd;
+ mod search_compat;
+ mod sniper_cmd;
++mod space_cmd;
+ mod task_plan;
+ mod task_runtime;
+ mod task_sandbox;
+@@ -542,6 +543,23 @@ enum Command {
+         #[arg(long)]
+         json: bool,
+     },
++    /// Audit the disk taken by pixel index shards (`.pixel/`) across every
++    /// project under a tree, and with `--delete` remove them to reclaim
++    /// space. Indexes rebuild via `pixel build-index .`.
++    Space {
++        /// Root to scan for `.pixel` index shards.
++        #[arg(default_value = ".")]
++        path: PathBuf,
++        /// Emit structured JSON (per-project bytes + totals).
++        #[arg(long)]
++        json: bool,
++        /// Delete the found shards after one whole-tree confirmation.
++        #[arg(long)]
++        delete: bool,
++        /// Skip the confirmation behind `--delete`.
++        #[arg(long)]
++        yes: bool,
++    },
+     /// Make a repository ready for agent work: index, graph, and warm daemon.
+     #[command(alias = "ready")]
+     PrepareRepo {
+@@ -4588,6 +4606,7 @@ fn run() -> Result<(), String> {
+             | Command::ListErrors {
+                 cmd: sniper_cmd::SniperCmd::Mcp { .. } | sniper_cmd::SniperCmd::Run { .. }
+             }
++            | Command::Space { .. }
+     );
+     let root = discover_root(&path).or_else(|_| discover_root(Path::new(".")));
+     // `--metrics=off` and `PIXEL_METRICS=0` veto one invocation; the
+@@ -4604,7 +4623,13 @@ fn run() -> Result<(), String> {
+     // Compatibility fallback must exec the original before any logging changes
+     // its search corpus; its successful Pixel branch retains existing logging.
+     let mut logger = match &root {
+-        _ if matches!(&cli.command, Command::SearchLikeRg { .. }) => {
++        _ if matches!(
++            &cli.command,
++            Command::SearchLikeRg { .. } | Command::Space { .. }
++        ) =>
++        {
++            // `space` is an audit: it must not write a journal `.pixel`
++            // (and then count it) into the tree it measures.
+             pixel_actionlog::ActionLog::noop()
+         }
+         Ok(root) => pixel_actionlog::ActionLog::spawn_for_root(root),
+@@ -5474,6 +5499,12 @@ fn run_command(
+         Command::Coverage { path, json } => {
+             coverage_cmd::run(coverage_cmd::CoverageOptions { path, json })
+         }
++        Command::Space {
++            path,
++            json,
++            delete,
++            yes,
++        } => space_cmd::run(path, json, delete, yes),
+         Command::Workspace { cmd } => workspace_cmd::run(cmd),
+         Command::IndexPack {
+             out,
+diff --git a/crates/pixel/tests/cli/main.rs b/crates/pixel/tests/cli/main.rs
+index 79887a2f..fdc1a054 100644
+--- a/crates/pixel/tests/cli/main.rs
++++ b/crates/pixel/tests/cli/main.rs
+@@ -21,6 +21,7 @@ mod renamed_commands;
+ mod rescue_cli;
+ mod scope_task_precision;
+ mod search_compat_cli;
++mod space_cli;
+ mod support;
+ mod targets_cli;
+ mod uninstall_cli;

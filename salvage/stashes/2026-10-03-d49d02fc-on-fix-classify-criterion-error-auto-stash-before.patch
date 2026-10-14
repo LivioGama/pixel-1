@@ -1,0 +1,453 @@
+# stash d49d02fc19e9a6d80b8429382494886d37793725 (2026-10-03 10:14:06 +0200) On fix/classify-criterion-error: auto-stash before switching to main
+# base 06dff3a7db4af689d3471c69934f73f1f48a0ffc
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+index ca1a06ec..e4e21baf 100644
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -52,7 +52,7 @@ MCP server. `pixel install` registers no MCP server with any agent.
+ | `pixel-actionlog` | Append-only local JSONL invocation records: measured command/outcome/duration/output volume plus versioned workflow estimates; backwards-compatible `pixel action-log` and `pixel token-savings` reporting. | none |
+ | `pixel-release` | `pixel check-release`: the consistency checks a release tag must pass (CLI version, `Cargo.lock` freshness, changelog cut). Pure functions over file contents. | none |
+ | `pixel-flow` | Deterministic browser and configuration flow replay: save, get, list, revise, replay, delete proven agent-browser paths. Flows live under `~/.local/share/pixel/flows/`. | none |
+-| `pixel-install` | Idempotent `pixel install`, `pixel uninstall`, `pixel doctor`. Global install: the bundled prompts, Claude Code lifecycle hooks (removing the retired `claude()` shell wrapper), the Codex `developer_instructions` key and metrics hook, the Pi `APPEND_SYSTEM.md` block, and, when their config exists, the OpenCode `AGENTS.md` block, the Antigravity plugin and hooks, Devin's own lifecycle hooks (`~/.config/devin/config.json` — Devin imports Claude's hooks, so without them its sessions get the imported Claude text instead of its own protocol), and the zcode guard. `--repo`: project guards for Claude, Codex, Devin and Pi, and the Pixel-first `AGENTS.md` rule (see "Agent integration"). Backs up changed files (`<file>.pixel-bak.<nanos>-<seq>` beside each); `uninstall` keeps those backups and ends on a `backups` step listing them with the quoted `rm --` command that drops them. | proto, daemon, index, facts, git |
++| `pixel-install` | Idempotent `pixel install`, `pixel uninstall`, `pixel doctor`. Global install: the bundled prompts, Claude Code lifecycle hooks (removing the retired `claude()` shell wrapper), the Codex `developer_instructions` key plus `UserPromptSubmit` and metrics hooks, the Pi `APPEND_SYSTEM.md` block, and, when their config exists, the OpenCode `AGENTS.md` block, the Antigravity plugin and hooks, Devin's own lifecycle hooks (`~/.config/devin/config.json` — Devin imports Claude's hooks, so without them its sessions get the imported Claude text instead of its own protocol), and the zcode guard. `--repo`: project guards for Claude, Codex, Devin and Pi, and the Pixel-first `AGENTS.md` rule (see "Agent integration"). Backs up changed files (`<file>.pixel-bak.<nanos>-<seq>` beside each); `uninstall` keeps those backups and ends on a `backups` step listing them with the quoted `rm --` command that drops them. | proto, daemon, index, facts, git |
+ | `pixel-ultraflow` | The classify-driven browser loop over saved flows: the observation (`agent-browser snapshot -i` parsed into numbered slots, `elements`), the indexed action space of operation-target pairs (`action`), the decision seam (`decide`), the discovery loop and its single-cycle unit (`discover`), the composition of what worked into a `pixel-flow` document whose `conditional` steps carry the conditions that tell its branches apart (`compose`), and the replay that decides those conditions with `pixel classify` and re-decides a step whose page moved on (`replay`). Drives `pixel-flow`'s browser seam; the engine is a trait, so the whole loop is tested without a model, a network or a page. | flow |
+ | `pixel-bench` | Criterion benches and a real-source corpus builder (gram extraction, latency, NDCG relevance). Not shipped. | index (dev: daemon, graph, proto, recall) |
+ 
+@@ -360,9 +360,9 @@ each agent through its own extension point:
+   reports one that remains (`install.legacy-wrappers`). The hook does not
+   reach sub-agents: a print-mode run passes the deployed sub-agent prompt
+   with `--append-subagent-system-prompt-file` ([docs/manual-setup.md](docs/manual-setup.md)).
+-- **Codex**: the `developer_instructions` key and the `PostToolUse` metrics
+-  hook (`$CODEX_HOME/hooks.json`, default `~/.codex/hooks.json`), detailed
+-  below.
++- **Codex**: the `developer_instructions` key, `UserPromptSubmit` Pixel
++  evidence context, and the `PostToolUse` metrics hook
++  (`$CODEX_HOME/hooks.json`, default `~/.codex/hooks.json`), detailed below.
+ - **Pi**: a short Pixel rule in `~/.pi/agent/APPEND_SYSTEM.md`. Its
+   repository extension (installed by `--repo`) registers the structured
+   `pixel` tool and applies the [pre-execution Pi policy](docs/pi-harness.md)
+@@ -436,7 +436,7 @@ The hook entry points, all under `pixel run-hook` (alias `hook`), and where
+ | Hook event | Command | Effect |
+ | --- | --- | --- |
+ | `SessionStart` | `pixel run-hook session-start` | Injects the agent prompt and the capability block from the op registry. For Claude Code the prompt is fitted to the 10 000-character inline limit of a hook's context (`CLAUDE_INLINE_CONTEXT_LIMIT` in `guard.rs`): `DEFERRABLE_SECTIONS` come out first and a closing line names them and the deployed prompt's path. Global for Claude Code and for Devin's own protocol; in a session that only imports Claude's configuration (Devin's `read_config_from.claude`), the entry carries the short Pixel-first guidance and the capability block instead of the Claude prompt. |
+-| `UserPromptSubmit` | `pixel run-hook prompt-submit` | Task context/boundary detection and the task-intent verdict. Never rejects a prompt. The Claude task packet is written only in a Claude Code session, never in a session that only imports Claude's configuration (a `--provider claude` hook Devin re-runs from `~/.claude/settings.json` delivers target/boundary context alone). Global for Claude Code and for Devin's own protocol. |
++| `UserPromptSubmit` | `pixel run-hook prompt-submit` | Task context/boundary detection and the task-intent verdict. Never rejects a prompt. The Claude task packet is written only in a Claude Code session, never in a session that only imports Claude's configuration (a `--provider claude` hook Devin re-runs from `~/.claude/settings.json` delivers target/boundary context alone). For Codex, explicit Pixel behavior or integration questions add a Pixel-first evidence instruction. Global for Claude Code, Codex, and Devin's own protocol. |
+ | `SessionStart` matcher `compact` (`PostCompaction` on Devin) | `pixel run-hook post-compaction` | Re-injects the active task evidence as additional context. A `--provider claude` entry re-run by an importing host exits without emitting: the session id it would read belongs to the other harness. |
+ | `PreToolUse` | `pixel run-hook guard` | Bounded compatible command routing; native fallback and host permissions remain authoritative. Repo-local (`--repo`) for Claude Code and Devin; global for Antigravity and zcode. |
+ | `PostToolUse` (Claude `Edit`) | `pixel run-hook post-tool-use` | After an edit, emits the dependants of what was just changed. |
+diff --git a/crates/pixel-install/src/codex_config.rs b/crates/pixel-install/src/codex_config.rs
+index 764b51f8..2edac9dc 100644
+--- a/crates/pixel-install/src/codex_config.rs
++++ b/crates/pixel-install/src/codex_config.rs
+@@ -40,6 +40,7 @@ pub const HOOKS_FILE: &str = "hooks.json";
+ /// Substring unique to the installed metrics-relay command, used for
+ /// idempotent merge and uninstall removal.
+ pub const METRICS_HOOK_MARKER: &str = "run-hook metrics";
++pub const PROMPT_SUBMIT_HOOK_MARKER: &str = "run-hook prompt-submit --provider codex";
+ 
+ /// The agent prompt as bundled in the binary.
+ pub(crate) const AGENT_PROMPT_ASSET: &str = include_str!("../assets/pixel-agent-prompt.md");
+@@ -237,6 +238,16 @@ fn metrics_hook_entry(exe: &Path) -> serde_json::Value {
+     })
+ }
+ 
++fn prompt_submit_hook_entry(exe: &Path) -> serde_json::Value {
++    serde_json::json!({
++        "hooks": [{
++            "type": "command",
++            "command": format!("{} run-hook prompt-submit --provider codex", crate::routing::quoted_executable(exe)),
++            "timeout": 10,
++        }]
++    })
++}
++
+ fn read_hooks(path: &Path) -> std::result::Result<serde_json::Value, String> {
+     match fs::read_to_string(path) {
+         Ok(text) => serde_json::from_str(&text)
+@@ -259,8 +270,8 @@ fn write_hooks(path: &Path, value: &serde_json::Value) -> Result<()> {
+     Ok(())
+ }
+ 
+-/// `pixel install` step: register the metrics relay in `hooks.json`,
+-/// idempotently alongside whatever PostToolUse groups already exist.
++/// `pixel install` step: register Codex's metrics relay and task-boundary
++/// context hooks, idempotently alongside existing hook groups.
+ pub(crate) fn install_metrics_hook(
+     codex_home: &Path,
+     exe: &Path,
+@@ -268,7 +279,7 @@ pub(crate) fn install_metrics_hook(
+ ) -> Result<InstallStep> {
+     let path = codex_home.join(HOOKS_FILE);
+     let detail = Some(format!(
+-        "path={} event=PostToolUse marker={METRICS_HOOK_MARKER}",
++        "path={} events=PostToolUse,UserPromptSubmit markers={METRICS_HOOK_MARKER},{PROMPT_SUBMIT_HOOK_MARKER}",
+         path.display()
+     ));
+     let step = |status, summary: String| InstallStep {
+@@ -294,19 +305,26 @@ pub(crate) fn install_metrics_hook(
+             ),
+         ));
+     };
+-    let merged = crate::config::merge_hook_entry(
++    let merged_metrics = crate::config::merge_hook_entry(
+         hooks.get("PostToolUse"),
+         METRICS_HOOK_MARKER,
+         metrics_hook_entry(exe),
+     );
+-    if hooks.get("PostToolUse") == Some(&merged) {
++    let merged_prompt = crate::config::merge_hook_entry(
++        hooks.get("UserPromptSubmit"),
++        PROMPT_SUBMIT_HOOK_MARKER,
++        prompt_submit_hook_entry(exe),
++    );
++    if hooks.get("PostToolUse") == Some(&merged_metrics)
++        && hooks.get("UserPromptSubmit") == Some(&merged_prompt)
++    {
+         return Ok(step(
+             CheckStatus::Green,
+-            format!("verified metrics hook in {}", path.display()),
++            format!("verified Codex hooks in {}", path.display()),
+         ));
+     }
+     let summary = format!(
+-        "{} metrics PostToolUse hook in {}",
++        "{} Codex metrics and UserPromptSubmit hooks in {}",
+         if path.is_file() {
+             "updated"
+         } else {
+@@ -317,48 +335,56 @@ pub(crate) fn install_metrics_hook(
+     if dry_run {
+         return Ok(step(CheckStatus::Green, dry_run_summary(true, &summary)));
+     }
+-    hooks.insert("PostToolUse".to_string(), merged);
++    hooks.insert("PostToolUse".to_string(), merged_metrics);
++    hooks.insert("UserPromptSubmit".to_string(), merged_prompt);
+     write_hooks(&path, &value)?;
+     Ok(step(CheckStatus::Green, summary))
+ }
+ 
+-/// `pixel doctor` check: the metrics relay is registered under PostToolUse.
++/// `pixel doctor` check: both global Codex hooks are registered.
+ pub(crate) fn check_metrics_hook(
+     codex_home: &Path,
+ ) -> std::result::Result<(String, serde_json::Value), String> {
+     let path = codex_home.join(HOOKS_FILE);
+     let detail = serde_json::json!({
+         "path": path.display().to_string(),
+-        "event": "PostToolUse",
+-        "marker": METRICS_HOOK_MARKER,
++        "events": ["PostToolUse", "UserPromptSubmit"],
++        "markers": [METRICS_HOOK_MARKER, PROMPT_SUBMIT_HOOK_MARKER],
+     });
+     let value = read_hooks(&path)?;
+-    let registered = value
+-        .get("hooks")
+-        .and_then(|h| h.get("PostToolUse"))
+-        .and_then(serde_json::Value::as_array)
+-        .is_some_and(|entries| {
+-            entries.iter().any(|entry| {
+-                entry
+-                    .get("hooks")
+-                    .and_then(serde_json::Value::as_array)
+-                    .is_some_and(|hooks| {
+-                        hooks.iter().any(|hook| {
+-                            hook.get("command")
+-                                .and_then(serde_json::Value::as_str)
+-                                .is_some_and(|c| c.contains(METRICS_HOOK_MARKER))
++    let has_marker = |event: &str, marker: &str| {
++        value
++            .get("hooks")
++            .and_then(|hooks| hooks.get(event))
++            .and_then(serde_json::Value::as_array)
++            .is_some_and(|entries| {
++                entries.iter().any(|entry| {
++                    entry
++                        .get("hooks")
++                        .and_then(serde_json::Value::as_array)
++                        .is_some_and(|hooks| {
++                            hooks.iter().any(|hook| {
++                                hook.get("command")
++                                    .and_then(serde_json::Value::as_str)
++                                    .is_some_and(|command| command.contains(marker))
++                            })
+                         })
+-                    })
++                })
+             })
+-        });
+-    if !registered {
++    };
++    if !has_marker("PostToolUse", METRICS_HOOK_MARKER)
++        || !has_marker("UserPromptSubmit", PROMPT_SUBMIT_HOOK_MARKER)
++    {
+         return Err(format!(
+-            "no metrics PostToolUse hook in {} — run `pixel install`",
++            "missing Pixel Codex hook in {} — run `pixel install`",
+             path.display()
+         ));
+     }
+     Ok((
+-        format!("metrics PostToolUse hook registered in {}", path.display()),
++        format!(
++            "Codex metrics and UserPromptSubmit hooks registered in {}",
++            path.display()
++        ),
+         detail,
+     ))
+ }
+@@ -788,6 +814,12 @@ mod tests {
+         serde_json::from_str::<serde_json::Value>(&text).unwrap()["hooks"]["PostToolUse"].clone()
+     }
+ 
++    fn user_prompt_submit(home: &Path) -> serde_json::Value {
++        let text = fs::read_to_string(home.join(HOOKS_FILE)).unwrap();
++        serde_json::from_str::<serde_json::Value>(&text).unwrap()["hooks"]["UserPromptSubmit"]
++            .clone()
++    }
++
+     #[test]
+     fn metrics_hook_install_verify_and_preserve_foreign_entries() {
+         let home = scratch_codex_home("install");
+@@ -813,6 +845,13 @@ mod tests {
+             command.starts_with('\''),
+             "the exe path is shell-quoted: {command}"
+         );
++        let prompt_entries = user_prompt_submit(&home).as_array().unwrap().clone();
++        assert_eq!(prompt_entries.len(), 1);
++        assert!(
++            prompt_entries[0]["hooks"][0]["command"]
++                .as_str()
++                .is_some_and(|command| command.contains(PROMPT_SUBMIT_HOOK_MARKER))
++        );
+         assert!(
+             check_metrics_hook(&home).is_ok(),
+             "doctor check sees the registration"
+@@ -822,6 +861,7 @@ mod tests {
+         let step = install_metrics_hook(&home, exe, false).unwrap();
+         assert!(step.summary.contains("verified"), "{}", step.summary);
+         assert_eq!(post_tool_use(&home).as_array().unwrap().len(), 2);
++        assert_eq!(user_prompt_submit(&home).as_array().unwrap().len(), 1);
+         let _ = fs::remove_dir_all(&home);
+     }
+ 
+@@ -898,6 +938,20 @@ mod tests {
+             .unwrap(),
+         )
+         .unwrap();
++        assert!(
++            check_metrics_hook(&home).is_err(),
++            "the UserPromptSubmit hook is required too"
++        );
++        let mut hooks: serde_json::Value =
++            serde_json::from_str(&fs::read_to_string(home.join(HOOKS_FILE)).unwrap()).unwrap();
++        hooks["hooks"]["UserPromptSubmit"] = serde_json::json!([{
++            "hooks": [{"type": "command", "command": "pixel run-hook prompt-submit --provider codex"}]
++        }]);
++        fs::write(
++            home.join(HOOKS_FILE),
++            serde_json::to_string_pretty(&hooks).unwrap(),
++        )
++        .unwrap();
+         assert!(check_metrics_hook(&home).is_ok());
+         let _ = fs::remove_dir_all(&home);
+     }
+diff --git a/crates/pixel-install/src/routing.rs b/crates/pixel-install/src/routing.rs
+index e15d88bc..3e35ae82 100644
+--- a/crates/pixel-install/src/routing.rs
++++ b/crates/pixel-install/src/routing.rs
+@@ -165,6 +165,7 @@ pub(crate) fn pixel_hook_verb<'a>(command: &'a str, exe: &Path) -> Option<&'a st
+                 "session-start --provider devin",
+                 "prompt-submit",
+                 "prompt-submit --provider claude",
++                "prompt-submit --provider codex",
+                 "prompt-submit --provider devin",
+                 "post-compaction",
+                 "post-compaction --provider claude",
+@@ -679,7 +680,11 @@ fn configure_scoped(
+             {
+                 " --provider claude"
+             }
+-            "prompt-submit" if provider == Provider::Devin => " --provider devin",
++            "prompt-submit" => match provider {
++                Provider::Claude => " --provider claude",
++                Provider::Codex => " --provider codex",
++                Provider::Devin => " --provider devin",
++            },
+             _ => "",
+         };
+         groups.push(hook_group(
+@@ -1826,7 +1831,7 @@ mod tests {
+                 // guidance.
+                 assert!(prompt_command.ends_with("hook prompt-submit --provider devin"));
+             } else {
+-                assert!(prompt_command.ends_with("hook prompt-submit"));
++                assert!(prompt_command.ends_with("hook prompt-submit --provider codex"));
+             }
+             if provider != Provider::Devin {
+                 assert_eq!(value["hooks"]["SessionStart"][2]["matcher"], "compact");
+diff --git a/crates/pixel-install/src/uninstall.rs b/crates/pixel-install/src/uninstall.rs
+index 5d5c03ee..03f81c6b 100644
+--- a/crates/pixel-install/src/uninstall.rs
++++ b/crates/pixel-install/src/uninstall.rs
+@@ -75,6 +75,7 @@ const PIXEL_HOOK_MARKERS: &[&str] = &[
+     config::PROMPT_SUBMIT_HOOK,
+     config::POST_COMPACTION_HOOK,
+     crate::codex_config::METRICS_HOOK_MARKER,
++    crate::codex_config::PROMPT_SUBMIT_HOOK_MARKER,
+     "run-hook guard --provider zcode",
+ ];
+ 
+diff --git a/crates/pixel-install/tests/install_tests.rs b/crates/pixel-install/tests/install_tests.rs
+index 4af7b5f4..2107534c 100644
+--- a/crates/pixel-install/tests/install_tests.rs
++++ b/crates/pixel-install/tests/install_tests.rs
+@@ -6483,7 +6483,7 @@ fn hook_review_options(home: &Path, exe: &Path, id: &str, repo: Option<&Path>) -
+ }
+ 
+ /// Codex 0.159 skips a hook the user has not reviewed (`/hooks`), without a
+-/// message: Pixel's metrics hook installed but never reviewed is dormant, so
++/// message: Pixel's metrics and prompt-submit hooks installed but never reviewed are dormant, so
+ /// doctor must say so, with the step only the user can take, and turn green
+ /// once Codex's config records the review for that exact hook.
+ #[test]
+@@ -6509,7 +6509,7 @@ fn doctor_reports_codex_hooks_codex_has_not_reviewed() {
+     assert_eq!(
+         unreviewed.summary,
+         format!(
+-            "Codex skips 1 of the 1 Pixel hook(s) in {} until you review them (PostToolUse #0.0): \
++            "Codex skips 2 of the 2 Pixel hook(s) in {} until you review them (PostToolUse #0.0, UserPromptSubmit #0.0): \
+              start `codex` in this directory, run `/hooks` and trust them",
+             hooks.display()
+         )
+@@ -6560,16 +6560,22 @@ fn doctor_reports_codex_hooks_codex_has_not_reviewed() {
+         );
+     }
+ 
+-    let report = review(
+-        &format!("{}:post_tool_use:0:0", hooks.display()),
+-        "trusted_hash = \"sha256:x\"",
+-    );
++    fs::write(
++        &config,
++        format!(
++            "{base}\n[hooks.state.\"{}:post_tool_use:0:0\"]\ntrusted_hash = \"sha256:x\"\n\n[hooks.state.\"{}:user_prompt_submit:0:0\"]\ntrusted_hash = \"sha256:x\"\n",
++            hooks.display(),
++            hooks.display()
++        ),
++    )
++    .unwrap();
++    let report = doctor(&options).unwrap();
+     let reviewed = check(&report, "install.codex-hook-review");
+     assert_eq!(reviewed.status, CheckStatus::Green, "{reviewed:?}");
+     assert_eq!(
+         reviewed.summary,
+         format!(
+-            "Codex has reviewed the 1 Pixel hook(s) in {}",
++            "Codex has reviewed the 2 Pixel hook(s) in {}",
+             hooks.display()
+         )
+     );
+diff --git a/crates/pixel/src/prompt_submit.rs b/crates/pixel/src/prompt_submit.rs
+index f96b7830..c7b3b651 100644
+--- a/crates/pixel/src/prompt_submit.rs
++++ b/crates/pixel/src/prompt_submit.rs
+@@ -47,6 +47,13 @@ pub(crate) const DEVIN_PIXEL_GUIDANCE: &str = concat!(
+     "If Pixel or the index is unavailable, continue normally with native tools; never block the task."
+ );
+ 
++const CODEX_PIXEL_QUESTION_GUIDANCE: &str = concat!(
++    "Pixel evidence required for this Pixel behavior or integration question: before answering, use a Pixel retrieval command. ",
++    "Use `pixel search-content -F '<identifier>'` for a known name, or `pixel find-code '<concept>'` for behavior. ",
++    "Do not answer from memory, a generic web search, or a direct repository read before that retrieval. ",
++    "If Pixel or its index is unavailable, say so and continue with the best available evidence."
++);
++
+ /// Commands in actions.jsonl that signal task completion, under their current
+ /// names. Entries logged before the command rename (`publish`, `ship`) are
+ /// canonicalised before the lookup.
+@@ -174,6 +181,11 @@ pub fn run(provider: Option<crate::guard::Provider>) -> ! {
+     if matches!(provider, Some(crate::guard::Provider::Devin)) {
+         context = render_devin_context(&context);
+     }
++    if matches!(provider, Some(crate::guard::Provider::Codex))
++        && is_pixel_behavior_question(&payload.prompt)
++    {
++        context = render_codex_pixel_question_context(&context);
++    }
+     if !context.is_empty() {
+         emit_context(&context, event_name);
+     }
+@@ -305,6 +317,38 @@ fn render_devin_context(context: &str) -> String {
+     }
+ }
+ 
++fn is_pixel_behavior_question(prompt: &str) -> bool {
++    let prompt = prompt.to_ascii_lowercase();
++    prompt.contains("pixel")
++        && [
++            "agent",
++            "behavior",
++            "build",
++            "config",
++            "extension",
++            "harness",
++            "install",
++            "integration",
++            "why",
++            "how",
++            "what",
++            "can i",
++            "work",
++            "works",
++            "use",
++        ]
++        .iter()
++        .any(|term| prompt.contains(term))
++}
++
++fn render_codex_pixel_question_context(context: &str) -> String {
++    if context.is_empty() {
++        CODEX_PIXEL_QUESTION_GUIDANCE.to_string()
++    } else {
++        format!("{CODEX_PIXEL_QUESTION_GUIDANCE}\n\n{context}")
++    }
++}
++
+ fn render_claude_runtime(
+     payload: &PromptSubmitPayload,
+     cwd: &Path,
+@@ -791,6 +835,21 @@ mod tests {
+         assert!(context.contains("If Pixel or the index is unavailable, continue normally with native tools; never block the task."));
+         assert!(context.ends_with("task targets"));
+     }
++
++    #[test]
++    fn codex_pixel_behavior_question_requires_pixel_evidence() {
++        assert!(is_pixel_behavior_question(
++            "can i build a super efficient pi harness with pixel"
++        ));
++        assert!(!is_pixel_behavior_question(
++            "make pixel art with a blue sky"
++        ));
++
++        let context = render_codex_pixel_question_context("task targets");
++        assert!(context.starts_with("Pixel evidence required"));
++        assert!(context.contains("Do not answer from memory, a generic web search"));
++        assert!(context.ends_with("task targets"));
++    }
+     use std::process::Command;
+ 
+     #[test]
+diff --git a/scripts/README.md b/scripts/README.md
+index 8f0fd4e0..12d06075 100644
+--- a/scripts/README.md
++++ b/scripts/README.md
+@@ -76,6 +76,8 @@ Both audits set `PIXEL_DAEMON_AUTO_START=0` and clean up after themselves;
+ | `pixel-bench-isolated.sh` | `scripts/pixel-bench-isolated.sh [N]` | pixel's doctrine alone vs a blank agent, both under `--safe-mode`; run `pixel-bench.sh` once first (it writes the prompt files) |
+ | `harness-recorder.sh` | `HARNESS_OUTDIR=target/recordings scripts/harness-recorder.sh --provider claude --scenario scope --gif [--post PR]` | record a harness run (Claude Code or Codex, pixel arm wired like `pixel-demo.sh`) under `asciinema rec`: `harness-<provider>-<scenario>.cast` + `.txt` transcript + `.gif` (agg) + `meta.json`, then `--post` a PR comment with the stats table and transcript and a gist of the `.cast` for replay. Scenarios are the four demo prompts plus `rns` (the harness retrieval smoke checklist). `--upload` posts the `.cast` to an asciinema server you have authenticated against (`asciinema auth`). Needs `asciinema` and `python3` (`--gif` needs `agg`: `brew install asciinema agg`); `gh` only with `--post` |
+ | `test-harness-recorder.py` | `python3 scripts/test-harness-recorder.py` | contract of `harness-recorder.sh` (stub asciinema/agg/gh/claude/codex: cast header, transcript replay, pixel-call counting, PR-comment body, gh-less `--post` refuses) |
++| `codex-pixel-ab.sh` | `scripts/codex-pixel-ab.sh --prompt 'Does Pixel help with this repository question?' [--pixel-policy advisory\|enforce\|classify]` | opens an unattended tmux A/B run in two isolated worktrees at one committed SHA: raw Codex (`--ignore-user-config`, rules and hooks off) beside Codex with a project-local candidate Pixel install. `enforce` recreates the historical PreToolUse guard experiment only in the Pixel arm; `classify` saves a three-way routing decision and enables enforcement only when Pixel wins its `--classify-min-confidence` threshold (default 0.60), otherwise runs a clean control-equivalent arm. The panes end on `report.md`, which records policy, classifier evidence, exits, wall time, transcript Pixel retrieval commands, prompt/base hashes and answer files. Requires `codex` already authenticated, tmux and a candidate `pixel`; local source changes are excluded with a visible warning and live model use may edit only disposable worktrees. |
++| `test-codex-pixel-ab.ts` | `bun scripts/test-codex-pixel-ab.ts` | wiring contract of `codex-pixel-ab.sh` with stub tmux/Codex/Pixel and a temporary committed git repository; asserts a paired report is produced without a live model. |
+ 
+ The pixel arm of the `claude -p` benches is given the deployed agent prompt
+ (`~/.local/share/pixel/agent-prompt.md`, the bundled

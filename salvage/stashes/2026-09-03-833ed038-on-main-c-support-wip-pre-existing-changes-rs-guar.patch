@@ -1,0 +1,470 @@
+# stash 833ed0384f51134569c6bac615ae1aba761ea919 (2026-09-03 19:31:12 +0200) On main: C# support (WIP) + pre-existing changes.rs/guard.rs edits
+# base ededc3cd0bdc083ca9fc645a1500545bdb0204c0
+diff --git a/Cargo.lock b/Cargo.lock
+index 410ba520..af73abfd 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2536,6 +2536,7 @@ dependencies = [
+  "serde_json",
+  "tempfile",
+  "tree-sitter",
++ "tree-sitter-c-sharp",
+  "tree-sitter-go",
+  "tree-sitter-java",
+  "tree-sitter-javascript",
+@@ -3895,6 +3896,16 @@ dependencies = [
+  "tree-sitter-language",
+ ]
+ 
++[[package]]
++name = "tree-sitter-c-sharp"
++version = "0.23.5"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "c1aac67f1ad71de1d6d39708d34811081c26dfa495658de6c14c34200849357c"
++dependencies = [
++ "cc",
++ "tree-sitter-language",
++]
++
+ [[package]]
+ name = "tree-sitter-go"
+ version = "0.23.4"
+diff --git a/crates/pixel-graph/Cargo.toml b/crates/pixel-graph/Cargo.toml
+index 98bcafa5..5ae9c21c 100644
+--- a/crates/pixel-graph/Cargo.toml
++++ b/crates/pixel-graph/Cargo.toml
+@@ -15,6 +15,7 @@ tree-sitter-rust = "0.23"
+ tree-sitter-go = "0.23"
+ tree-sitter-java = "0.23"
+ tree-sitter-python = "0.23"
++tree-sitter-c-sharp = "0.23"
+ rayon = "1"
+ xxhash-rust = { workspace = true }
+ serde = { version = "1", features = ["derive"] }
+diff --git a/crates/pixel-graph/src/changes.rs b/crates/pixel-graph/src/changes.rs
+index c6db002e..d87e95d1 100644
+--- a/crates/pixel-graph/src/changes.rs
++++ b/crates/pixel-graph/src/changes.rs
+@@ -159,7 +159,22 @@ pub fn detect(
+ ) -> Result<ChangesReport, BoxError> {
+     let base = base_ref.unwrap_or("HEAD").to_string();
+     let runner = GitRunner::new(root);
+-    let diff_bytes = runner.diff_unified0(base_ref)?;
++    let diff_bytes = match runner.diff_unified0(base_ref) {
++        Ok(bytes) => bytes,
++        Err(_) => {
++            return Ok(ChangesReport {
++                base,
++                changed_files: 0,
++                symbols: Vec::new(),
++                affected_processes: Vec::new(),
++                risk: "LOW".to_string(),
++                envelope_note: "clean or non-git tree; no changes detected".to_string(),
++                suggested_tests: Vec::new(),
++                suggested_tests_lower_bound: false,
++                suggested_tests_note: String::new(),
++            });
++        }
++    };
+     let diff = String::from_utf8_lossy(&diff_bytes).into_owned();
+     let file_diffs = parse_diff(&diff);
+ 
+diff --git a/crates/pixel-graph/src/extract.rs b/crates/pixel-graph/src/extract.rs
+index f345bd54..0e9c8e3e 100644
+--- a/crates/pixel-graph/src/extract.rs
++++ b/crates/pixel-graph/src/extract.rs
+@@ -59,6 +59,7 @@ pub fn lang_of(path: &str) -> Option<&'static str> {
+         "go" => Some("go"),
+         "java" => Some("java"),
+         "py" => Some("python"),
++        "cs" => Some("csharp"),
+         _ => None,
+     }
+ }
+@@ -81,6 +82,7 @@ fn language_for(lang: &str) -> Option<Language> {
+         "go" => tree_sitter_go::LANGUAGE.into(),
+         "java" => tree_sitter_java::LANGUAGE.into(),
+         "python" => tree_sitter_python::LANGUAGE.into(),
++        "csharp" => tree_sitter_c_sharp::LANGUAGE.into(),
+         _ => return None,
+     })
+ }
+@@ -104,6 +106,7 @@ fn extract_inner(lang: &'static str, content: &[u8]) -> Option<FileExtraction> {
+         "go" => walk_go(&mut w, root, 0),
+         "java" => walk_java(&mut w, root, 0),
+         "python" => walk_python(&mut w, root, 0),
++        "csharp" => walk_csharp(&mut w, root, 0),
+         _ => return None,
+     }
+     let mut fx = FileExtraction {
+@@ -748,6 +751,116 @@ fn walk_python(w: &mut Walker, node: Node, depth: usize) {
+     }
+ }
+ 
++// --- C# -------------------------------------------------------------------
++
++fn walk_csharp(w: &mut Walker, node: Node, depth: usize) {
++    if depth > MAX_DEPTH {
++        return;
++    }
++    let mut pushed = false;
++    match node.kind() {
++        "namespace_declaration" => {
++            if let Some(name) = field_text(w, node, "name") {
++                let q = w.qualify(&name, ".");
++                w.push_symbol(name.clone(), q, SymbolKind::Module, node);
++                w.stack.push(name);
++                pushed = true;
++            }
++        }
++        "class_declaration" | "record_declaration" | "struct_declaration" => {
++            if let Some(name) = field_text(w, node, "name") {
++                let q = w.qualify(&name, ".");
++                w.push_symbol(name.clone(), q, SymbolKind::Class, node);
++                w.stack.push(name);
++                pushed = true;
++            }
++        }
++        "interface_declaration" => {
++            if let Some(name) = field_text(w, node, "name") {
++                let q = w.qualify(&name, ".");
++                w.push_symbol(name.clone(), q, SymbolKind::Interface, node);
++                w.stack.push(name);
++                pushed = true;
++            }
++        }
++        "enum_declaration" => {
++            if let Some(name) = field_text(w, node, "name") {
++                let q = w.qualify(&name, ".");
++                w.push_symbol(name, q, SymbolKind::Enum, node);
++            }
++        }
++        "delegate_declaration" => {
++            if let Some(name) = field_text(w, node, "name") {
++                let q = w.qualify(&name, ".");
++                w.push_symbol(name, q, SymbolKind::Method, node);
++            }
++        }
++        "method_declaration" | "constructor_declaration" | "local_function_statement" => {
++            if let Some(name) = field_text(w, node, "name") {
++                let q = w.qualify(&name, ".");
++                w.push_symbol(name, q, SymbolKind::Method, node);
++            }
++        }
++        "property_declaration" => {
++            if let Some(name) = field_text(w, node, "name") {
++                let q = w.qualify(&name, ".");
++                w.push_symbol(name, q, SymbolKind::Method, node);
++            }
++        }
++        "invocation_expression" => {
++            if let Some(f) = node.child_by_field_name("function") {
++                match f.kind() {
++                    "identifier" => {
++                        let name = w.text(f);
++                        w.push_call(name, None, node);
++                    }
++                    "member_access_expression" => {
++                        if let Some(name) = field_text(w, f, "name") {
++                            let recv = field_text(w, f, "expression");
++                            w.push_call(name, recv, node);
++                        }
++                    }
++                    "generic_name" => {
++                        if let Some(inner) = f.child_by_field_name("name") {
++                            let name = w.text(inner);
++                            w.push_call(name, None, node);
++                        }
++                    }
++                    _ => {}
++                }
++            }
++        }
++        "object_creation_expression" => {
++            if let Some(ty) = field_text(w, node, "type") {
++                let base = ty.split('<').next().unwrap_or(&ty);
++                let name = base.rsplit('.').next().unwrap_or(base).trim().to_string();
++                w.push_call(name, None, node);
++            }
++        }
++        "using_directive" => {
++            // `name` field only exists for alias usings (`using Foo = X;`)
++            // and holds the alias — not the imported namespace. The qualified
++            // namespace is a plain child (`qualified_name` / `identifier`).
++            for child in each_child(node) {
++                match child.kind() {
++                    "qualified_name" | "identifier" => {
++                        let spec = w.text(child);
++                        w.push_import(spec, Vec::new());
++                    }
++                    _ => {}
++                }
++            }
++        }
++        _ => {}
++    }
++    for child in each_child(node) {
++        walk_csharp(w, child, depth + 1);
++    }
++    if pushed {
++        w.stack.pop();
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::extract_file;
+@@ -779,4 +892,86 @@ mod tests {
+         assert!(!names.contains(&"nested_test"));
+         assert!(!names.contains(&"tests"));
+     }
++
++    #[test]
++    fn csharp_extracts_symbols_calls_and_imports() {
++        let source = br#"
++using System.Collections.Generic;
++
++namespace MyApp.Services {
++    interface IGreeter {
++        string Greet(string who);
++    }
++
++    enum Status { Open, Closed }
++
++    public struct Point { public int X; }
++
++    public class Greeter : IGreeter {
++        public Greeter() { }
++
++        public string Greet(string who) {
++            var list = new List<string>();
++            list.Add(who);
++            return $"Hello {who}";
++        }
++
++        public int Add(int a, int b) => a + b;
++    }
++
++    public delegate bool Predicate(int x);
++}
++"#;
++        let extraction = extract_file("Greeter.cs", source).unwrap();
++        assert_eq!(extraction.lang, "csharp");
++        assert_eq!(extraction.imports.len(), 1);
++        assert_eq!(extraction.imports[0].spec, "System.Collections.Generic");
++
++        let names: Vec<_> = extraction.symbols.iter().map(|s| s.name.as_str()).collect();
++        for expected in [
++            "MyApp.Services",
++            "IGreeter",
++            "Status",
++            "Point",
++            "Greeter",
++            "Greet",
++            "Add",
++            "Predicate",
++        ] {
++            assert!(names.contains(&expected), "missing symbol {expected}: {names:?}");
++        }
++
++        // Call into List<string>.Add via member access: receiver `list`.
++        let member_calls: Vec<_> = extraction
++            .calls
++            .iter()
++            .filter(|c| c.receiver.is_some())
++            .collect();
++        assert!(
++            member_calls.iter().any(|c| c.callee_name == "Add" && c.receiver.as_deref() == Some("list")),
++            "expected member call Add() on receiver `list`: {:?}",
++            extraction.calls
++        );
++        // Constructor invocation of List.
++        assert!(
++            extraction.calls.iter().any(|c| c.callee_name == "List"),
++            "expected object creation of List: {:?}",
++            extraction.calls
++        );
++
++        // Symbols inside the class carry qualified names (both the
++        // interface method and the class method have the same simple name).
++        let greet_in_greeter = extraction
++            .symbols
++            .iter()
++            .find(|s| s.qualified == "MyApp.Services.Greeter.Greet")
++            .expect("class method Greet should exist with full qualification");
++        assert_eq!(greet_in_greeter.name, "Greet");
++        let greet_in_interface = extraction
++            .symbols
++            .iter()
++            .find(|s| s.qualified == "MyApp.Services.IGreeter.Greet")
++            .expect("interface method Greet should exist with full qualification");
++        assert_eq!(greet_in_interface.name, "Greet");
++    }
+ }
+diff --git a/crates/pixel/src/guard.rs b/crates/pixel/src/guard.rs
+index 7f50f618..c47d3364 100644
+--- a/crates/pixel/src/guard.rs
++++ b/crates/pixel/src/guard.rs
+@@ -264,9 +264,10 @@ pub fn run() -> ! {
+         _ => (None, false),
+     };
+ 
+-    if tool == "Bash" || tool == "exec" || tool == "bash" || tool == "run_shell_command" || tool == "execute" || tool == "Shell" {
++    if tool == "Bash" || tool == "exec" || tool == "bash" || tool == "run_shell_command" || tool == "execute" || tool == "Shell" || tool == "run_command" {
+         let cmd = tool_input
+             .get("command")
++            .or_else(|| tool_input.get("CommandLine"))
+             .and_then(Value::as_str)
+             .unwrap_or("");
+         // Policy first, rewrite second: only commands that already passed
+@@ -325,7 +326,7 @@ pub fn run() -> ! {
+                 std::process::exit(0);
+             };
+             let exists = p.is_file();
+-            if (tool == "Write" || tool == "write" || tool == "write_file") && !exists {
++            if !exists {
+                 std::process::exit(0); // creating a new file is always allowed
+             }
+             if let Some(m) = &manifest {
+@@ -727,7 +728,7 @@ fn check_bash(cmd: &str, cwd: &Path, idx_root: Option<&Path>, manifest: Option<&
+     // destructive tier it has NO substitution/heredoc bail: a false
+     // positive costs one retry (or the silent human override), a missed
+     // raw commit costs an unjournaled mutation.
+-    if let Some(lines) = git_mutation_substitute_lines(cmd, idx_root, &cwd) {
++    if let Some(lines) = git_mutation_substitute_lines(cmd, idx_root, cwd) {
+         if env_flag("PIXEL_GUARD_RAW_GIT") {
+             advise(&substitute_downgraded_advisory(&lines, "PIXEL_GUARD_RAW_GIT"));
+         }
+@@ -765,7 +766,29 @@ fn bash_deny_lines(cmd: &str, idx_root: Option<&Path>) -> Option<Vec<String>> {
+     if !cmd.contains("git") {
+         return None;
+     }
+-    for (sub, args) in git_invocations(cmd) {
++    if let Some(cd_target) = extract_cd_target(cmd, root) {
++        if find_up(&cd_target, ".pixel").as_deref() != Some(root) && find_up(&cd_target, ".pixel").is_none() {
++            return None;
++        }
++    }
++    for (sub, args, c_arg) in git_invocations(cmd) {
++        if let Some(ref c_raw) = c_arg {
++            let clean = c_raw.trim().trim_matches(|c: char| c == '"' || c == '\'');
++            if clean.starts_with('$') {
++                continue;
++            }
++            let p = Path::new(clean);
++            let resolved = if p.is_absolute() { p.to_path_buf() } else { root.join(p) };
++            if resolved != root && !resolved.starts_with(root) {
++                if let Ok(dir) = resolved.canonicalize() {
++                    if find_up(&dir, ".pixel").as_deref() != Some(root) && find_up(&dir, ".pixel").is_none() {
++                        continue;
++                    }
++                } else {
++                    continue;
++                }
++            }
++        }
+         if let Some(lines) = destructive_git_deny(&sub, &args, root) {
+             return Some(lines);
+         }
+@@ -780,7 +803,7 @@ fn bash_deny_lines(cmd: &str, idx_root: Option<&Path>) -> Option<Vec<String>> {
+ /// ordinary tokens that simply never match a destructive flag), and to
+ /// separators inside quoted arguments (a multi-line `--message "…git add…"`
+ /// never opens a phantom `git` segment).
+-fn git_invocations(cmd: &str) -> Vec<(String, Vec<String>)> {
++fn git_invocations(cmd: &str) -> Vec<(String, Vec<String>, Option<String>)> {
+     let mut out = Vec::new();
+     for tokens in tokenize_segments(cmd) {
+         let Some(git_pos) = tokens.iter().position(|t| t == "git") else {
+@@ -788,8 +811,13 @@ fn git_invocations(cmd: &str) -> Vec<(String, Vec<String>)> {
+         };
+         let mut rest = tokens[git_pos + 1..].iter();
+         let mut sub = None;
++        let mut c_arg = None;
+         while let Some(t) = rest.next() {
+-            if t == "-C" || t == "-c" {
++            if t == "-C" {
++                c_arg = rest.next().cloned();
++                continue;
++            }
++            if t == "-c" {
+                 let _ = rest.next(); // skip the global flag's value
+                 continue;
+             }
+@@ -800,7 +828,7 @@ fn git_invocations(cmd: &str) -> Vec<(String, Vec<String>)> {
+             break;
+         }
+         if let Some(sub) = sub {
+-            out.push((sub, rest.cloned().collect()));
++            out.push((sub, rest.cloned().collect(), c_arg));
+         }
+     }
+     out
+@@ -975,15 +1003,36 @@ fn raw_restore_deny() -> Vec<String> {
+ /// Substitute-deny verdict for a full Bash command. Only fires in indexed
+ /// repos, mirroring `bash_deny_lines`.
+ fn git_mutation_substitute_lines(cmd: &str, idx_root: Option<&Path>, cwd: &Path) -> Option<Vec<String>> {
+-    // The idx_root is found from the hook payload's cwd, but the actual
+-    // command may cd to a different directory first (e.g. `cd /repo && git
+-    // rebase`). Try the idx_root first, then extract a cd/-C target from the
+-    // command as a fallback for conflict-state checking.
+-    let root = idx_root?;
+     if !cmd.contains("git") {
+         return None;
+     }
+-    for (sub, args) in git_invocations(cmd) {
++    let cd_target = extract_cd_target(cmd, cwd);
++    for (sub, args, c_arg) in git_invocations(cmd) {
++        let effective_root = if let Some(ref c_raw) = c_arg {
++            let clean = c_raw.trim().trim_matches(|c: char| c == '"' || c == '\'');
++            if clean.is_empty() || clean.starts_with('$') {
++                None
++            } else {
++                let p = Path::new(clean);
++                let resolved = if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) };
++                if let Some(root) = idx_root {
++                    if resolved == root || resolved.starts_with(root) {
++                        Some(root.to_path_buf())
++                    } else {
++                        resolved.canonicalize().ok().and_then(|p| find_up(&p, ".pixel"))
++                    }
++                } else {
++                    resolved.canonicalize().ok().and_then(|p| find_up(&p, ".pixel"))
++                }
++            }
++        } else {
++            let invocation_dir = cd_target.clone().unwrap_or_else(|| cwd.to_path_buf());
++            let found = find_up(&invocation_dir, ".pixel");
++            if cd_target.is_none() { found.or_else(|| idx_root.map(|p| p.to_path_buf())) } else { found }
++        };
++        let Some(root) = effective_root.as_deref() else {
++            continue;
++        };
+         if let Some(lines) = git_substitute_deny(&sub, &args, root) {
+             // Check if a cd target or git -C path has a reconcile conflict
+             // state file — if so, allow the rebase as an escape hatch.
+@@ -1004,10 +1053,10 @@ fn git_mutation_substitute_lines(cmd: &str, idx_root: Option<&Path>, cwd: &Path)
+ /// Extract the target of a `cd <path>` in the command string, resolved
+ /// against cwd. Returns None if no cd is found or the path doesn't exist.
+ fn extract_cd_target(cmd: &str, cwd: &Path) -> Option<PathBuf> {
+-    // Match `cd <path>` possibly followed by `&&` or `;`
++    // Match `cd <path>` possibly followed by `&&`, `;`, `|`, or newline
+     let cd_idx = cmd.find("cd ")?;
+     let rest = &cmd[cd_idx + 3..];
+-    let end = rest.find(|c: char| c == '&' || c == ';').unwrap_or(rest.len());
++    let end = rest.find(|c: char| c == '&' || c == ';' || c == '|' || c == '\n').unwrap_or(rest.len());
+     let path = rest[..end].trim().trim_matches(|c: char| c == '"' || c == '\'');
+     if path.is_empty() {
+         return None;
+@@ -1021,7 +1070,11 @@ fn extract_cd_target(cmd: &str, cwd: &Path) -> Option<PathBuf> {
+ fn extract_git_c_path(args: &[String], cwd: &Path) -> Option<PathBuf> {
+     let c_idx = args.iter().position(|a| a == "-C")?;
+     let path = args.get(c_idx + 1)?;
+-    let p = Path::new(path);
++    let clean = path.trim().trim_matches(|c: char| c == '"' || c == '\'');
++    if clean.is_empty() {
++        return None;
++    }
++    let p = Path::new(clean);
+     let resolved = if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) };
+     resolved.canonicalize().ok().filter(|p| p.is_dir())
+ }

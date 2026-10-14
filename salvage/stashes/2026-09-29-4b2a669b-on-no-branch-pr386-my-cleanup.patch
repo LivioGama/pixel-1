@@ -1,0 +1,296 @@
+# stash 4b2a669b3d6eec091957fa5f0e618820d139b564 (2026-09-29 20:37:06 +0200) On (no branch): pr386-my-cleanup
+# base cccea995ecd97b82e7022e711f60116f4f65875d
+diff --git a/.agents/skills/pixel/SKILL.md b/.agents/skills/pixel/SKILL.md
+index 4404d6d8..6b9a4b1c 100644
+--- a/.agents/skills/pixel/SKILL.md
++++ b/.agents/skills/pixel/SKILL.md
+@@ -152,10 +152,14 @@ model — `--criterion` is where the definition goes.
+ ## LIVE OPERATION METRICS
+ 
+ After a Pixel call, a `🟩 Pixel · …` line appears in stderr of the
+-same tool-call result (or via the metrics hook). Relay that exact line once per
+-invocation; correlate by the invocation, never a global latest operation. The
+-panel is already relayed by the host when it is already in the tool-call
+-result you can see — do not echo it as a separate message.
++same tool-call result. Codex's exec layer merges that stderr into the tool
++result it records and shows, so a Codex user normally sees the panel without
++extra steps; the metrics relay (a `PostToolUse` hook) only re-emits it as
++`additionalContext` for the rare host whose tool result drops it, and its
++dedupe drops the duplicate. Relay that exact line once per invocation;
++correlate by the invocation, never a global latest operation. The panel is
++already relayed by the host when it is already in the tool-call result you can
++see — do not echo it as a separate message.
+ 
+ - **Do not invent** the line, recompute its values, or run a command just to
+   get it. `--metrics=off` / `PIXEL_METRICS=0` opt out — then relay nothing.
+diff --git a/.clinerules/pixel.md b/.clinerules/pixel.md
+index df7fda56..2e0ee026 100644
+--- a/.clinerules/pixel.md
++++ b/.clinerules/pixel.md
+@@ -141,10 +141,14 @@ model — `--criterion` is where the definition goes.
+ ## LIVE OPERATION METRICS
+ 
+ After a Pixel call, a `🟩 Pixel · …` line appears in stderr of the
+-same tool-call result (or via the metrics hook). Relay that exact line once per
+-invocation; correlate by the invocation, never a global latest operation. The
+-panel is already relayed by the host when it is already in the tool-call
+-result you can see — do not echo it as a separate message.
++same tool-call result. Codex's exec layer merges that stderr into the tool
++result it records and shows, so a Codex user normally sees the panel without
++extra steps; the metrics relay (a `PostToolUse` hook) only re-emits it as
++`additionalContext` for the rare host whose tool result drops it, and its
++dedupe drops the duplicate. Relay that exact line once per invocation;
++correlate by the invocation, never a global latest operation. The panel is
++already relayed by the host when it is already in the tool-call result you can
++see — do not echo it as a separate message.
+ 
+ - **Do not invent** the line, recompute its values, or run a command just to
+   get it. `--metrics=off` / `PIXEL_METRICS=0` opt out — then relay nothing.
+diff --git a/.cursor/rules/pixel.mdc b/.cursor/rules/pixel.mdc
+index fb192166..66f65bbf 100644
+--- a/.cursor/rules/pixel.mdc
++++ b/.cursor/rules/pixel.mdc
+@@ -146,10 +146,14 @@ model — `--criterion` is where the definition goes.
+ ## LIVE OPERATION METRICS
+ 
+ After a Pixel call, a `🟩 Pixel · …` line appears in stderr of the
+-same tool-call result (or via the metrics hook). Relay that exact line once per
+-invocation; correlate by the invocation, never a global latest operation. The
+-panel is already relayed by the host when it is already in the tool-call
+-result you can see — do not echo it as a separate message.
++same tool-call result. Codex's exec layer merges that stderr into the tool
++result it records and shows, so a Codex user normally sees the panel without
++extra steps; the metrics relay (a `PostToolUse` hook) only re-emits it as
++`additionalContext` for the rare host whose tool result drops it, and its
++dedupe drops the duplicate. Relay that exact line once per invocation;
++correlate by the invocation, never a global latest operation. The panel is
++already relayed by the host when it is already in the tool-call result you can
++see — do not echo it as a separate message.
+ 
+ - **Do not invent** the line, recompute its values, or run a command just to
+   get it. `--metrics=off` / `PIXEL_METRICS=0` opt out — then relay nothing.
+diff --git a/.kiro/steering/pixel.md b/.kiro/steering/pixel.md
+index df7fda56..2e0ee026 100644
+--- a/.kiro/steering/pixel.md
++++ b/.kiro/steering/pixel.md
+@@ -141,10 +141,14 @@ model — `--criterion` is where the definition goes.
+ ## LIVE OPERATION METRICS
+ 
+ After a Pixel call, a `🟩 Pixel · …` line appears in stderr of the
+-same tool-call result (or via the metrics hook). Relay that exact line once per
+-invocation; correlate by the invocation, never a global latest operation. The
+-panel is already relayed by the host when it is already in the tool-call
+-result you can see — do not echo it as a separate message.
++same tool-call result. Codex's exec layer merges that stderr into the tool
++result it records and shows, so a Codex user normally sees the panel without
++extra steps; the metrics relay (a `PostToolUse` hook) only re-emits it as
++`additionalContext` for the rare host whose tool result drops it, and its
++dedupe drops the duplicate. Relay that exact line once per invocation;
++correlate by the invocation, never a global latest operation. The panel is
++already relayed by the host when it is already in the tool-call result you can
++see — do not echo it as a separate message.
+ 
+ - **Do not invent** the line, recompute its values, or run a command just to
+   get it. `--metrics=off` / `PIXEL_METRICS=0` opt out — then relay nothing.
+diff --git a/.openclaw/skills/pixel/SKILL.md b/.openclaw/skills/pixel/SKILL.md
+index 4404d6d8..6b9a4b1c 100644
+--- a/.openclaw/skills/pixel/SKILL.md
++++ b/.openclaw/skills/pixel/SKILL.md
+@@ -152,10 +152,14 @@ model — `--criterion` is where the definition goes.
+ ## LIVE OPERATION METRICS
+ 
+ After a Pixel call, a `🟩 Pixel · …` line appears in stderr of the
+-same tool-call result (or via the metrics hook). Relay that exact line once per
+-invocation; correlate by the invocation, never a global latest operation. The
+-panel is already relayed by the host when it is already in the tool-call
+-result you can see — do not echo it as a separate message.
++same tool-call result. Codex's exec layer merges that stderr into the tool
++result it records and shows, so a Codex user normally sees the panel without
++extra steps; the metrics relay (a `PostToolUse` hook) only re-emits it as
++`additionalContext` for the rare host whose tool result drops it, and its
++dedupe drops the duplicate. Relay that exact line once per invocation;
++correlate by the invocation, never a global latest operation. The panel is
++already relayed by the host when it is already in the tool-call result you can
++see — do not echo it as a separate message.
+ 
+ - **Do not invent** the line, recompute its values, or run a command just to
+   get it. `--metrics=off` / `PIXEL_METRICS=0` opt out — then relay nothing.
+diff --git a/.qoder/rules/pixel.md b/.qoder/rules/pixel.md
+index df7fda56..2e0ee026 100644
+--- a/.qoder/rules/pixel.md
++++ b/.qoder/rules/pixel.md
+@@ -141,10 +141,14 @@ model — `--criterion` is where the definition goes.
+ ## LIVE OPERATION METRICS
+ 
+ After a Pixel call, a `🟩 Pixel · …` line appears in stderr of the
+-same tool-call result (or via the metrics hook). Relay that exact line once per
+-invocation; correlate by the invocation, never a global latest operation. The
+-panel is already relayed by the host when it is already in the tool-call
+-result you can see — do not echo it as a separate message.
++same tool-call result. Codex's exec layer merges that stderr into the tool
++result it records and shows, so a Codex user normally sees the panel without
++extra steps; the metrics relay (a `PostToolUse` hook) only re-emits it as
++`additionalContext` for the rare host whose tool result drops it, and its
++dedupe drops the duplicate. Relay that exact line once per invocation;
++correlate by the invocation, never a global latest operation. The panel is
++already relayed by the host when it is already in the tool-call result you can
++see — do not echo it as a separate message.
+ 
+ - **Do not invent** the line, recompute its values, or run a command just to
+   get it. `--metrics=off` / `PIXEL_METRICS=0` opt out — then relay nothing.
+diff --git a/.windsurf/rules/pixel.md b/.windsurf/rules/pixel.md
+index df7fda56..2e0ee026 100644
+--- a/.windsurf/rules/pixel.md
++++ b/.windsurf/rules/pixel.md
+@@ -141,10 +141,14 @@ model — `--criterion` is where the definition goes.
+ ## LIVE OPERATION METRICS
+ 
+ After a Pixel call, a `🟩 Pixel · …` line appears in stderr of the
+-same tool-call result (or via the metrics hook). Relay that exact line once per
+-invocation; correlate by the invocation, never a global latest operation. The
+-panel is already relayed by the host when it is already in the tool-call
+-result you can see — do not echo it as a separate message.
++same tool-call result. Codex's exec layer merges that stderr into the tool
++result it records and shows, so a Codex user normally sees the panel without
++extra steps; the metrics relay (a `PostToolUse` hook) only re-emits it as
++`additionalContext` for the rare host whose tool result drops it, and its
++dedupe drops the duplicate. Relay that exact line once per invocation;
++correlate by the invocation, never a global latest operation. The panel is
++already relayed by the host when it is already in the tool-call result you can
++see — do not echo it as a separate message.
+ 
+ - **Do not invent** the line, recompute its values, or run a command just to
+   get it. `--metrics=off` / `PIXEL_METRICS=0` opt out — then relay nothing.
+diff --git a/PIXEL.md b/PIXEL.md
+index df7fda56..2e0ee026 100644
+--- a/PIXEL.md
++++ b/PIXEL.md
+@@ -141,10 +141,14 @@ model — `--criterion` is where the definition goes.
+ ## LIVE OPERATION METRICS
+ 
+ After a Pixel call, a `🟩 Pixel · …` line appears in stderr of the
+-same tool-call result (or via the metrics hook). Relay that exact line once per
+-invocation; correlate by the invocation, never a global latest operation. The
+-panel is already relayed by the host when it is already in the tool-call
+-result you can see — do not echo it as a separate message.
++same tool-call result. Codex's exec layer merges that stderr into the tool
++result it records and shows, so a Codex user normally sees the panel without
++extra steps; the metrics relay (a `PostToolUse` hook) only re-emits it as
++`additionalContext` for the rare host whose tool result drops it, and its
++dedupe drops the duplicate. Relay that exact line once per invocation;
++correlate by the invocation, never a global latest operation. The panel is
++already relayed by the host when it is already in the tool-call result you can
++see — do not echo it as a separate message.
+ 
+ - **Do not invent** the line, recompute its values, or run a command just to
+   get it. `--metrics=off` / `PIXEL_METRICS=0` opt out — then relay nothing.
+diff --git a/changelog.d/386-codex-relay-wording.fixed.md b/changelog.d/386-codex-relay-wording.fixed.md
+index 0ba65f3c..c716d3b2 100644
+--- a/changelog.d/386-codex-relay-wording.fixed.md
++++ b/changelog.d/386-codex-relay-wording.fixed.md
+@@ -1 +1 @@
+-**install:** the agent prompt and three source comments now state that Codex's exec layer already merges stderr into the tool result it records and shows, so the `PostToolUse` metrics relay is the fallback for the rare host whose tool result drops it, not the primary path for Codex; the relay's own dedupe already drops the duplicate, and the deployed clause tells the model not to echo the panel as a separate message when it is already in the tool-call result. ([#386](https://github.com/LivioGama/pixel/pull/386))
++**install:** the agent prompt and four source comments now state that Codex's exec layer merges a command's stderr into the tool result it records and shows, so the `PostToolUse` metrics relay is the fallback for the rare host whose tool result drops it, not the primary path for Codex; the relay's own dedupe drops the duplicate, and the deployed clause tells the model not to echo a panel already in the tool-call result. ([#386](https://github.com/LivioGama/pixel/pull/386))
+diff --git a/crates/pixel-install/assets/pixel-agent-prompt.md b/crates/pixel-install/assets/pixel-agent-prompt.md
+index 9a6d1270..0d71f317 100644
+--- a/crates/pixel-install/assets/pixel-agent-prompt.md
++++ b/crates/pixel-install/assets/pixel-agent-prompt.md
+@@ -127,10 +127,14 @@ model — `--criterion` is where the definition goes.
+ ## LIVE OPERATION METRICS
+ 
+ After a Pixel call, a `🟩 Pixel · …` line appears in stderr of the
+-same tool-call result. Codex normally merges this panel into the tool-call
+-result automatically. The metrics relay (registered as a `PostToolUse` hook)
+-only emits the panel as `additionalContext` if Codex dropped it from the result.
+-Do **not** re-emit or invent the panel. Never echo it as a separate message.
++same tool-call result. Codex's exec layer merges that stderr into the tool
++result it records and shows, so a Codex user normally sees the panel without
++extra steps; the metrics relay (a `PostToolUse` hook) only re-emits it as
++`additionalContext` for the rare host whose tool result drops it, and its
++dedupe drops the duplicate. Relay that exact line once per invocation;
++correlate by the invocation, never a global latest operation. The panel is
++already relayed by the host when it is already in the tool-call result you can
++see — do not echo it as a separate message.
+ 
+ - **Do not invent** the line, recompute its values, or run a command just to
+   get it. `--metrics=off` / `PIXEL_METRICS=0` opt out — then relay nothing.
+diff --git a/crates/pixel-install/src/codex_config.rs b/crates/pixel-install/src/codex_config.rs
+index 72ca6075..6e47ebc6 100644
+--- a/crates/pixel-install/src/codex_config.rs
++++ b/crates/pixel-install/src/codex_config.rs
+@@ -39,8 +39,6 @@ pub const HOOKS_FILE: &str = "hooks.json";
+ 
+ /// Substring unique to the installed metrics-relay command, used for
+ /// idempotent merge and uninstall removal.
+-///
+-/// The relay surfaces the pixel operation summary (🟩 line) in the Codex UI after every tool call, even if Codex drops or loses the stderr stream. Most users will see pixel metrics automatically; the relay is a fallback for reliability.
+ pub const METRICS_HOOK_MARKER: &str = "run-hook metrics";
+ 
+ /// The agent prompt as bundled in the binary.
+diff --git a/crates/pixel-install/src/install.rs b/crates/pixel-install/src/install.rs
+index 939f77f5..d31d3921 100644
+--- a/crates/pixel-install/src/install.rs
++++ b/crates/pixel-install/src/install.rs
+@@ -124,10 +124,12 @@ fn find_in_paths(name: &str, path: &std::ffi::OsStr) -> Option<PathBuf> {
+ /// invocation includes the Pixel retrieval protocol —
+ /// and, when OpenCode is present, a managed block in its global
+ /// `~/.config/opencode/AGENTS.md`. Codex also gets the metrics relay:
+-/// Codex's exec layer already merges the invocation's stderr into the
+-/// tool result it records and shows, so Codex users normally see metrics without extra steps. The relay's dedupe removes any duplicate, and a PostToolUse entry is only needed to re-emit the 🟩 "pixel" summary line for the rare Codex hosts whose tool result drops or fails to surface the merged stderr. No managed blocks in the
+-/// home-level CLAUDE.md/AGENTS.md files; PreToolUse enforcement is
+-/// repo-local (`pixel install --repo`).
++/// its exec layer already merges the invocation's stderr into the tool
++/// result it records and shows, so the relay's dedupe drops the duplicate
++/// and a PostToolUse entry only re-emits the 🟩 line for the rare host
++/// whose tool result drops or fails to surface the merged stderr. No
++/// managed blocks in the home-level CLAUDE.md/AGENTS.md files; PreToolUse
++/// enforcement is repo-local (`pixel install --repo`).
+ pub fn install(options: &InstallOptions) -> Result<InstallReport> {
+     let home = options
+         .home
+diff --git a/rules/pixel.md b/rules/pixel.md
+index c4db337c..079fb8ce 100644
+--- a/rules/pixel.md
++++ b/rules/pixel.md
+@@ -145,10 +145,14 @@ model — `--criterion` is where the definition goes.
+ ## LIVE OPERATION METRICS
+ 
+ After a Pixel call, a `🟩 Pixel · …` line appears in stderr of the
+-same tool-call result (or via the metrics hook). Relay that exact line once per
+-invocation; correlate by the invocation, never a global latest operation. The
+-panel is already relayed by the host when it is already in the tool-call
+-result you can see — do not echo it as a separate message.
++same tool-call result. Codex's exec layer merges that stderr into the tool
++result it records and shows, so a Codex user normally sees the panel without
++extra steps; the metrics relay (a `PostToolUse` hook) only re-emits it as
++`additionalContext` for the rare host whose tool result drops it, and its
++dedupe drops the duplicate. Relay that exact line once per invocation;
++correlate by the invocation, never a global latest operation. The panel is
++already relayed by the host when it is already in the tool-call result you can
++see — do not echo it as a separate message.
+ 
+ - **Do not invent** the line, recompute its values, or run a command just to
+   get it. `--metrics=off` / `PIXEL_METRICS=0` opt out — then relay nothing.
+diff --git a/skills/pixel/SKILL.md b/skills/pixel/SKILL.md
+index 4404d6d8..6b9a4b1c 100644
+--- a/skills/pixel/SKILL.md
++++ b/skills/pixel/SKILL.md
+@@ -152,10 +152,14 @@ model — `--criterion` is where the definition goes.
+ ## LIVE OPERATION METRICS
+ 
+ After a Pixel call, a `🟩 Pixel · …` line appears in stderr of the
+-same tool-call result (or via the metrics hook). Relay that exact line once per
+-invocation; correlate by the invocation, never a global latest operation. The
+-panel is already relayed by the host when it is already in the tool-call
+-result you can see — do not echo it as a separate message.
++same tool-call result. Codex's exec layer merges that stderr into the tool
++result it records and shows, so a Codex user normally sees the panel without
++extra steps; the metrics relay (a `PostToolUse` hook) only re-emits it as
++`additionalContext` for the rare host whose tool result drops it, and its
++dedupe drops the duplicate. Relay that exact line once per invocation;
++correlate by the invocation, never a global latest operation. The panel is
++already relayed by the host when it is already in the tool-call result you can
++see — do not echo it as a separate message.
+ 
+ - **Do not invent** the line, recompute its values, or run a command just to
+   get it. `--metrics=off` / `PIXEL_METRICS=0` opt out — then relay nothing.

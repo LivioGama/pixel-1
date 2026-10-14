@@ -1,0 +1,2419 @@
+# stash 46f96bb8684dff06a8b2548f89ffa54c70b578b3 (2026-10-04 01:25:58 +0200) On main: task/603 WIP before ff to 310c7c3c
+# base a26cf1ddb5779b0c3a04b3f90ef16b3efb7bb888
+diff --git a/.agents/skills/agent-session-debugging/SKILL.md b/.agents/skills/agent-session-debugging/SKILL.md
+index 7ed7082a..d2fac74f 100644
+--- a/.agents/skills/agent-session-debugging/SKILL.md
++++ b/.agents/skills/agent-session-debugging/SKILL.md
+@@ -1,6 +1,6 @@
+ ---
+ name: agent-session-debugging
+-description: Operate real pi, agy, Claude, and Codex sessions in Herdr to diagnose tool behavior from transcripts, ask a CLI directly when its own behavior is unclear, then implement, retest, and redeploy a verified fix.
++description: Operate real pi, agy, Claude, Codex, OpenCode, and Devin sessions in Herdr to diagnose tool behavior from transcripts, ask a CLI directly when its own behavior is unclear, then implement, retest, and redeploy a verified fix.
+ ---
+ 
+ # Debugging real agent sessions
+@@ -8,7 +8,7 @@ description: Operate real pi, agy, Claude, and Codex sessions in Herdr to diagno
+ Use this skill when an agent ignores Pixel guidance, a tool result is unclear,
+ metrics appear missing, or an installed hook/prompt may behave differently from
+ tests. The operator coordinates the investigation from the existing main pane;
+-the four agent panes are independent observers and reproducers.
++the six agent panes are independent observers and reproducers.
+ 
+ ## Establish the Herdr workspace
+ 
+@@ -17,38 +17,42 @@ ACP, generic subagents, raw pane input, or another messaging system to talk to
+ these sessions. Set `HERDR_ENV=1` on every Herdr invocation.
+ 
+ Reuse the active workspace and keep its main orchestrator pane on the left.
+-Arrange pi, agy, Claude, and Codex as a 2×2 grid on the right. Inspect
++Arrange pi, agy, Claude, Codex, OpenCode, and Devin as a 3×2 grid (three columns, two rows) on the right. Inspect
+ workspace, tab, pane, and layout state before changing it. Rebuild the active
+ tab's layout and close its existing non-orchestrator panes when needed to get
+ the requested view; preserve the orchestrator pane. Do not create a fresh
+ workspace/tab when the current one can be arranged. Keep layout operations
+ unfocused unless the operator explicitly asks to change focus.
+ 
+-For a clean 2×2 on the right, close only the active tab's non-orchestrator
++For a clean 3×2 on the right, close only the active tab's non-orchestrator
+ panes if they prevent the layout, then use this split sequence. After each
+ split, take the new `pane_id` from Herdr's result and substitute it into the
+ next command:
+ 
+ ```sh
+-rtk env HERDR_ENV=1 herdr pane split <main-pane-id> --direction right --ratio 0.5 --cwd <repo> --no-focus
++rtk env HERDR_ENV=1 herdr pane split <main-pane-id> --direction right --ratio 0.4 --cwd <repo> --no-focus
+ rtk env HERDR_ENV=1 herdr pane split <right-region-pane-id> --direction down --ratio 0.5 --cwd <repo> --no-focus
+-rtk env HERDR_ENV=1 herdr pane split <top-row-pane-id> --direction right --ratio 0.5 --cwd <repo> --no-focus
+-rtk env HERDR_ENV=1 herdr pane split <bottom-row-pane-id> --direction right --ratio 0.5 --cwd <repo> --no-focus
++rtk env HERDR_ENV=1 herdr pane split <top-row-pane-id> --direction right --ratio 0.333 --cwd <repo> --no-focus
++rtk env HERDR_ENV=1 herdr pane split <new-top-cell-pane-id> --direction right --ratio 0.5 --cwd <repo> --no-focus
++rtk env HERDR_ENV=1 herdr pane split <bottom-row-pane-id> --direction right --ratio 0.333 --cwd <repo> --no-focus
++rtk env HERDR_ENV=1 herdr pane split <new-bottom-cell-pane-id> --direction right --ratio 0.5 --cwd <repo> --no-focus
+ ```
+ 
+-The resulting cells are top-left, top-right, bottom-left, bottom-right. Start
+-one agent in each existing cell, unless that cell already hosts the intended
+-agent:
++The resulting cells are top-left, top-middle, top-right, bottom-left,
++bottom-middle, bottom-right. Start one agent in each existing cell, unless that
++cell already hosts the intended agent:
+ 
+ ```sh
+ rtk env HERDR_ENV=1 herdr agent start pixel-pi --kind pi --pane <top-left-pane-id>
+-rtk env HERDR_ENV=1 herdr agent start pixel-claude --kind claude --pane <top-right-pane-id>
+-rtk env HERDR_ENV=1 herdr agent start pixel-agy --kind agy --pane <bottom-left-pane-id>
+-rtk env HERDR_ENV=1 herdr agent start pixel-codex --kind codex --pane <bottom-right-pane-id>
++rtk env HERDR_ENV=1 herdr agent start pixel-claude --kind claude --pane <top-middle-pane-id>
++rtk env HERDR_ENV=1 herdr agent start pixel-agy --kind agy --pane <top-right-pane-id>
++rtk env HERDR_ENV=1 herdr agent start pixel-codex --kind codex --pane <bottom-left-pane-id>
++rtk env HERDR_ENV=1 herdr agent start pixel-opencode --kind opencode --pane <bottom-middle-pane-id>
++rtk env HERDR_ENV=1 herdr agent start pixel-devin --kind devin --pane <bottom-right-pane-id>
+ ```
+ 
+ Verify with `herdr pane layout` and `herdr pane list`; the main pane must remain
+-left, the four cells right, and all four intended agent kinds present. Do not
++left, the six cells right, and all six intended agent kinds present. Do not
+ close the main pane or create another tab merely to make the layout fit.
+ 
+ Start or address agents with Herdr's `agent` commands, for example:
+diff --git a/AGENTS.md b/AGENTS.md
+index a28bd1fb..3a03040e 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -68,7 +68,7 @@ and its supporting files; `.claude/skills` is a symlink to it.
+ | `docker-setup-smoke/` | replaying a new user's setup in Docker: install, personal settings kept, reinstall, first audit, doctor, uninstall | tests a release archive, install.sh, the Homebrew tap or compiled main/PR/commit sources in a disposable Linux container with pre-existing Claude/Codex/pi settings; `--agents` adds Claude Code, Codex and pi sessions against a scripted fake model; no real LLM, host configuration untouched, saved provenance, reports and exit status |
+ | `section-redesign/` | reworking a section of the pixel-cli.dev home, "/section-redesign #<anchor>", "même méthode que le hero" | the loop the hero went through: visitor critique, an artifact of mocked variants with votable points (`assets/review-sheet.html`), synthesis iterations, every claim checked against code and benchmarks, the Hugo implementation with desktop and mobile captures; lists the decisions that already bind every section |
+ | `improve-codebase-architecture/` | manual only: "/improve-codebase-architecture [area]", an architecture review, where to deepen modules | finds deepening opportunities from churn, `pixel audit`, areas and callers, writes a local HTML report of before/after cards with their measured cost (mutants, diff, `ARCHITECTURE.md` sections, impact risk), then grills the picked candidate into a project-3 task; settled decisions live in `ARCHITECTURE.md` and `.agents/rules/`; adapted from Matt Pocock's MIT skill (`UPSTREAM` pins the commit) |
+-| `agent-session-debugging/` | debugging real pi, agy, Claude, or Codex behavior in Herdr, especially Pixel retrieval, metrics, or installed hooks | keeps the main operator pane beside a 2×2 agent grid; inspect real transcripts, ask the CLI directly when its UI is ambiguous, then implement, retest, and redeploy with evidence |
++| `agent-session-debugging/` | debugging real pi, agy, Claude, Codex, OpenCode, or Devin behavior in Herdr, especially Pixel retrieval, metrics, or installed hooks | keeps the main operator pane beside a 3×2 agent grid; inspect real transcripts, ask the CLI directly when its UI is ambiguous, then implement, retest, and redeploy with evidence |
+ | `validation-loop/` | implementing Rust, preparing a PR, or reducing compile and mutation-fix round trips | chooses scoped local feedback, freezes one candidate, uses the remote mutation gate, and triages failed gates without blind push retries |
+ 
+ Rules are always-on for the files they name; a skill is read when its
+diff --git a/crates/pixel-install/assets/pi-pixel.ts b/crates/pixel-install/assets/pi-pixel.ts
+index 3f87c1f5..4d4a61ad 100644
+--- a/crates/pixel-install/assets/pi-pixel.ts
++++ b/crates/pixel-install/assets/pi-pixel.ts
+@@ -164,7 +164,7 @@ const searchRead = (args: string[]): boolean => readFlags(args, [
+ const pixelReadOrRecovery = (args: string[]): boolean => {
+   if (args[0] === "config") return args.length === 1 || args.length === 2 && ["policy", "metrics", "--help", "-h"].includes(args[1]);
+   if (["task", "task-state"].includes(args[0])) return ["begin", "contract", "prepare", "verify", "review", "finish", "route", "cancel", "recover", "status", "events", "replay", "--help", "-h"].includes(args[1]);
+-  return ["status", "doctor", "build-index", "scope-task", "find-code", "find-symbol", "search-content", "search-meaning", "impact", "pack-context", "what-changed", "review-changes", "repo-state", "list-areas", "list-flows", "who-calls", "capabilities", "--help", "--version"].includes(args[0]);
++  return ["status", "doctor", "build-index", "scope-task", "execution-brief", "find-code", "find-symbol", "search-content", "search-meaning", "impact", "pack-context", "what-changed", "review-changes", "repo-state", "list-areas", "list-flows", "who-calls", "capabilities", "--help", "--version"].includes(args[0]);
+ };
+ const sortRead = (args: string[]): boolean => readFlags(args, ["-r", "-n", "-u", "-f", "-b", "-d", "-g", "-h", "-M", "-V", "-s", "-z", "-c", "-C", "--reverse", "--numeric-sort", "--unique", "--ignore-case", "--stable", "--check", "--zero-terminated"], ["--key=", "--field-separator="]);
+ const uniqRead = (args: string[]): boolean => {
+@@ -309,6 +309,34 @@ function latestUserText(ctx: any) {
+     : "";
+ }
+ 
++function renderExecutionRoute(stdout: string): string | null {
++  try {
++    const brief = JSON.parse(stdout);
++    const route = brief?.route;
++    if (!route || typeof route.first_command !== "string" || !route.first_command.trim()
++      || !Array.isArray(route.steps) || route.steps.length < 3) return null;
++    const steps = route.steps.map((step: any) => {
++      const order = Number(step.order);
++      const action = typeof step.action === "string" ? step.action : "step";
++      const command = typeof step.command === "string" ? step.command : "";
++      const limit = Number(step.max_lines);
++      return `${order}. ${action}${Number.isFinite(limit) && limit > 0 ? ` (maximum ${limit} lines)` : ""}: ${command}`;
++    });
++    const retry = route.retry?.command
++      ? `\nRetry only if the first result is unresolved, capped, or irrelevant: ${route.retry.command}`
++      : "";
++    const fallback = route.fallback?.command
++      ? `\nAfter two nonconverging Pixel calls, use: ${route.fallback.command}`
++      : "";
++    const unavailable = typeof route.on_unavailable === "string"
++      ? `\nIf Pixel is unavailable: ${route.on_unavailable}`
++      : "";
++    return `DETERMINISTIC PIXEL ROUTE (index is a lower bound):\n${steps.join("\n")}${retry}${fallback}${unavailable}`;
++  } catch {
++    return null;
++  }
++}
++
+ function authorized(action: Action, ctx: any) {
+   if (action !== "commit" && action !== "commit_and_push") return true;
+   const text = latestUserText(ctx).toLowerCase().trim();
+@@ -512,8 +540,12 @@ function isBoundedSedRead(root: string, args: string[]): boolean {
+   return readableRepoFile(root, path);
+ }
+ 
+-const REPO_READ_REASON = "repository read: use pixel search-content or pixel pack-context <uid>";
+-const REPO_SEARCH_REASON = "repository search: use pixel search-content";
++// Blocked-read guidance names alternatives that are real actions at that
++// moment: search-content takes a known identifier, find-code takes behavior
++// wording; pack-context needs a uid, which only exists once an earlier pixel
++// result surfaced one, so it is conditional, never the only suggestion.
++const REPO_READ_REASON = "repository read: use pixel search-content for a known identifier, pixel find-code for behavior, or pixel pack-context only when a valid uid is available";
++const REPO_SEARCH_REASON = "repository search: use pixel search-content for a known identifier or pixel find-code for behavior";
+ const LS_REASON = "repository discovery: use pixel list-areas or find-code";
+ const FIND_REASON = "repository discovery: use pixel find-code or list-areas";
+ const CREDENTIAL_REASON = "credential path";
+@@ -962,21 +994,24 @@ export default function activate(pi: ExtensionAPI) {
+       // context calls and never fails the bootstrap. Both are quiet probes
+       // (`runAsync` passes `--metrics off`), like main's other bootstrap reads.
+       const intent = classifyIntent(root, prompt);
++      const routeAvailable = capabilities().commands.has("execution-brief");
++      const contextOperation = routeAvailable ? "execution-brief" : "scope-task";
+       const [scope, repo] = (await Promise.all([
+-        runAsync(root, ["scope-task", prompt, "--json", "--no-manifest", "--max-tier", "P1", "--limit", "15"]),
++        runAsync(root, [contextOperation, prompt, "--json", "--no-manifest", "--max-tier", "P1", "--limit", "15"]),
+         runAsync(root, ["repo-state", "--json"]),
+       ])).map((text) => text.trim());
+       const intentText = await intent;
+       for (const text of [scope, repo]) rememberPaths(parseEvidence(text), resolvedPaths, root);
++      const routeText = routeAvailable ? renderExecutionRoute(scope) : null;
+       state.pixelHealthy = true;
+-      audit(root, "bootstrap", "scope-task and repo-state injected", { graph_present: index.graph?.present });
++      audit(root, "bootstrap", `${contextOperation} and repo-state injected`, { graph_present: index.graph?.present, route_available: Boolean(routeText) });
+       const guidance = policyFor(root) === "enforce"
+         ? "Enforcement is enabled for supported native retrieval. Call the pixel tool before editing; compositions and unsupported syntax retain native behavior."
+         : "Use these targets as suggestions. Native tools remain available; `pixel config policy enforce` opts into retrieval enforcement, `pixel config policy off` disables policy checks.";
+       return {
+         message: {
+           customType: "pixel-bootstrap", display: false,
+-          content: `PIXEL TASK CONTEXT (deterministic, from pixel scope-task + repo-state):\n\n${scope.slice(0, BOOTSTRAP_BUDGET)}${scope.length > BOOTSTRAP_BUDGET ? "\n…(truncated)" : ""}\n\n${repo.slice(0, 800)}${repo.length > 800 ? "\n…(truncated)" : ""}\n\n${guidance}${intentText ? `\n\n${intentText}` : ""}`,
++          content: `PIXEL TASK CONTEXT (deterministic, from pixel ${contextOperation} + repo-state):\n\n${routeText ?? "Pixel execution route unavailable; use the retrieval commands below and continue if Pixel cannot help."}\n\n${scope.slice(0, BOOTSTRAP_BUDGET)}${scope.length > BOOTSTRAP_BUDGET ? "\n…(truncated)" : ""}\n\n${repo.slice(0, 800)}${repo.length > 800 ? "\n…(truncated)" : ""}\n\n${guidance}${intentText ? `\n\n${intentText}` : ""}`,
+         },
+       };
+     } catch (error) {
+diff --git a/crates/pixel-install/assets/pixel-agent-prompt.md b/crates/pixel-install/assets/pixel-agent-prompt.md
+index 9b592647..fba9f3f5 100644
+--- a/crates/pixel-install/assets/pixel-agent-prompt.md
++++ b/crates/pixel-install/assets/pixel-agent-prompt.md
+@@ -1,4 +1,4 @@
+-# Pixel — deterministic repository facts
++# Pixel — deterministic task routes and repository evidence
+ 
+ When a `[PIXEL:TASK_CONTEXT]` packet is present, treat it as a bounded set of
+ indexed facts and candidate entry points—not an action recommendation, an
+@@ -8,9 +8,14 @@ sources needed to complete the task; a missing candidate does not mean the
+ relevant code is absent. Pixel retrieval is non-blocking: if it or its index is
+ unavailable, continue normally.
+ 
+-Use the deterministic retrieval commands below when a specific information
+-gap remains. Their results are evidence for the harness/model to interpret;
+-Pixel does not choose the next action.
++For each repository task, follow one deterministic route. If a
++`[PIXEL:EXECUTION_ROUTE]` packet is present, execute its `first_command` and
++ordered steps. If absent, run `rtk pixel execution-brief '<task>' --json`
++before repository search or reads, then execute its `first_command` exactly.
++After a `path:line` result, read at most 40 lines around that location. Retry
++only as directed; after two nonconverging Pixel calls, use the stated native
++fallback. Use the route's smallest validation step after edits. Pixel is
++non-blocking: if unavailable, continue normally with native tools.
+ 
+ # Pixel — deterministic repository facts
+ 
+@@ -22,14 +27,20 @@ sources needed to complete the task; a missing candidate does not mean the
+ relevant code is absent. Pixel retrieval is non-blocking: if it or its index is
+ unavailable, continue normally.
+ 
+-Use the deterministic retrieval commands below when a specific information
+-gap remains. Their results are evidence for the harness/model to interpret;
+-Pixel does not choose the next action.
++For each repository task, follow one deterministic route. If a
++`[PIXEL:EXECUTION_ROUTE]` packet is present, execute its `first_command` and
++ordered steps. If absent, run `rtk pixel execution-brief '<task>' --json`
++before repository search or reads, then execute its `first_command` exactly.
++After a `path:line` result, read at most 40 lines around that location. Retry
++only as directed; after two nonconverging Pixel calls, use the stated native
++fallback. Use the route's smallest validation step after edits. Pixel is
++non-blocking: if unavailable, continue normally with native tools.
+ 
+ ## Retrieval commands
+ 
+ | Question shape | Command |
+ | --- | --- |
++| one ordered route from task to retrieval, bounded read, fallback, validation | `rtk pixel execution-brief '<task>' --json` |
+ | exact identifier, every occurrence | `pixel search-content -F '<id>'` (grep-like flags work: `-g glob`, `-t rust`, `-i`; `-l` for paths only) |
+ | code by behavior, no name known | `pixel find-code '<concept>'` |
+ | callers + callees of a symbol | `pixel impact '<symbol>'` — worth a look before renames and edits |
+diff --git a/crates/pixel-install/src/opencode_config.rs b/crates/pixel-install/src/opencode_config.rs
+index f749be14..98d27b1c 100644
+--- a/crates/pixel-install/src/opencode_config.rs
++++ b/crates/pixel-install/src/opencode_config.rs
+@@ -49,6 +49,34 @@ const PROMPT_PATH_TAIL: &str = ".local/share/pixel/agent-prompt.md";
+ /// failure.
+ const PIXEL_PLUGIN_FILE: &str = "pixel.mjs";
+ 
++/// The OpenCode V2 plugin `pixel install` deploys globally. Auto-loaded from
++/// `~/.config/opencode/plugins/` (OpenCode discovers direct `.ts` and `.js`
++/// files there without a `plugins` config entry), so install writes only this
++/// file — no `opencode.json` edit, no double-load. See
++/// <https://opencode.ai/v2/docs/plugins>.
++pub(crate) const OPENCODE_PIXEL_PLUGIN_ASSET: &str = include_str!("../assets/opencode-pixel.js");
++
++/// File name of the deployed plugin, relative to `<config_dir>/plugins/`.
++/// `.js` is one of the two documented auto-discovered direct-file extensions
++/// (`.ts` and `.js`); `.mjs` is not listed by the V2 docs.
++const OPENCODE_PIXEL_PLUGIN_FILE: &str = "opencode-pixel.js";
++
++/// Marker the deployed plugin carries on its first line, so install can tell
++/// its own file from a user's same-named plugin and refuse to clobber the
++/// latter (the AGENTS.md managed-block trick does not apply to a file that is
++/// wholly pixel's).
++const OPENCODE_PIXEL_PLUGIN_MARKER: &str = "pixel-managed: opencode-pixel.js";
++
++/// The auto-discovered plugins directory under the OpenCode config directory.
++fn plugins_dir(config_dir: &Path) -> PathBuf {
++    config_dir.join("plugins")
++}
++
++/// Where the deployed plugin lives.
++fn plugin_path(config_dir: &Path) -> PathBuf {
++    plugins_dir(config_dir).join(OPENCODE_PIXEL_PLUGIN_FILE)
++}
++
+ /// The OpenCode config directory: `$XDG_CONFIG_HOME/opencode` on a real
+ /// install (the variable OpenCode itself honours), `<home>/.config/opencode`
+ /// for tests and explicit `--home` overrides.
+@@ -116,10 +144,129 @@ fn is_stale_pixel_plugin(entry: &str, config_dir: &Path, home: &Path) -> bool {
+     !path.exists()
+ }
+ 
++/// True when a `plugin`/`plugins` entry names `opencode-pixel.js` and
++/// resolves to the path install deploys to. The deployed plugin is
++/// auto-discovered, so an explicit `plugins` entry pointing at it would
++/// double-load it; sweep those entries out. An `opencode-pixel.js` entry
++/// pointing elsewhere is the user's own and is left alone.
++fn is_duplicate_pixel_plugin(entry: &str, config_dir: &Path) -> bool {
++    let entry = entry.trim();
++    if entry.rsplit('/').next() != Some(OPENCODE_PIXEL_PLUGIN_FILE) {
++        return false;
++    }
++    // Ours lives under the config directory, never under `~`.
++    if entry.starts_with('~') {
++        return false;
++    }
++    let p = Path::new(entry);
++    let resolved = if p.is_absolute() {
++        p.to_path_buf()
++    } else {
++        config_dir.join(p)
++    };
++    normalize(&resolved) == normalize(&plugin_path(config_dir))
++}
++
++/// Lexical path normalization (drop `.` and resolve `..`) so `./plugins/x`
++/// compares equal to `<config_dir>/plugins/x`. `..` past the root is clamped.
++fn normalize(path: &Path) -> PathBuf {
++    let mut out = PathBuf::new();
++    for component in path.components() {
++        match component {
++            std::path::Component::CurDir => {}
++            std::path::Component::ParentDir => {
++                out.pop();
++            }
++            other => out.push(other.as_os_str()),
++        }
++    }
++    out
++}
++
++/// Outcome of deploying the OpenCode plugin. The file is wholly pixel's, so
++/// (unlike the AGENTS.md managed block) there is no "preserve surrounding
++/// text" path: an existing file that is not ours is left untouched and the
++/// step reports the skip rather than clobbering a user's plugin.
++struct PluginDeploy {
++    /// A write happened (non-dry-run, file was missing or was ours but stale).
++    written: bool,
++    /// The file already held exactly the current asset.
++    current: bool,
++    /// Deployment was skipped because the path is user-owned or unreadable.
++    skipped: Option<String>,
++}
++
++impl PluginDeploy {
++    fn would_change(&self) -> bool {
++        // A current file is not a change; a skipped file is not a change.
++        !self.current && self.skipped.is_none()
++    }
++
++    /// "deployed" | "verified" | "skipped: <reason>".
++    fn word(&self) -> String {
++        if self.skipped.is_some() {
++            format!("skipped: {}", self.skipped.as_deref().unwrap_or_default())
++        } else if self.written {
++            "deployed".to_string()
++        } else {
++            "verified".to_string()
++        }
++    }
++}
++
++/// Plan and (when not `dry_run`) perform the plugin deploy. Reads the existing
++/// file to decide whether to write, refuse, or skip:
++/// - missing → write the asset;
++/// - equals the asset → already current, no write;
++/// - carries our marker but differs → ours but stale, overwrite;
++/// - present without the marker → user-owned, skip (do not clobber);
++/// - unreadable for a reason other than NotFound → skip (do not clobber a
++///   file we cannot read).
++///
++/// The plugins directory is created on demand only when a write happens.
++fn deploy_plugin(config_dir: &Path, dry_run: bool) -> Result<PluginDeploy> {
++    let path = plugin_path(config_dir);
++    let existing = match fs::read_to_string(&path) {
++        Ok(content) => Some(content),
++        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
++        Err(e) => {
++            return Ok(PluginDeploy {
++                written: false,
++                current: false,
++                skipped: Some(format!("{} unreadable ({e})", path.display())),
++            });
++        }
++    };
++    if let Some(content) = &existing {
++        if content == OPENCODE_PIXEL_PLUGIN_ASSET {
++            return Ok(PluginDeploy { written: false, current: true, skipped: None });
++        }
++        if !content.contains(OPENCODE_PIXEL_PLUGIN_MARKER) {
++            return Ok(PluginDeploy {
++                written: false,
++                current: false,
++                skipped: Some(format!(
++                    "user-owned {} present; not overwritten",
++                    path.display()
++                )),
++            });
++        }
++        // Ours but stale: fall through to overwrite.
++    }
++    if dry_run {
++        return Ok(PluginDeploy { written: false, current: false, skipped: None });
++    }
++    fs::create_dir_all(plugins_dir(config_dir))?;
++    install::write_atomically(&path, OPENCODE_PIXEL_PLUGIN_ASSET)?;
++    Ok(PluginDeploy { written: true, current: false, skipped: None })
++}
++
+ /// `pixel install` step: put the bundled prompt inside the managed markers
+ /// of `AGENTS.md`, seeding a new file with `~/.claude/CLAUDE.md` when one
+-/// exists so a v1 install shadows nothing, then sweep stale pixel entries
+-/// out of `opencode.json`.
++/// exists so a v1 install shadows nothing; deploy the OpenCode V2 plugin to
++/// `<config_dir>/plugins/opencode-pixel.js` (auto-discovered, no config
++/// entry needed); then sweep stale pixel entries and duplicate
++/// `opencode-pixel.js` entries out of `opencode.json`.
+ pub(crate) fn install_opencode(
+     config_dir: &Path,
+     home: &Path,
+@@ -127,10 +274,12 @@ pub(crate) fn install_opencode(
+ ) -> Result<InstallStep> {
+     let agents = agents_md_path(config_dir);
+     let json = config_path(config_dir);
++    let plugin = plugin_path(config_dir);
+     let detail = Some(format!(
+-        "agents={} config={}",
++        "agents={} config={} plugin={}",
+         agents.display(),
+-        json.display()
++        json.display(),
++        plugin.display()
+     ));
+     let step = |status, summary: String| InstallStep {
+         id: "opencode-agents-md".into(),
+@@ -158,29 +307,66 @@ pub(crate) fn install_opencode(
+         },
+     };
+     let wanted = config::apply_managed_markers(&seeded, install::AGENT_PROMPT_ASSET);
+-    if existing.as_deref() == Some(wanted.as_str()) {
+-        // Fall through to the sweep even when the block is already current.
+-    } else if dry_run {
++    let block_current = existing.as_deref() == Some(wanted.as_str());
++
++    // The sweeps (read-only in dry_run; sweep_config checks dry_run before
++    // writing).
++    let (removed_instructions, removed_plugins, sweep_note) = sweep_config(&json, home, dry_run);
++
++    if dry_run {
++        // The plugin deploy plan is read-only here (dry_run=true never writes);
++        // the actual write happens only in the non-dry-run branch below.
++        let plugin_plan = deploy_plugin(config_dir, true)?;
++        let mut parts: Vec<String> = Vec::new();
++        if !block_current {
++            parts.push("update AGENTS.md managed block".to_string());
++        }
++        if plugin_plan.would_change() {
++            parts.push(format!("deploy opencode-pixel.js plugin to {}", plugin.display()));
++        }
++        if let Some(reason) = &plugin_plan.skipped {
++            parts.push(format!("plugin skipped: {reason}"));
++        }
++        if removed_instructions + removed_plugins > 0 {
++            parts.push(format!(
++                "sweep {removed_instructions} instruction + {removed_plugins} plugin entr{}",
++                if removed_instructions + removed_plugins == 1 { "y" } else { "ies" }
++            ));
++        }
++        if let Some(note) = &sweep_note {
++            parts.push(note.clone());
++        }
++        let summary = if parts.is_empty() {
++            "no changes".to_string()
++        } else {
++            parts.join("; ")
++        };
+         return Ok(step(
+             CheckStatus::Green,
+-            install::dry_run_summary(true, "would update AGENTS.md managed block"),
++            install::dry_run_summary(true, &summary),
+         ));
+-    } else {
++    }
++
++    // Write the block when it differs.
++    if !block_current {
+         fs::create_dir_all(config_dir)?;
+         install::write_atomically(&agents, &wanted)?;
+     }
++    // Deploy the plugin (writes only when needed; deploy_plugin already
++    // decided and created the plugins directory).
++    let plugin_deploy = deploy_plugin(config_dir, false)?;
+ 
+-    // The sweeps -----------------------------------------------------------
+-    let (removed_instructions, removed_plugins, sweep_note) = sweep_config(&json, home, dry_run);
++    // Build the summary.
+     let mut summary = format!(
+         "{} pixel block in {}",
+-        if wanted == seeded {
+-            "verified"
+-        } else {
+-            "installed"
+-        },
++        if block_current { "verified" } else { "installed" },
+         agents.display()
+     );
++    summary.push_str(&format!(
++        "; {} opencode-pixel.js plugin in {}",
++        plugin_deploy.word(),
++        plugin.display()
++    ));
+     if removed_instructions + removed_plugins > 0 {
+         summary.push_str(&format!(
+             "; swept {removed_instructions} instruction + {removed_plugins} plugin entr{}",
+@@ -241,8 +427,10 @@ fn sweep_config(path: &Path, home: &Path, dry_run: bool) -> (usize, usize, Optio
+         if let Some(slot) = object.get_mut(key).and_then(Value::as_array_mut) {
+             let before = slot.len();
+             slot.retain(|v| {
+-                !v.as_str()
+-                    .is_some_and(|s| is_stale_pixel_plugin(s, config_dir, home))
++                !v.as_str().is_some_and(|s| {
++                    is_stale_pixel_plugin(s, config_dir, home)
++                        || is_duplicate_pixel_plugin(s, config_dir)
++                })
+             });
+             removed_plugins += before - slot.len();
+         }
+@@ -261,19 +449,20 @@ fn sweep_config(path: &Path, home: &Path, dry_run: bool) -> (usize, usize, Optio
+ }
+ 
+ /// `pixel uninstall` step: take the managed block out of `AGENTS.md` (the
+-/// file goes when nothing else was in it), and drop the earlier mechanism's
+-/// `instructions` entries.
++/// file goes when nothing else was in it), delete the deployed plugin when
++/// it is ours, and drop the earlier mechanism's `instructions` entries.
+ pub(crate) fn remove_opencode(
+     config_dir: &Path,
+     home: &Path,
+     dry_run: bool,
+ ) -> Result<InstallStep> {
+     let agents = agents_md_path(config_dir);
++    let plugin = plugin_path(config_dir);
+     let step = |status, summary: String| InstallStep {
+         id: "opencode-agents-md".into(),
+         status,
+         summary,
+-        detail: Some(format!("agents={}", agents.display())),
++        detail: Some(format!("agents={} plugin={}", agents.display(), plugin.display())),
+     };
+     let mut removed = Vec::new();
+     if agents.is_file() {
+@@ -295,6 +484,18 @@ pub(crate) fn remove_opencode(
+             }
+         }
+     }
++    // Remove the deployed plugin only when it is ours: a file without the
++    // managed marker belongs to the user and survives uninstall.
++    if plugin.is_file() {
++        let ours = fs::read_to_string(&plugin)
++            .is_ok_and(|content| content.contains(OPENCODE_PIXEL_PLUGIN_MARKER));
++        if ours {
++            if !dry_run {
++                fs::remove_file(&plugin)?;
++            }
++            removed.push(format!("plugin {}", plugin.display()));
++        }
++    }
+     let (swept, plugins, _) = sweep_config(&config_path(config_dir), home, dry_run);
+     if swept + plugins > 0 {
+         removed.push(format!("{swept} instruction + {plugins} plugin entries"));
+@@ -307,30 +508,69 @@ pub(crate) fn remove_opencode(
+     Ok(step(CheckStatus::Green, summary))
+ }
+ 
+-/// `pixel doctor` check: `AGENTS.md` carries the current managed block.
+-/// Green-skips when OpenCode has no config directory — the install step is
+-/// gated the same way.
++/// `pixel doctor` check: `AGENTS.md` carries the current managed block and
++/// the deployed plugin matches the bundled asset. Green-skips when OpenCode
++/// has no config directory — the install step is gated the same way.
+ pub(crate) fn check_opencode(config_dir: &Path) -> std::result::Result<(String, Value), String> {
+     let agents = agents_md_path(config_dir);
+-    let detail = serde_json::json!({ "path": agents.display().to_string() });
++    let plugin = plugin_path(config_dir);
++    let detail = serde_json::json!({
++        "path": agents.display().to_string(),
++        "plugin": plugin.display().to_string(),
++    });
+     if !config_dir.is_dir() {
+         return Ok((
+             "OpenCode config directory not present — skipping".into(),
+             detail,
+         ));
+     }
+-    let content = fs::read_to_string(&agents)
+-        .map_err(|_| format!("no {} — run `pixel install`", agents.display()))?;
+-    if content != config::apply_managed_markers(&content, install::AGENT_PROMPT_ASSET) {
+-        return Err(format!(
+-            "{} is stale — run `pixel install` to update",
+-            agents.display()
+-        ));
++    let mut problems: Vec<String> = Vec::new();
++
++    // AGENTS.md managed block.
++    let agents_bytes = match fs::read_to_string(&agents) {
++        Ok(content) if content == config::apply_managed_markers(&content, install::AGENT_PROMPT_ASSET) => {
++            Some(content.len())
++        }
++        Ok(_) => {
++            problems.push(format!(
++                "{} is stale — run `pixel install` to update",
++                agents.display()
++            ));
++            None
++        }
++        Err(_) => {
++            problems.push(format!("no {} — run `pixel install`", agents.display()));
++            None
++        }
++    };
++
++    // Deployed plugin.
++    match fs::read_to_string(&plugin) {
++        Ok(content) if content == OPENCODE_PIXEL_PLUGIN_ASSET => {}
++        Ok(content) if content.contains(OPENCODE_PIXEL_PLUGIN_MARKER) => {
++            problems.push(format!(
++                "{} is stale — run `pixel install` to update",
++                plugin.display()
++            ));
++        }
++        Ok(_) => {
++            problems.push(format!(
++                "{} exists but is not managed by pixel (user-owned); remove or rename it, then `pixel install`",
++                plugin.display()
++            ));
++        }
++        Err(_) => {
++            problems.push(format!("no {} — run `pixel install`", plugin.display()));
++        }
++    }
++
++    if !problems.is_empty() {
++        return Err(problems.join("; "));
+     }
+     Ok((
+         format!(
+-            "AGENTS.md carries the agent prompt ({} bytes)",
+-            content.len()
++            "AGENTS.md carries the agent prompt ({} bytes); opencode-pixel.js plugin current",
++            agents_bytes.unwrap_or(0)
+         ),
+         detail,
+     ))
+@@ -739,4 +979,233 @@ mod tests {
+         fs::write(&agents, content.replace("pixel", "stale")).unwrap();
+         assert!(check_opencode(&dir).is_err());
+     }
++
++    /// The deployed plugin uses the documented `.js` auto-discovered
++    /// extension (V2 docs list `.ts` and `.js`, not `.mjs`), lives under
++    /// `<config_dir>/plugins/`, and matches the bundled asset byte-for-byte.
++    #[test]
++    fn install_deploys_the_discoverable_plugin_file() {
++        let home = scratch("plugin-deploy");
++        let dir = config_dir(&home);
++        fs::create_dir_all(&dir).unwrap();
++        let step = install_opencode(&dir, &home, false).unwrap();
++        let plugin = dir.join("plugins").join("opencode-pixel.js");
++        assert!(
++            plugin.is_file(),
++            "plugin deployed at the documented .js path: {}",
++            plugin.display()
++        );
++        assert_eq!(
++            fs::read_to_string(&plugin).unwrap(),
++            OPENCODE_PIXEL_PLUGIN_ASSET,
++            "deployed plugin matches the bundled asset byte-for-byte"
++        );
++        assert!(
++            step.summary.contains("deployed opencode-pixel.js plugin"),
++            "summary names the deploy: {}",
++            step.summary
++        );
++        // No `.mjs` sibling was written.
++        assert!(!dir.join("plugins").join("opencode-pixel.mjs").exists());
++        // Doctor is green: both the block and the plugin are current.
++        let (summary, _) = check_opencode(&dir).unwrap();
++        assert!(summary.contains("plugin current"), "{summary}");
++    }
++
++    /// A re-install verifies (does not rewrite) an already-current plugin.
++    #[test]
++    fn reinstall_verifies_an_current_plugin() {
++        let home = scratch("plugin-reverify");
++        let dir = config_dir(&home);
++        fs::create_dir_all(&dir).unwrap();
++        install_opencode(&dir, &home, false).unwrap();
++        let plugin = dir.join("plugins").join("opencode-pixel.js");
++        let before = fs::read_to_string(&plugin).unwrap();
++        let mtime_before = fs::metadata(&plugin).unwrap().modified().unwrap();
++        // Spin to let an mtime change be observable if a rewrite happened.
++        std::thread::sleep(std::time::Duration::from_millis(20));
++        let step = install_opencode(&dir, &home, false).unwrap();
++        assert!(
++            step.summary.contains("verified opencode-pixel.js plugin"),
++            "re-install verifies: {}",
++            step.summary
++        );
++        assert_eq!(fs::read_to_string(&plugin).unwrap(), before);
++        assert_eq!(
++            fs::metadata(&plugin).unwrap().modified().unwrap(),
++            mtime_before,
++            "an already-current plugin is not rewritten"
++        );
++    }
++
++    /// An existing `opencode-pixel.js` that is ours but stale is overwritten
++    /// in place; one without the managed marker is the user's and is skipped.
++    #[test]
++    fn install_overwrites_a_stale_ours_but_skips_a_user_owned_plugin() {
++        let home = scratch("plugin-skip");
++        let dir = config_dir(&home);
++        fs::create_dir_all(dir.join("plugins")).unwrap();
++        let plugin = dir.join("plugins").join("opencode-pixel.js");
++
++        // User-owned (no marker): install must not clobber it.
++        fs::write(&plugin, "// my plugin, hands off\nexport default {};\n").unwrap();
++        let step = install_opencode(&dir, &home, false).unwrap();
++        assert!(
++            step.summary.contains("skipped") && step.summary.contains("user-owned"),
++            "user-owned plugin is skipped, not clobbered: {}",
++            step.summary
++        );
++        assert_eq!(
++            fs::read_to_string(&plugin).unwrap(),
++            "// my plugin, hands off\nexport default {};\n",
++            "user content is preserved verbatim"
++        );
++        // Doctor reports the user-owned file as a problem (not managed).
++        let err = check_opencode(&dir).unwrap_err();
++        assert!(err.contains("not managed by pixel"), "{err}");
++
++        // Ours but stale (marker present, content differs): overwritten.
++        fs::write(
++            &plugin,
++            format!(
++                "// pixel-managed: opencode-pixel.js\n// stale body\nexport default {{}};\n"
++            ),
++        )
++        .unwrap();
++        let step = install_opencode(&dir, &home, false).unwrap();
++        assert!(
++            step.summary.contains("deployed opencode-pixel.js plugin"),
++            "stale-but-ours plugin is redeployed: {}",
++            step.summary
++        );
++        assert_eq!(fs::read_to_string(&plugin).unwrap(), OPENCODE_PIXEL_PLUGIN_ASSET);
++    }
++
++    /// The config sweep removes a duplicate `opencode-pixel.js` entry (the
++    /// file is auto-discovered, so an explicit entry would double-load it)
++    /// and a stale `pixel.mjs` entry, while preserving every unrelated plugin
++    /// entry the user configured.
++    #[test]
++    fn sweep_preserves_unrelated_plugin_entries_and_drops_ours() {
++        let home = scratch("plugin-sweep-foreign");
++        let dir = config_dir(&home);
++        fs::create_dir_all(&dir).unwrap();
++        // A real foreign plugin on disk, plus a stale one and our duplicate.
++        let foreign = dir.join("foreign.js");
++        fs::write(&foreign, "// foreign\nexport default {};\n").unwrap();
++        fs::write(
++            dir.join(OPENCODE_CONFIG_FILE),
++            serde_json::to_string_pretty(&serde_json::json!({
++                "plugins": [
++                    "./foreign.js",
++                    "./plugins/opencode-pixel.js",
++                    "~/missing/pixel.mjs"
++                ]
++            }))
++            .unwrap(),
++        )
++        .unwrap();
++        let step = install_opencode(&dir, &home, false).unwrap();
++        assert!(
++            step.summary.contains("swept 0 instruction + 2 plugin entries"),
++            "duplicate ours + stale pixel.mjs swept (foreign kept): {}",
++            step.summary
++        );
++        let config: Value =
++            serde_json::from_str(&fs::read_to_string(dir.join(OPENCODE_CONFIG_FILE)).unwrap())
++                .unwrap();
++        assert_eq!(config["plugins"], serde_json::json!(["./foreign.js"]));
++        assert_eq!(
++            fs::read_to_string(&foreign).unwrap(),
++            "// foreign\nexport default {};\n",
++            "foreign plugin file untouched"
++        );
++    }
++
++    /// Uninstall removes our deployed plugin (only when it is ours) and
++    /// leaves a foreign plugin entry and file intact.
++    #[test]
++    fn uninstall_removes_our_plugin_and_preserves_foreign_entries() {
++        let home = scratch("plugin-uninstall");
++        let dir = config_dir(&home);
++        fs::create_dir_all(&dir).unwrap();
++        let foreign = dir.join("foreign.js");
++        fs::write(&foreign, "// foreign\nexport default {};\n").unwrap();
++        fs::write(
++            dir.join(OPENCODE_CONFIG_FILE),
++            serde_json::to_string_pretty(&serde_json::json!({
++                "plugins": ["./foreign.js", "./plugins/opencode-pixel.js"]
++            }))
++            .unwrap(),
++        )
++        .unwrap();
++        install_opencode(&dir, &home, false).unwrap();
++        let plugin = dir.join("plugins").join("opencode-pixel.js");
++        assert!(plugin.is_file());
++        // The duplicate entry was swept at install, foreign kept.
++        let config: Value =
++            serde_json::from_str(&fs::read_to_string(dir.join(OPENCODE_CONFIG_FILE)).unwrap())
++                .unwrap();
++        assert_eq!(config["plugins"], serde_json::json!(["./foreign.js"]));
++
++        let step = remove_opencode(&dir, &home, false).unwrap();
++        assert!(
++            step.summary.contains("plugin") && step.summary.contains(&plugin.display().to_string()),
++            "uninstall names the removed plugin: {}",
++            step.summary
++        );
++        assert!(!plugin.exists(), "our plugin file removed");
++        assert!(
++            foreign.is_file(),
++            "foreign plugin file survives uninstall"
++        );
++        assert_eq!(
++            fs::read_to_string(&foreign).unwrap(),
++            "// foreign\nexport default {};\n"
++        );
++        // The foreign config entry survives: uninstall's sweep only drops
++        // stale pixel.mjs and our duplicate opencode-pixel.js entries.
++        let config: Value =
++            serde_json::from_str(&fs::read_to_string(dir.join(OPENCODE_CONFIG_FILE)).unwrap())
++                .unwrap();
++        assert_eq!(config["plugins"], serde_json::json!(["./foreign.js"]));
++    }
++
++    /// Uninstall does not remove a same-named plugin the user owns.
++    #[test]
++    fn uninstall_preserves_a_user_owned_same_named_plugin() {
++        let home = scratch("plugin-uninstall-user");
++        let dir = config_dir(&home);
++        fs::create_dir_all(dir.join("plugins")).unwrap();
++        let plugin = dir.join("plugins").join("opencode-pixel.js");
++        fs::write(&plugin, "// my plugin\nexport default {};\n").unwrap();
++        let step = remove_opencode(&dir, &home, false).unwrap();
++        assert!(
++            !step.summary.contains(&plugin.display().to_string()),
++            "a user-owned plugin is not named as removed: {}",
++            step.summary
++        );
++        assert!(plugin.is_file(), "user-owned plugin file preserved");
++        assert_eq!(
++            fs::read_to_string(&plugin).unwrap(),
++            "// my plugin\nexport default {};\n"
++        );
++    }
++
++    /// Dry-run reports the plugin deploy without writing the file.
++    #[test]
++    fn dry_run_reports_the_plugin_deploy_without_writing() {
++        let home = scratch("plugin-dry-run");
++        let dir = config_dir(&home);
++        fs::create_dir_all(&dir).unwrap();
++        let step = install_opencode(&dir, &home, true).unwrap();
++        assert!(step.summary.contains("dry-run"), "{}", step.summary);
++        assert!(
++            step.summary.contains("deploy opencode-pixel.js plugin"),
++            "dry-run names the would-be deploy: {}",
++            step.summary
++        );
++        assert!(!dir.join("plugins").join("opencode-pixel.js").exists());
++        assert!(!dir.join(AGENTS_MD_FILE).exists());
++    }
+ }
+diff --git a/crates/pixel-install/src/routing.rs b/crates/pixel-install/src/routing.rs
+index 4cd41a9d..3301ce69 100644
+--- a/crates/pixel-install/src/routing.rs
++++ b/crates/pixel-install/src/routing.rs
+@@ -58,20 +58,23 @@ impl Provider {
+         if self == Self::Devin { "exec" } else { "Bash" }
+     }
+ 
+-    /// Claude Code's `Read` and `Grep` tools cannot be transparently rewired
+-    /// into a Bash call: the hook contract cannot change a tool type, so the
+-    /// Claude arm emits an advisory through `non_shell_advisory` instead.
+-    /// `Glob` is deliberately omitted — its docs in `guard.rs` explain that
+-    /// path enumeration alone is not a problem worth blocking; the actual
+-    /// `Read`/`Edit` of any result is itself guarded. Codex and Devin
+-    /// already widen the matcher for their own tool-name conventions.
++    /// Claude Code's native `Read`, `Grep` and `Glob` tools cannot be
++    /// transparently rewired into a Bash call: the hook contract cannot change
++    /// a tool type, so the Claude arm reaches the guard so that
++    /// `policy_response` can enforce them under the enforce policy
++    /// (`enforce_reason` treats `Read`/`Grep`/`Glob` as repository retrieval).
++    /// `Glob` rides the same matcher as `Read`/`Grep`: enumeration of an
++    /// indexed in-repo target is repository discovery once it reaches the
++    /// guard, and stays admissible for external and unindexed targets. Codex
++    /// and Devin already widen the matcher for their own tool-name
++    /// conventions.
+     fn shell_matcher(self) -> &'static str {
+         match self {
+             Self::Codex => "Bash|shell|unified_exec|local_shell",
+             // Devin's native read/search tools bypass exec rewrites and must
+             // reach the guard so it can return its documented block response.
+             Self::Devin => "exec|read|grep|glob|find_file_by_name",
+-            Self::Claude => "Bash|Read|Grep",
++            Self::Claude => "Bash|Read|Grep|Glob",
+         }
+     }
+ 
+@@ -2403,7 +2406,7 @@ mod tests {
+         assert!(enabled);
+         assert_eq!(adopted.len(), 1);
+         assert_eq!(value["hooks"]["PreToolUse"][0], vibe);
+-        assert_eq!(value["hooks"]["PreToolUse"][1]["matcher"], "Bash|Read|Grep");
++        assert_eq!(value["hooks"]["PreToolUse"][1]["matcher"], "Bash|Read|Grep|Glob");
+         assert!(
+             value["hooks"]["PreToolUse"][1]["hooks"][0]["command"]
+                 .as_str()
+@@ -2424,7 +2427,7 @@ mod tests {
+         assert!(enabled);
+         assert!(adopted.is_empty());
+         assert_eq!(value["hooks"]["PreToolUse"][0], gitnexus);
+-        assert_eq!(value["hooks"]["PreToolUse"][1]["matcher"], "Bash|Read|Grep");
++        assert_eq!(value["hooks"]["PreToolUse"][1]["matcher"], "Bash|Read|Grep|Glob");
+     }
+ 
+     #[test]
+diff --git a/crates/pixel-install/tests/install_tests.rs b/crates/pixel-install/tests/install_tests.rs
+index 5b0b132e..5fa223ae 100644
+--- a/crates/pixel-install/tests/install_tests.rs
++++ b/crates/pixel-install/tests/install_tests.rs
+@@ -3754,7 +3754,7 @@ fn repo_install_writes_all_five_artifacts() {
+     let pre = claude_hooks["PreToolUse"].as_array().unwrap();
+     assert!(
+         pre.iter().any(|g| {
+-            g["matcher"].as_str() == Some("Bash|Read|Grep")
++            g["matcher"].as_str() == Some("Bash|Read|Grep|Glob")
+                 && g["hooks"].as_array().is_some_and(|h| {
+                     h.iter().any(|hook| {
+                         hook["command"]
+diff --git a/crates/pixel/src/execution_brief.rs b/crates/pixel/src/execution_brief.rs
+index 06a3d54a..ddffaee6 100644
+--- a/crates/pixel/src/execution_brief.rs
++++ b/crates/pixel/src/execution_brief.rs
+@@ -1,6 +1,7 @@
+ //! Deterministic, bounded projection of `scope-task` evidence for agents.
+ 
+ use std::collections::{BTreeMap, BTreeSet};
++use std::path::{Component, Path};
+ 
+ use serde_json::{Value, json};
+ 
+@@ -11,6 +12,7 @@ const MAX_TARGETS: usize = 100;
+ const MAX_TEXT_CHARS: usize = 320;
+ const MAX_TASK_CHARS: usize = 4096;
+ const MAX_WORKSTREAMS: usize = 64;
++const MAX_ROUTE_READ_LINES: u64 = 40;
+ 
+ #[derive(Default)]
+ struct Workstream {
+@@ -159,6 +161,7 @@ pub fn from_scope_task(task: &str, data: &Value) -> Value {
+     json!({
+         "version": 1,
+         "task": bounded_task,
++        "route": retrieval_route(&bounded_task, None, data),
+         "workstreams": workstreams,
+         "uncertainty": {
+             "closed_world": false,
+@@ -172,6 +175,255 @@ pub fn from_scope_task(task: &str, data: &Value) -> Value {
+     })
+ }
+ 
++/// Build one deterministic first retrieval action and its bounded next steps.
++///
++/// Exact-name search is selected only for an explicitly marked identifier;
++/// otherwise the full task is used as a behavior query. The route remains a
++/// lower bound because Pixel's index and static graph are not exhaustive.
++pub fn retrieval_route(task: &str, intent: Option<&str>, scope: &Value) -> Value {
++    let mut caps = BTreeSet::new();
++    let compact_task = task.split_whitespace().collect::<Vec<_>>().join(" ");
++    let query = bounded_text(
++        &compact_task,
++        "route query",
++        crate::prompt_intent::MAX_RETRIEVAL_QUERY_CHARS,
++        &mut caps,
++    );
++    let identifier = crate::prompt_intent::explicit_identifier(task)
++        .filter(|value| value.chars().count() <= crate::prompt_intent::MAX_RETRIEVAL_QUERY_CHARS);
++    let first = match identifier.as_deref() {
++        Some(identifier) => format!("rtk pixel search-content -F {}", shell_quote(identifier)),
++        None if !query.trim().is_empty() => {
++            format!("rtk pixel find-code {}", shell_quote(query.trim()))
++        }
++        None => String::new(),
++    };
++    let retry_query = narrower_query(identifier.as_deref().unwrap_or(query.trim()));
++    let retry = if first.is_empty() {
++        None
++    } else if identifier.is_some() {
++        let retry_query = if retry_query.is_empty() {
++            identifier.as_deref().unwrap_or("")
++        } else {
++            &retry_query
++        };
++        Some(format!("rtk pixel find-code {}", shell_quote(retry_query)))
++    } else if !retry_query.is_empty() && retry_query != query.trim() {
++        Some(format!("rtk pixel find-code {}", shell_quote(&retry_query)))
++    } else {
++        (!fallback_term(query.trim()).is_empty()).then(|| {
++            format!(
++                "rtk pixel search-content -F {}",
++                shell_quote(&fallback_term(query.trim()))
++            )
++        })
++    };
++    let fallback = if identifier.is_some() {
++        identifier.clone().unwrap_or_default()
++    } else {
++        fallback_term(query.trim())
++    };
++    let native_fallback =
++        (!fallback.is_empty()).then(|| format!("rtk rg -n -F -- {} .", shell_quote(&fallback)));
++    let validation = validation_route(intent, scope);
++    let route_caps: Vec<String> = caps.into_iter().collect();
++
++    json!({
++        "version": 1,
++        "closed_world": false,
++        "task": query,
++        "first_command": first,
++        "strategy": if identifier.is_some() { "exact_identifier" } else { "behavior" },
++        "steps": [
++            {"order": 1, "action": "retrieve", "command": first},
++            {
++                "order": 2,
++                "action": "read_result",
++                "command": "After retrieval, use the first complete path:line returned above to build one exact read command.",
++                "command_builder": "bounded_read_command(path, line)",
++                "max_lines": MAX_ROUTE_READ_LINES,
++            },
++            {"order": 3, "action": "validate", "command": validation},
++        ],
++        "validation": validation,
++        "retry": retry.map(|command| json!({
++            "after": "the first result is unresolved, capped, or does not identify a relevant location",
++            "command": command,
++        })),
++        "fallback": native_fallback.map(|command| json!({
++            "after_pixel_calls": 2,
++            "when": "the two Pixel calls do not converge",
++            "command": command,
++        })),
++        "on_unavailable": "Pixel is advisory; continue with native tools and report that retrieval was unavailable.",
++        "uncertainty": {
++            "closed_world": false,
++            "caps": route_caps,
++        },
++    })
++}
++
++/// Turn one Pixel path and line into a portable, shell-quoted 40-line read.
++pub fn bounded_read_command(path: &str, line: u64) -> Option<String> {
++    let parsed_path = Path::new(path);
++    if path.is_empty()
++        || line == 0
++        || path.contains('\n')
++        || path.contains('\r')
++        || parsed_path.is_absolute()
++        || parsed_path
++            .components()
++            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
++    {
++        return None;
++    }
++    let end = line.saturating_add(MAX_ROUTE_READ_LINES - 1);
++    let path = if path.starts_with('-') {
++        format!("./{path}")
++    } else {
++        path.to_string()
++    };
++    Some(format!("rtk sed -n '{line},{end}p' {}", shell_quote(&path)))
++}
++
++/// Render a compact, ordered route for prompt and hook consumers.
++pub fn pretty_retrieval_route(route: &Value) -> String {
++    let Some(steps) = route.get("steps").and_then(Value::as_array) else {
++        return "Pixel route unavailable; continue with native tools.".to_string();
++    };
++    let mut output = String::from("Deterministic Pixel route (index is a lower bound):");
++    for step in steps {
++        let order = step["order"].as_u64().unwrap_or(0);
++        let action = step["action"].as_str().unwrap_or("step");
++        let command = step["command"].as_str().unwrap_or("");
++        if action == "read_result" {
++            let max_lines = step["max_lines"].as_u64().unwrap_or(MAX_ROUTE_READ_LINES);
++            output.push_str(&format!(
++                "\n{order}. {action} (maximum {max_lines} lines): {command}"
++            ));
++        } else {
++            output.push_str(&format!("\n{order}. {action}: {command}"));
++        }
++    }
++    if let Some(retry) = route.get("retry").and_then(Value::as_object) {
++        output.push_str(&format!(
++            "\nRetry only if {}: {}",
++            retry
++                .get("after")
++                .and_then(Value::as_str)
++                .unwrap_or("needed"),
++            retry.get("command").and_then(Value::as_str).unwrap_or("")
++        ));
++    }
++    if let Some(fallback) = route.get("fallback").and_then(Value::as_object) {
++        output.push_str(&format!(
++            "\nAfter two nonconverging Pixel calls, use: {}",
++            fallback
++                .get("command")
++                .and_then(Value::as_str)
++                .unwrap_or("")
++        ));
++    }
++    if let Some(unavailable) = route.get("on_unavailable").and_then(Value::as_str) {
++        output.push_str(&format!("\nIf Pixel is unavailable: {unavailable}"));
++    }
++    output
++}
++
++fn validation_route(intent: Option<&str>, scope: &Value) -> String {
++    match intent {
++        Some("question" | "investigate" | "review") => {
++            "Read-only task: no test run; verify the answer or finding against the bounded evidence.".to_string()
++        }
++        Some("bugfix" | "feature" | "refactor") => {
++            let package = scope
++                .get("targets")
++                .and_then(Value::as_array)
++                .and_then(|targets| {
++                    targets
++                        .iter()
++                        .filter(|target| matches!(target["tier"].as_str(), Some("P0" | "P1")))
++                        .find_map(|target| package_for_path(target_path(target)))
++                });
++            package.map_or_else(
++                || "After an edit, run the smallest test covering the changed behavior; no package target is known yet.".to_string(),
++                |package| format!("After an edit, run the focused package tests: rtk cargo test -p {package}."),
++            )
++        }
++        _ => "If this remains read-only, run no tests; after edits, run the smallest test covering the changed behavior.".to_string(),
++    }
++}
++
++fn package_for_path(path: &str) -> Option<&str> {
++    let mut components = path.split('/');
++    if components.next()? != "crates" {
++        return None;
++    }
++    match components.next()? {
++        "pixel" => Some("pixel-cli"),
++        package => Some(package),
++    }
++}
++
++fn narrower_query(query: &str) -> String {
++    let terms: Vec<&str> = query
++        .split(|character: char| !character.is_alphanumeric() && character != '_')
++        .filter(|term| term.chars().count() > 2)
++        .filter(|term| {
++            !matches!(
++                term.to_ascii_lowercase().as_str(),
++                "the"
++                    | "and"
++                    | "for"
++                    | "with"
++                    | "from"
++                    | "that"
++                    | "this"
++                    | "find"
++                    | "trace"
++                    | "show"
++                    | "explain"
++                    | "where"
++                    | "how"
++                    | "code"
++                    | "path"
++                    | "which"
++                    | "item"
++                    | "remove"
++                    | "decides"
++                    | "decide"
++                    | "should"
++                    | "would"
++                    | "what"
++            )
++        })
++        .collect();
++    let start = terms.len().saturating_sub(4);
++    terms[start..].join(" ")
++}
++
++fn fallback_term(query: &str) -> String {
++    let preferred = narrower_query(query)
++        .split_whitespace()
++        .max_by_key(|term| term.chars().count())
++        .unwrap_or("");
++    if !preferred.is_empty() {
++        return preferred.to_string();
++    }
++    query
++        .split_whitespace()
++        .last()
++        .map(|term| {
++            term.trim_matches(|character: char| !character.is_alphanumeric() && character != '_')
++                .to_string()
++        })
++        .unwrap_or_default()
++}
++
++fn shell_quote(value: &str) -> String {
++    format!("'{}'", value.replace('\'', "'\\''"))
++}
++
+ /// Human-readable rendering that preserves the same bounded target details as
+ /// the JSON contract without making callers parse a second evidence shape.
+ pub fn pretty(brief: &Value) -> String {
+@@ -245,6 +497,11 @@ pub fn pretty(brief: &Value) -> String {
+             output.push_str(&format!("  - {item}\n"));
+         }
+     }
++    if let Some(route) = brief.get("route") {
++        output.push_str("\n");
++        output.push_str(&pretty_retrieval_route(route));
++        output.push('\n');
++    }
+     output
+ }
+ 
+@@ -519,5 +776,104 @@ mod tests {
+             text.contains("  src/login.rs\n    reason: defines login_user\n"),
+             "{text}"
+         );
++        assert_eq!(
++            brief["route"]["first_command"],
++            "rtk pixel find-code 'task'"
++        );
++        assert!(text.contains("Deterministic Pixel route (index is a lower bound):"));
++    }
++
++    #[test]
++    fn retrieval_route_should_start_with_one_populated_behavior_query() {
++        let route = retrieval_route(
++            "Trace how cache eviction decides which item to remove",
++            Some("investigate"),
++            &json!({"targets": []}),
++        );
++        assert_eq!(route["strategy"], "behavior");
++        assert_eq!(
++            route["first_command"],
++            "rtk pixel find-code 'Trace how cache eviction decides which item to remove'"
++        );
++        assert_eq!(route["steps"].as_array().unwrap().len(), 3);
++        assert_eq!(route["steps"][1]["action"], "read_result");
++        assert_eq!(route["steps"][1]["max_lines"], MAX_ROUTE_READ_LINES);
++        assert_eq!(
++            route["steps"][1]["command_builder"],
++            "bounded_read_command(path, line)"
++        );
++        assert_eq!(route["fallback"]["after_pixel_calls"], 2);
++        assert_eq!(
++            route["retry"]["command"],
++            "rtk pixel find-code 'cache eviction'"
++        );
++        assert_eq!(route["fallback"]["command"], "rtk rg -n -F -- 'eviction' .");
++        assert_eq!(
++            route["validation"],
++            "Read-only task: no test run; verify the answer or finding against the bounded evidence."
++        );
++    }
++
++    #[test]
++    fn retrieval_route_should_use_exact_search_only_for_explicit_identifiers() {
++        let route = retrieval_route(
++            "Find callers of `lookup_user` and its retry behavior",
++            Some("bugfix"),
++            &json!({"targets": [{"tier": "P0", "path": "crates/pixel/src/main.rs"}]}),
++        );
++        assert_eq!(route["strategy"], "exact_identifier");
++        assert_eq!(
++            route["first_command"],
++            "rtk pixel search-content -F 'lookup_user'"
++        );
++        assert_eq!(
++            route["retry"]["command"],
++            "rtk pixel find-code 'lookup user'"
++        );
++        assert_eq!(
++            route["validation"],
++            "After an edit, run the focused package tests: rtk cargo test -p pixel-cli."
++        );
++    }
++
++    #[test]
++    fn retrieval_route_should_quote_queries_and_bound_native_fallback() {
++        let route = retrieval_route(
++            "Explain the user's retry delay behavior",
++            None,
++            &json!({"targets": []}),
++        );
++        assert_eq!(
++            route["first_command"],
++            "rtk pixel find-code 'Explain the user'\\''s retry delay behavior'"
++        );
++        assert_eq!(route["fallback"]["command"], "rtk rg -n -F -- 'behavior' .");
++        let pretty = pretty_retrieval_route(&route);
++        assert!(pretty.contains("After two nonconverging Pixel calls"));
++        assert!(pretty.contains("read_result (maximum 40 lines)"));
++        assert!(!pretty.contains("<concept>"));
++    }
++
++    #[test]
++    fn retrieval_route_should_not_emit_an_empty_retry_for_a_short_query() {
++        let route = retrieval_route("x", None, &json!({"targets": []}));
++        assert_eq!(route["first_command"], "rtk pixel find-code 'x'");
++        assert_eq!(route["retry"]["command"], "rtk pixel search-content -F 'x'");
++        assert_eq!(route["fallback"]["command"], "rtk rg -n -F -- 'x' .");
++    }
++
++    #[test]
++    fn bounded_read_command_should_quote_path_and_read_at_most_forty_lines() {
++        assert_eq!(
++            bounded_read_command("src/a file.rs", 12).as_deref(),
++            Some("rtk sed -n '12,51p' 'src/a file.rs'")
++        );
++        assert_eq!(
++            bounded_read_command("-leading-dash.rs", 1).as_deref(),
++            Some("rtk sed -n '1,40p' './-leading-dash.rs'")
++        );
++        assert_eq!(bounded_read_command("src/a.rs", 0), None);
++        assert_eq!(bounded_read_command("src/a\n.rs", 1), None);
++        assert_eq!(bounded_read_command("../outside.rs", 1), None);
+     }
+ }
+diff --git a/crates/pixel/src/guard.rs b/crates/pixel/src/guard.rs
+index a25e3844..a2bd9259 100644
+--- a/crates/pixel/src/guard.rs
++++ b/crates/pixel/src/guard.rs
+@@ -30,19 +30,28 @@
+ //!    the documented table.
+ //!    Transcript-store pokes (sqlite3/cat/grep on a known store) get the same
+ //!    advisory with a `pixel recall` alternative.
+-//! 5. GLOB — Glob tool calls are deliberately left un-denied: they only
+-//!    enumerate paths, and the Read/Edit of any result is itself guarded by
+-//!    the scoping rules above. Blocking enumeration would be pure noise.
++//! 5. GLOB — Glob tool calls are deliberately left un-denied on this legacy
++//!    advisory path: they only enumerate paths, and the Read/Edit of any
++//!    result is itself guarded by the scoping rules above. Blocking
++//!    enumeration would be pure noise. Under the enforce policy, Claude's
++//!    native `Glob` is repository discovery like `Read`/`Grep` (see below).
+ //!
+ //! Rewrites preserve native search bytes and status within a narrow
+ //! literal-file subset; they do not substitute enriched Pixel output.
+ //! Uncovered execution shapes retain their original command and native permissions.
+ //!
+-//! Claude and Devin preserve their native permission flow. Codex and Antigravity
+-//! enforce recognized repository discovery only under the enforce policy.
+-//! Bounded direct reads (<=200 lines), external paths, shell filters, execution
++//! Claude keeps its native permission flow for the shell tool (rewritten or
++//! delegated to rtk, never denied); under the enforce policy its native
++//! `Read`/`Grep`/`Glob` join Codex, Antigravity and Devin as enforced
++//! repository retrieval, while bounded reads stay native. Bounded direct reads
++//! (<=200 lines), external paths, shell filters, execution
+ //! and unknown syntax stay native. Enforcement requires an indexed repository
+ //! at or above the effective tool workdir; unindexed trees are never denied.
++//! A bounded read is the enforceable proxy for the follow-up the doctrine
++//! recommends after a `path:line` hit; the hook carries no session state to
++//! prove a region was Pixel-served, so a bounded read of an unrelated file is
++//! indistinguishable from the intended follow-up and stays native — binding a
++//! read to the specific Pixel result is beyond this fix.
+ //! Claude advisories exit 0 with a JSON note
+ //! (systemMessage + additionalContext), no permissionDecision, and transparent
+ //! read-only rewrites use `updatedInput`. Codex requires an explicit `allow`
+@@ -658,15 +667,10 @@ fn provider_cwd(payload: &Value, input: &Value) -> Option<PathBuf> {
+     )
+ }
+ 
+-/// Recognized retrieval gets guidance, or an opt-in denial on Codex/Antigravity.
++/// Recognized retrieval gets guidance, or an opt-in denial on Codex,
++/// Antigravity, Devin and — for its native read/search tools — Claude.
+ /// Unsupported capabilities remain the host's responsibility.
+ fn enforce_reason(provider: Provider, payload: &Value) -> Option<String> {
+-    // Claude keeps its native permission flow (and its RTK delegate). Devin
+-    // has a documented PreToolUse block contract, so its retrieval calls are
+-    // subject to policy like Codex and Antigravity.
+-    if provider == Provider::Claude {
+-        return None;
+-    }
+     let event = payload
+         .get("hook_event_name")
+         .and_then(Value::as_str)
+@@ -688,6 +692,16 @@ fn enforce_reason(provider: Provider, payload: &Value) -> Option<String> {
+     {
+         return None;
+     }
++    // Claude keeps its native permission flow for the shell tool: a `Bash`
++    // call is rewritten or delegated to rtk by `policy_response`/`run_provider_guard`,
++    // never denied here. Native `Read`/`Grep`/`Glob` under the enforce policy
++    // join the enforced set, matching Codex and Devin. Devin's own lowercase
++    // tool names keep their advisory path when a Devin session imports the
++    // Claude hook entry. Devin has a documented PreToolUse block contract, so
++    // its retrieval calls are subject to policy like Codex and Antigravity.
++    if provider == Provider::Claude && !matches!(tool, "Read" | "Grep" | "Glob") {
++        return None;
++    }
+     if matches!(
+         tool,
+         "Bash" | "shell" | "unified_exec" | "local_shell" | "exec_command" | "run_command" | "exec"
+@@ -716,15 +730,17 @@ fn enforce_reason(provider: Provider, payload: &Value) -> Option<String> {
+         return None;
+     }
+     match tool {
+-        "grep_search" | "find_by_name" | "find_file_by_name" | "list_dir" | "file_search"
+-        | "glob" | "ls" | "grep" => {
++        "Grep" | "Glob" | "grep_search" | "find_by_name" | "find_file_by_name" | "list_dir"
++        | "file_search" | "glob" | "ls" | "grep" => {
+             Some("repository discovery: use pixel search-content, find-code, or list-areas".into())
+         }
+         "read" if provider == Provider::Devin && path.is_some() && !bounded_read(input) => Some(
+             "repository read: use exec with pixel search-content or pixel pack-context <uid>"
+                 .into(),
+         ),
+-        "read" | "view_file" | "notebook_read" if path.is_some() && !bounded_read(input) => {
++        "Read" | "read" | "view_file" | "notebook_read"
++            if path.is_some() && !bounded_read(input) =>
++        {
+             Some(REPO_READ_REASON.into())
+         }
+         _ => None,
+@@ -1864,12 +1880,14 @@ fn run_provider_guard(provider: Provider, delegate_rtk: bool, raw: &str) -> ! {
+     if delegate_rtk && provider == Provider::Claude {
+         delegate_rtk_hook(raw);
+     }
+-    // Claude's native Read/Grep tools reach the hook through the widened
+-    // PreToolUse matcher installed by `routing::shell_matcher`; Claude keeps
+-    // its own permission flow (no deny, no input rewrite — `policy_response`
+-    // is silent for these tools), but the advisory tier the provider-less
+-    // legacy path already emits is reproduced here. Glob is intentionally
+-    // absent from the matcher; `non_shell_advisory` mirrors that decision.
++    // Claude's native Read/Grep/Glob tools reach the hook through the widened
++    // PreToolUse matcher installed by `routing::shell_matcher` (Claude's
++    // matcher is `Bash|Read|Grep|Glob`). `policy_response` denies these under
++    // the enforce policy (`enforce_reason`, which treats `Glob` as repository
++    // discovery like `Read`/`Grep`); in advisory or policy-off mode it stays
++    // silent and the advisory tier the provider-less legacy path already emits
++    // is reproduced here — `non_shell_advisory` keeps `Glob` out of its
++    // advisory tool set, so advisory-mode Globe is fail-open.
+     if provider == Provider::Claude {
+         let event = payload
+             .get("hook_event_name")
+@@ -3635,9 +3653,10 @@ fn retrieval_guard_advisory(_cwd: &Path, idx_root: &Path) -> ! {
+ /// path (`run_provider_guard`). The hook cannot change a tool type, so every
+ /// block here is `advise()`-then-exit (the original call proceeds).
+ ///
+-/// Glob is intentionally absent — both from the matcher installed by
+-/// `routing::shell_matcher` and from the helper's own tool-name set. Glob
+-/// only enumerates paths, and the Read/Edit of any result is itself
++/// Glob is intentionally absent from this advisory tier — both from the
++/// matcher installed by `routing::shell_matcher` and from the helper's own
++/// tool-name set. Glob only enumerates paths, and the Read/Edit of any
++/// result is itself
+ /// guarded: blocking enumeration alone would be noise. Devin's glob and
+ /// `find_file_by_name` still appear below because Devin's documented block
+ /// contract treats them as retrieval calls.
+@@ -5237,6 +5256,262 @@ mod tests {
+         let _ = std::fs::remove_dir_all(root);
+     }
+ 
++    /// The host-observed Claude PreToolUse surface reaches the guard with the
++    /// title-case tool names (`Grep`, `Read`, `Glob`). Under the enforce
++    /// policy an indexed repository's Grep is retrieval and is denied with the
++    /// Pixel discovery reason — the same verdict Codex/Devin give — while
++    /// advisory mode and policy-off fall through so the Claude advisory tier
++    /// (`non_shell_advisory`) keeps guiding instead of denying.
++    #[test]
++    fn claude_native_grep_denies_repository_discovery_only_under_enforce() {
++        let (root, _) = indexed_large_source("claude-native-grep");
++        let payload = serde_json::json!({
++            "hook_event_name": "PreToolUse",
++            "tool_name": "Grep",
++            "tool_input": {"pattern": "guarded_state", "path": "src"},
++            "cwd": root,
++        });
++        let denied = policy_response(
++            Provider::Claude,
++            &payload,
++            crate::config_cmd::PolicyMode::Enforce,
++        )
++        .expect("a repository Grep in an indexed repo denies under the enforce policy");
++        assert_eq!(denied["hookSpecificOutput"]["hookEventName"], "PreToolUse");
++        assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
++        let reason = denied["hookSpecificOutput"]["permissionDecisionReason"]
++            .as_str()
++            .unwrap_or_default();
++        assert!(reason.contains("pixel search-content"), "{reason}");
++        assert!(reason.contains("find-code"), "{reason}");
++        // Advisory and policy-off never deny: the Claude hook keeps guiding,
++        // and `pixel policy off` is total.
++        for mode in [
++            crate::config_cmd::PolicyMode::Advisory,
++            crate::config_cmd::PolicyMode::Off,
++        ] {
++            assert_eq!(
++                policy_response(Provider::Claude, &payload, mode),
++                None,
++                "{mode:?}"
++            );
++        }
++        // A Grep aimed outside the repository is not repository retrieval and
++        // stays native — "external paths stay native" from the module docs.
++        let external = serde_json::json!({
++            "hook_event_name": "PreToolUse",
++            "tool_name": "Grep",
++            "tool_input": {"pattern": ".*", "path": std::env::temp_dir()},
++            "cwd": root,
++        });
++        assert_eq!(
++            policy_response(
++                Provider::Claude,
++                &external,
++                crate::config_cmd::PolicyMode::Enforce
++            ),
++            None,
++            "an external Grep target is not Pixel's to deny"
++        );
++
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    /// A Claude `Read` of an in-repo file is whole-file retrieval unless it
++    /// states a bounded window. Under enforce a whole-file read is denied —
++    /// exactly the verdict Codex/Devin give an equivalent read — while the
++    /// bounded follow-up the Pixel doctrine recommends after a `path:line`
++    /// hit (read only that region, `offset`+`limit` <= 200 lines) passes
++    /// untouched. Boundedness is the enforceable proxy, not target accuracy:
++    /// the hook carries no session state to bind the read to the specific
++    /// Pixel result, so a bounded read of an unrelated file is
++    /// indistinguishable and equally allowed (documented limitation).
++    #[test]
++    fn claude_native_read_denies_whole_file_but_allows_bounded_follow_up() {
++        let (root, source) = indexed_large_source("claude-native-read");
++        let read = |tool_input: serde_json::Value| {
++            serde_json::json!({
++                "hook_event_name": "PreToolUse",
++                "tool_name": "Read",
++                "tool_input": tool_input,
++                "cwd": root,
++            })
++        };
++        for broad in [
++            serde_json::json!({"file_path": source}),
++            serde_json::json!({"file_path": source, "offset": 0, "limit": 4000}),
++        ] {
++            let response = policy_response(
++                Provider::Claude,
++                &read(broad.clone()),
++                crate::config_cmd::PolicyMode::Enforce,
++            )
++            .unwrap_or_else(|| panic!("a whole-file Read must deny: {broad}"));
++            assert_eq!(response["hookSpecificOutput"]["permissionDecision"], "deny");
++            assert!(
++                response["hookSpecificOutput"]["permissionDecisionReason"]
++                    .as_str()
++                    .unwrap_or_default()
++                    .contains("pixel search-content"),
++                "{response}"
++            );
++        }
++        for bounded in [
++            serde_json::json!({"file_path": source, "offset": 8, "limit": 40}),
++            serde_json::json!({"file_path": source, "limit": 100}),
++        ] {
++            assert_eq!(
++                policy_response(
++                    Provider::Claude,
++                    &read(bounded.clone()),
++                    crate::config_cmd::PolicyMode::Enforce,
++                ),
++                None,
++                "the bounded follow-up read {bounded} must stay native"
++            );
++        }
++        // A read that names no repository path is not Pixel's to enforce; a
++        // boundedness decision without a path would deny nothing real.
++        let no_path = serde_json::json!({
++            "hook_event_name": "PreToolUse",
++            "tool_name": "Read",
++            "tool_input": {"offset": 0, "limit": 4000},
++            "cwd": root,
++        });
++        assert_eq!(
++            policy_response(
++                Provider::Claude,
++                &no_path,
++                crate::config_cmd::PolicyMode::Enforce
++            ),
++            None,
++            "a Read without a repository path has nothing to enforce"
++        );
++
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    /// Claude's native `Glob` on an indexed in-repo target is repository
++    /// discovery, judged exactly like `Read`/`Grep`: the enforce policy denies
++    /// it with the Pixel discovery reason, while advisory, policy-off, external
++    /// and unindexed cases fail open (advisory guidance stays the advisory
++    /// tier's; `non_shell_advisory` omits `Glob`).
++    #[test]
++    fn claude_native_glob_denies_repository_discovery_only_under_enforce() {
++        let (root, _) = indexed_large_source("claude-native-glob-enforce");
++        let payload = |tool_input: serde_json::Value| {
++            serde_json::json!({
++                "hook_event_name": "PreToolUse",
++                "tool_name": "Glob",
++                "tool_input": tool_input,
++                "cwd": root,
++            })
++        };
++        let in_repo = serde_json::json!({"path": "src", "glob": "**/*.rs"});
++        let denied = policy_response(
++            Provider::Claude,
++            &payload(in_repo.clone()),
++            crate::config_cmd::PolicyMode::Enforce,
++        )
++        .expect("an in-repo Claude Glob denies under the enforce policy");
++        assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
++        let reason = denied["hookSpecificOutput"]["permissionDecisionReason"]
++            .as_str()
++            .unwrap_or_default();
++        assert!(reason.contains("pixel search-content"), "{reason}");
++        assert!(reason.contains("find-code"), "{reason}");
++        // Advisory and policy-off never deny: the Claude hook keeps guiding,
++        // and `pixel policy off` is total.
++        for mode in [
++            crate::config_cmd::PolicyMode::Advisory,
++            crate::config_cmd::PolicyMode::Off,
++        ] {
++            assert_eq!(
++                policy_response(Provider::Claude, &payload(in_repo.clone()), mode),
++                None,
++                "{mode:?}"
++            );
++        }
++        // External and unindexed targets fail open under the enforce policy.
++        let external = payload(serde_json::json!({
++            "path": std::env::temp_dir(),
++            "glob": "**/*.rs"
++        }));
++        assert_eq!(
++            policy_response(
++                Provider::Claude,
++                &external,
++                crate::config_cmd::PolicyMode::Enforce
++            ),
++            None,
++            "an external Glob target is not Pixel's to deny"
++        );
++        let unindexed_root = scratch_repo("claude-native-glob-unindexed");
++        let unindexed = serde_json::json!({
++            "hook_event_name": "PreToolUse",
++            "tool_name": "Glob",
++            "tool_input": {"path": "src", "glob": "**/*.rs"},
++            "cwd": unindexed_root,
++        });
++        assert_eq!(
++            policy_response(
++                Provider::Claude,
++                &unindexed,
++                crate::config_cmd::PolicyMode::Enforce
++            ),
++            None,
++            "an unindexed tree is never denied"
++        );
++        let _ = std::fs::remove_dir_all(&unindexed_root);
++
++        let _ = std::fs::remove_dir_all(root);
++    }
++
++    /// A Claude `Bash` shell and Devin's own lowercase tools keep their native
++    /// handling under the Claude provider: `Bash` is rewritten or delegated to
++    /// rtk (never denied by `enforce_reason`), and a Devin session importing
++    /// the Claude hook entry sends lowercase `read`/`grep`/`glob`, which are
++    /// not newly enforced by the Claude provider.
++    #[test]
++    fn claude_bash_and_imported_lowercase_tools_stay_native_under_enforce() {
++        let (root, source) = indexed_large_source("claude-native-surface");
++        // A Claude shell read that the Codex/Devin enforce path would deny must
++        // not be denied for Claude: `Bash` is rewritten or delegated to rtk.
++        let bash = serde_json::json!({
++            "hook_event_name": "PreToolUse",
++            "tool_name": "Bash",
++            "tool_input": {"command": "cat src/large.rs"},
++            "cwd": root,
++        });
++        assert_eq!(
++            enforce_reason(Provider::Claude, &bash),
++            None,
++            "Claude's Bash tool must never be denied by enforce_reason"
++        );
++        // The imported Claude entry inside Devin receives Devin's own lowercase
++        // tool names; those keep their advisory handling under the Claude
++        // provider instead of being newly enforced.
++        for (tool, tool_input) in [
++            ("read", serde_json::json!({"file_path": source})),
++            ("grep", serde_json::json!({"pattern": "needle"})),
++            ("glob", serde_json::json!({"pattern": "**"})),
++        ] {
++            let payload = serde_json::json!({
++                "hook_event_name": "PreToolUse",
++                "tool_name": tool,
++                "tool_input": tool_input,
++                "cwd": root,
++            });
++            assert_eq!(
++                enforce_reason(Provider::Claude, &payload),
++                None,
++                "the imported entry must not newly enforce Devin's `{tool}`"
++            );
++        }
++
++        let _ = std::fs::remove_dir_all(root);
++    }
++
+     #[test]
+     fn scoping_outside_manifest_is_advisory_not_deny() {
+         let repo = scratch_repo("advisory-scope");
+diff --git a/crates/pixel/src/main.rs b/crates/pixel/src/main.rs
+index e348ae89..aa7624e2 100644
+--- a/crates/pixel/src/main.rs
++++ b/crates/pixel/src/main.rs
+@@ -334,7 +334,6 @@ enum Command {
+         precision: bool,
+     },
+     /// Build a deterministic, bounded execution brief from scope-task evidence.
+-    #[command(hide = true)]
+     ExecutionBrief {
+         /// Task/feature description.
+         task: String,
+@@ -4621,13 +4620,15 @@ fn run() -> Result<(), String> {
+     let mut logger = match &root {
+         // The guard exits through its own path before any event is logged;
+         // spawning the writer would only create `.pixel` in unindexed repos,
+-        // which the guard then mistakes for an index.
++        // which the guard then mistakes for an index. `search-like-rg` is
++        // journaled like every other command — its streams stay byte-
++        // compatible while the record is what `pixel run-hook metrics`
++        // relays on hosts whose tool results drop the stderr footer.
+         _ if matches!(
+             &cli.command,
+-            Command::SearchLikeRg { .. }
+-                | Command::RunHook {
+-                    cmd: HookCmd::Guard { .. } | HookCmd::ComposedGuard { .. },
+-                }
++            Command::RunHook {
++                cmd: HookCmd::Guard { .. } | HookCmd::ComposedGuard { .. },
++            }
+         ) =>
+         {
+             pixel_actionlog::ActionLog::noop()
+@@ -4698,33 +4699,37 @@ fn run() -> Result<(), String> {
+         event = event.with_task(correlation);
+     }
+     event.serve = serve_trace::take();
+-    if !protected {
+-        // The repeated error is rendered output the caller reads, written
+-        // after the block: count it here, before the block is sized.
+-        let output_bytes = operation_metrics::output_bytes()
+-            + trailer.as_ref().map_or(0, |text| text.len() as u64);
+-        let mut metrics = match operation_metrics::evidence(&command_label, result.is_ok()) {
+-            Ok(evidence) => {
+-                pixel_actionlog::OperationMetrics::new(elapsed, output_bytes, Some(evidence))
+-            }
+-            Err(gap) => pixel_actionlog::OperationMetrics::new(elapsed, output_bytes, None)
+-                .with_comparison_gap(gap),
+-        };
+-        // Optional policy input, never a measured LLM latency. Invalid or
+-        // non-Unicode values retain the versioned default without affecting
+-        // command success, diagnostics, or protected streams.
+-        if let Some(round_trip_ms) = std::env::var("PIXEL_METRICS_ROUND_TRIP_MS")
+-            .ok()
+-            .and_then(|value| value.parse::<u64>().ok())
+-        {
+-            metrics = metrics.with_round_trip_ms(round_trip_ms);
++    // `protected` silences only the live footer below: a byte-compatible or
++    // hook stream cannot carry the block, but the action record still keeps
++    // the accounting so `pixel run-hook metrics` can relay the finalized
++    // line as `additionalContext` — the safe channel for a retrieval call
++    // whose stdout/stderr must stay untouched.
++    //
++    // The repeated error is rendered output the caller reads, written after
++    // the block: count it here, before the block is sized.
++    let output_bytes =
++        operation_metrics::output_bytes() + trailer.as_ref().map_or(0, |text| text.len() as u64);
++    let mut metrics = match operation_metrics::evidence(&command_label, result.is_ok()) {
++        Ok(evidence) => {
++            pixel_actionlog::OperationMetrics::new(elapsed, output_bytes, Some(evidence))
+         }
+-        metrics.output_scope = Some("cli-rendered-streams".to_owned());
+-        // The answer alone, which a measured whole-file read compares with
+-        // the file: the diagnostics above are not what the command returned.
+-        metrics.answer_bytes = Some(operation_metrics::stdout_bytes());
+-        event = event.with_metrics(metrics);
++        Err(gap) => pixel_actionlog::OperationMetrics::new(elapsed, output_bytes, None)
++            .with_comparison_gap(gap),
++    };
++    // Optional policy input, never a measured LLM latency. Invalid or
++    // non-Unicode values retain the versioned default without affecting
++    // command success, diagnostics, or protected streams.
++    if let Some(round_trip_ms) = std::env::var("PIXEL_METRICS_ROUND_TRIP_MS")
++        .ok()
++        .and_then(|value| value.parse::<u64>().ok())
++    {
++        metrics = metrics.with_round_trip_ms(round_trip_ms);
+     }
++    metrics.output_scope = Some("cli-rendered-streams".to_owned());
++    // The answer alone, which a measured whole-file read compares with the
++    // file: the diagnostics above are not what the command returned.
++    metrics.answer_bytes = Some(operation_metrics::stdout_bytes());
++    event = event.with_metrics(metrics);
+     if live && let Some(line) = event.finalize_metrics_line() {
+         // A blank record creates a distinct terminal block so transcript UIs
+         // cannot visually attach the metrics matrix to command output.
+diff --git a/crates/pixel/src/operation_metrics.rs b/crates/pixel/src/operation_metrics.rs
+index 03365356..8af6f1e8 100644
+--- a/crates/pixel/src/operation_metrics.rs
++++ b/crates/pixel/src/operation_metrics.rs
+@@ -175,6 +175,7 @@ fn native_commands(command: &str) -> Option<u64> {
+         "search-content" | "run-recipe" | "search-meaning" | "find-code" | "find-symbol"
+         | "pack-context" | "list-signatures" | "repo-map" | "scope-task" | "who-calls"
+         | "impact" | "call-path" | "what-changed" | "list-areas" | "list-flows"
++        | "execution-brief"
+         | "commit-history" | "search-history" | "dig-history" | "file-history" | "who-wrote"
+         | "diff" | "list-branches" | "fetch" | "new-branch" | "fast-forward" | "push" => Some(1),
+         "repo-state" | "review-changes" | "commit" => Some(3),
+@@ -346,6 +347,7 @@ mod tests {
+         assert!(e.gap.is_none());
+         assert_eq!(native_commands("commit"), Some(3));
+         assert_eq!(native_commands("push"), Some(1));
++        assert_eq!(native_commands("execution-brief"), Some(1));
+         assert_eq!(native_commands("status"), None);
+         assert_eq!(native_commands("task-state"), None);
+     }
+diff --git a/crates/pixel/src/prompt_intent.rs b/crates/pixel/src/prompt_intent.rs
+index f6191007..d2a3127e 100644
+--- a/crates/pixel/src/prompt_intent.rs
++++ b/crates/pixel/src/prompt_intent.rs
+@@ -29,6 +29,7 @@ pub(crate) const HOOK_CALL_TIMEOUT: Duration = Duration::from_millis(300);
+ pub(crate) const MIN_RENDER_P: f64 = 0.5;
+ /// The framing every intent label shares.
+ pub(crate) const INTENT_CONTEXT: &str = "What kind of coding-agent task is this prompt?";
++pub(crate) const MAX_RETRIEVAL_QUERY_CHARS: usize = 240;
+ 
+ /// One intent label: what it means to the model and the ops that fit it.
+ pub(crate) struct IntentKind {
+@@ -106,6 +107,38 @@ pub(crate) fn ops_for(label: &str) -> Option<&'static [&'static str]> {
+         .map(|kind| kind.ops)
+ }
+ 
++/// Return an explicitly marked code identifier without guessing from prose.
++///
++/// Backticks and call syntax make exact-name search safer than treating any
++/// capitalized word as a symbol. Unmarked tasks use behavior search instead.
++pub(crate) fn explicit_identifier(task: &str) -> Option<String> {
++    let mut ticks = task.match_indices('`').map(|(index, _)| index);
++    while let Some(start) = ticks.next() {
++        let end = ticks.next()?;
++        let candidate = task[start + 1..end].trim();
++        if identifier_shape(candidate) {
++            return Some(candidate.to_string());
++        }
++    }
++
++    task.split_whitespace().find_map(|part| {
++        let candidate = part
++            .strip_suffix("()")
++            .unwrap_or(part)
++            .trim_matches(|character: char| !character.is_alphanumeric() && character != '_');
++        (part.ends_with("()") && identifier_shape(candidate)).then(|| candidate.to_string())
++    })
++}
++
++fn identifier_shape(candidate: &str) -> bool {
++    let mut characters = candidate.chars();
++    let Some(first) = characters.next() else {
++        return false;
++    };
++    (first == '_' || first.is_alphabetic())
++        && characters.all(|character| character == '_' || character.is_alphanumeric())
++}
++
+ /// The decision request that judges `prompt` against every intent label.
+ ///
+ /// # Errors
+@@ -204,6 +237,25 @@ pub(crate) fn render_line(intent: &Intent) -> Option<String> {
+     ))
+ }
+ 
++/// Render a classifier claim beside the populated route for the original task.
++pub(crate) fn render_route_line(
++    task: &str,
++    intent: &Intent,
++    scope: &serde_json::Value,
++) -> Option<String> {
++    if intent.p.is_nan() || intent.p < MIN_RENDER_P || ops_for(&intent.label).is_none() {
++        return None;
++    }
++    let route = crate::execution_brief::retrieval_route(task, Some(intent.label.as_str()), scope);
++    Some(format!(
++        "Intent (classifier verdict, not fact): {} p={:.2} ({}).\n{}",
++        intent.label,
++        intent.p,
++        intent.model,
++        crate::execution_brief::pretty_retrieval_route(&route)
++    ))
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+@@ -389,6 +441,24 @@ mod tests {
+         assert!(ops_for("chit-chat").is_none());
+     }
+ 
++    #[test]
++    fn explicit_identifier_should_require_unambiguous_code_markup() {
++        assert_eq!(
++            explicit_identifier("find `lookup_user` callers"),
++            Some("lookup_user".to_string())
++        );
++        assert_eq!(
++            explicit_identifier("inspect `lookupUser` callers"),
++            Some("lookupUser".to_string())
++        );
++        assert_eq!(
++            explicit_identifier("inspect lookup_user()"),
++            Some("lookup_user".to_string())
++        );
++        assert_eq!(explicit_identifier("find the user lookup path"), None);
++        assert_eq!(explicit_identifier("find `two words`"), None);
++    }
++
+     #[test]
+     fn render_line_should_name_the_verdict_as_a_claim_and_list_its_ops() {
+         assert_eq!(
+@@ -398,6 +468,27 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn render_route_line_should_use_the_original_task_in_one_populated_command() {
++        let rendered = render_route_line(
++            "trace the cache eviction behavior",
++            &intent("investigate", 0.82),
++            &serde_json::json!({"targets": []}),
++        )
++        .unwrap();
++        assert!(
++            rendered
++                .contains("1. retrieve: rtk pixel find-code 'trace the cache eviction behavior'"),
++            "{rendered}"
++        );
++        assert!(rendered.contains("2. read_result:"), "{rendered}");
++        assert!(
++            rendered.contains("After two nonconverging Pixel calls"),
++            "{rendered}"
++        );
++        assert!(!rendered.contains("<concept>"), "{rendered}");
++    }
++
+     #[test]
+     fn render_line_should_skip_a_verdict_below_one_half_or_outside_the_table() {
+         assert!(render_line(&intent("bugfix", 0.49)).is_none());
+diff --git a/crates/pixel/src/prompt_submit.rs b/crates/pixel/src/prompt_submit.rs
+index 7622b3f7..892e5743 100644
+--- a/crates/pixel/src/prompt_submit.rs
++++ b/crates/pixel/src/prompt_submit.rs
+@@ -134,18 +134,28 @@ pub fn run(provider: Option<crate::guard::Provider>) -> ! {
+             .join(pixel_index::index::SHARD_FILE)
+             .is_file()
+     });
+-    // The opt-outs silence the task notes, not the Pixel-first guidance:
+-    // with both features disabled the guidance still rides an indexed
+-    // repository's prompt on Codex and on a real Claude host.
++    // The opt-outs silence the task notes, not the deterministic route:
++    // with both features disabled an indexed repository still receives the
++    // exact first retrieval command and the bounded follow-up instructions.
+     if prompt_features_disabled(task_context, task_boundary) {
+         let guidance = if matches!(provider, Some(crate::guard::Provider::Codex)) && indexed {
+             CODEX_PIXEL_GUIDANCE
+         } else if claude_host && indexed {
+             CLAUDE_PIXEL_GUIDANCE
++        } else if matches!(provider, Some(crate::guard::Provider::Devin)) && indexed {
++            DEVIN_PIXEL_GUIDANCE
+         } else {
+             ""
+         };
+-        if !guidance.is_empty() {
++        if indexed {
++            let route = render_execution_route(&payload.prompt, None, None);
++            let context = if guidance.is_empty() {
++                route
++            } else {
++                format!("{route}\n\n{guidance}")
++            };
++            emit_context(&context, event_name);
++        } else if !guidance.is_empty() {
+             emit_context(guidance, event_name);
+         }
+         std::process::exit(0);
+@@ -184,6 +194,20 @@ pub fn run(provider: Option<crate::guard::Provider>) -> ! {
+     }
+     drop(tx);
+     let notes = collect_notes(rx, deadline);
++    let route = if indexed {
++        let scope = notes.targets.as_ref().unwrap_or(&Value::Null);
++        let intent = notes
++            .intent
++            .as_ref()
++            .and_then(crate::prompt_intent::render_line);
++        Some(render_execution_route(
++            &payload.prompt,
++            Some(scope),
++            intent.as_deref(),
++        ))
++    } else {
++        None
++    };
+     let mut context = if claude_host {
+         render_claude_runtime(
+             &payload,
+@@ -195,6 +219,13 @@ pub fn run(provider: Option<crate::guard::Provider>) -> ! {
+     } else {
+         render_legacy_context(notes.targets, notes.boundary.as_ref())
+     };
++    if let Some(route) = route {
++        context = if context.is_empty() {
++            route
++        } else {
++            format!("{route}\n\n{context}")
++        };
++    }
+     if task_context
+         && let Some(root) = root.as_deref()
+         && let Some(pointer) = overview_pointer(&payload.prompt, root)
+@@ -237,6 +268,23 @@ fn overview_pointer(prompt: &str, root: &Path) -> Option<String> {
+         .then(|| crate::overview_intent::overview_context(root))
+ }
+ 
++/// Render the single deterministic first retrieval action for an indexed
++/// prompt. The route itself is pure and non-blocking; the agent performs the
++/// returned Pixel command so its exact result and live metrics remain visible
++/// in that provider's tool call.
++fn render_execution_route(prompt: &str, scope: Option<&Value>, intent: Option<&str>) -> String {
++    let empty_scope = Value::Null;
++    let route = crate::execution_brief::retrieval_route(
++        prompt,
++        intent,
++        scope.unwrap_or(&empty_scope),
++    );
++    format!(
++        "[PIXEL:EXECUTION_ROUTE]\n{}",
++        crate::execution_brief::pretty_retrieval_route(&route)
++    )
++}
++
+ /// Either feature can run independently; only disabling both suppresses the hook.
+ fn prompt_features_disabled(context: bool, boundary: bool) -> bool {
+     !context && !boundary
+@@ -962,6 +1010,25 @@ mod tests {
+         assert!(context.ends_with("task targets"));
+         assert_eq!(render_claude_context(""), CLAUDE_PIXEL_GUIDANCE.to_string());
+     }
++
++    #[test]
++    fn execution_route_context_has_one_populated_start_and_bounded_follow_up() {
++        let context = render_execution_route(
++            "Trace how cache eviction chooses an entry",
++            None,
++            Some("investigate"),
++        );
++
++        assert!(context.starts_with("[PIXEL:EXECUTION_ROUTE]"));
++        assert!(context.contains(
++            "1. retrieve: rtk pixel find-code 'Trace how cache eviction chooses an entry'"
++        ));
++        assert!(context.contains("read_result (maximum 40 lines)"));
++        assert!(context.contains("After two nonconverging Pixel calls"));
++        assert!(context.contains("Read-only task: no test run"));
++        assert!(!context.contains("<concept>"));
++    }
++
+     use std::process::Command;
+ 
+     #[test]
+diff --git a/crates/pixel/tests/cli/metrics_cli.rs b/crates/pixel/tests/cli/metrics_cli.rs
+index d41fcc2d..de003769 100644
+--- a/crates/pixel/tests/cli/metrics_cli.rs
++++ b/crates/pixel/tests/cli/metrics_cli.rs
+@@ -811,9 +811,187 @@ fn protected_native_hook_and_statusline_streams_have_no_metrics_line() {
+         assert!(!String::from_utf8_lossy(&output.stdout).contains("🟩 pixel "));
+         let events = fixture.events(args[0]);
+         assert!(!events.is_empty());
++        // The stream carries no 🟩 block, but the record keeps the
++        // accounting — it is what `pixel run-hook metrics` relays on hosts
++        // whose tool results drop the protected stream's stderr.
+         assert!(
+-            events.last().unwrap()["metrics"].is_null(),
+-            "unsupported volume capture is unavailable"
++            !events.last().unwrap()["metrics"].is_null(),
++            "protected streams keep their accounting on the action record"
++        );
++    }
++}
++
++/// Text mode: a plain `search-content` call ends stderr on its 🟩 block and
++/// leaves the answer on stdout untouched.
++#[test]
++fn search_content_text_output_keeps_the_metrics_block_on_stderr() {
++    let fixture = Fixture::new();
++    assert_success(&fixture.run(&["build-index", "."]));
++    let output = fixture.run(&["search-content", "-F", "login_user", "src/login.rs"]);
++    assert_success(&output);
++    let blocks = metric_lines(&output);
++    assert_eq!(blocks.len(), 1);
++    assert!(
++        blocks[0].starts_with("🟩 pixel search-content"),
++        "{blocks:?}"
++    );
++    assert!(String::from_utf8_lossy(&output.stdout).contains("pub fn login_user"));
++    assert!(!String::from_utf8_lossy(&output.stdout).contains("🟩 pixel "));
++
++    let events = fixture.events("search-content");
++    assert_eq!(events.len(), 1);
++    assert!(!events[0]["metrics"].is_null());
++    assert_metric_identity(&blocks[0], &events[0]);
++}
++
++/// Protected mode: the routed retrieval path (`search-like-rg`) stays
++/// byte-compatible — no 🟩 block on either stream — but its action record
++/// carries the metrics, so `run-hook metrics` relays the finalized line as
++/// `additionalContext` instead of printing it where it would corrupt the
++/// contract.
++#[test]
++fn protected_search_like_rg_relays_metrics_through_the_hook() {
++    use std::io::Write;
++    let fixture = Fixture::new();
++    let home = fake_home(&fixture);
++    assert_success(&fixture.run(&["build-index", "."]));
++    let native = Command::new("grep")
++        .args(["-n", "login_user", "src/login.rs"])
++        .current_dir(&fixture.0)
++        .env_remove("GREP_OPTIONS")
++        .output()
++        .unwrap();
++    let routed = fixture
++        .command()
++        .args([
++            "search-like-rg",
++            "grep",
++            "--",
++            "-n",
++            "login_user",
++            "src/login.rs",
++        ])
++        .env("HOME", &home)
++        .env_remove("GREP_OPTIONS")
++        .output()
++        .unwrap();
++    assert_success(&routed);
++    assert_eq!(routed.stdout, native.stdout);
++    assert_eq!(routed.stderr, native.stderr);
++    assert!(metric_lines(&routed).is_empty());
++
++    // The journaled record is what the PostToolUse relay renders.
++    let events = fixture.events("search-like-rg");
++    assert_eq!(events.len(), 1);
++    let metrics = &events[0]["metrics"];
++    assert!(!metrics.is_null(), "protected streams keep accounting");
++    assert!(metrics["duration_us"].as_u64().unwrap() > 0);
++
++    let payload = json!({
++        "tool_name": "exec",
++        "tool_input": {"command": "pixel search-like-rg grep -- '-n' 'login_user' 'src/login.rs'"},
++        "cwd": fixture.0.display().to_string(),
++    });
++    let mut child = fixture
++        .command()
++        .args(["run-hook", "metrics", "--provider", "devin"])
++        .env("HOME", &home)
++        .stdin(Stdio::piped())
++        .stdout(Stdio::piped())
++        .stderr(Stdio::null())
++        .spawn()
++        .unwrap();
++    child
++        .stdin
++        .as_mut()
++        .unwrap()
++        .write_all(payload.to_string().as_bytes())
++        .unwrap();
++    let output = child.wait_with_output().unwrap();
++    assert_success(&output);
++    let doc: Value = serde_json::from_slice(&output.stdout).unwrap();
++    let context = doc["hookSpecificOutput"]["additionalContext"]
++        .as_str()
++        .expect("the relay emits the recorded metrics line as context");
++    assert!(context.contains("🟩 pixel search-like-rg"), "{context}");
++}
++
++/// Every supported opt-out must suppress the hook relay for a protected
++/// retrieval invocation, even though protected streams keep their output
++/// byte-compatible and the action record retains accounting.
++#[test]
++fn protected_search_like_rg_metrics_opt_outs_suppress_the_hook_relay() {
++    use std::io::Write;
++
++    for opt_out in ["flag", "environment", "repo-config"] {
++        let fixture = Fixture::new();
++        let home = fake_home(&fixture);
++        assert_success(&fixture.run(&["build-index", "."]));
++        if opt_out == "repo-config" {
++            assert_success(&fixture.run(&["config", "metrics", "off"]));
++        }
++
++        let mut command = fixture.command();
++        let mut invocation = String::from("pixel ");
++        if opt_out == "flag" {
++            command.arg("--metrics=off");
++            invocation.push_str("--metrics=off ");
++        }
++        command
++            .args([
++                "search-like-rg",
++                "grep",
++                "--",
++                "-n",
++                "login_user",
++                "src/login.rs",
++            ])
++            .env("HOME", &home)
++            .env_remove("GREP_OPTIONS");
++        if opt_out == "environment" {
++            command.env("PIXEL_METRICS", "0");
++        }
++        let routed = command.output().unwrap();
++        assert_success(&routed);
++        assert!(metric_lines(&routed).is_empty(), "{opt_out}: {routed:?}");
++        assert!(
++            String::from_utf8_lossy(&routed.stdout).contains("pub fn login_user"),
++            "the protected retrieval still returns its result for {opt_out}"
++        );
++        let event = fixture.events("search-like-rg").pop().unwrap();
++        assert!(
++            !event["metrics"].is_null(),
++            "the protected action keeps accounting for {opt_out}"
++        );
++
++        invocation.push_str("search-like-rg grep -- '-n' 'login_user' 'src/login.rs'");
++        let payload = json!({
++            "tool_name": "exec",
++            "tool_input": {"command": invocation},
++            "cwd": fixture.0.display().to_string(),
++        });
++        let mut hook_command = fixture.command();
++        hook_command
++            .args(["run-hook", "metrics", "--provider", "devin"])
++            .env("HOME", &home)
++            .stdin(Stdio::piped())
++            .stdout(Stdio::piped())
++            .stderr(Stdio::null());
++        if opt_out == "environment" {
++            hook_command.env("PIXEL_METRICS", "0");
++        }
++        let mut hook = hook_command.spawn().unwrap();
++        hook.stdin
++            .as_mut()
++            .unwrap()
++            .write_all(payload.to_string().as_bytes())
++            .unwrap();
++        let output = hook.wait_with_output().unwrap();
++        assert_success(&output);
++        assert!(
++            output.stdout.is_empty(),
++            "the relay respects {opt_out}: {}",
++            String::from_utf8_lossy(&output.stdout)
+         );
+     }
+ }
+diff --git a/scripts/test-pi-policy.mjs b/scripts/test-pi-policy.mjs
+index 5cd73435..98d7b6bf 100644
+--- a/scripts/test-pi-policy.mjs
++++ b/scripts/test-pi-policy.mjs
+@@ -35,7 +35,7 @@ const args = process.argv.slice(2);
+ const settings = JSON.parse(readFileSync(${JSON.stringify(settingsPath)}, "utf8"));
+ appendFileSync(${JSON.stringify(trace)}, JSON.stringify(args) + "\\n");
+ if (settings.fail?.includes(args[0])) { console.error("fixture Pixel unavailable: " + args[0]); process.exit(1); }
+-const operations = ["status", "scope-task", "repo-state", "review-changes", "commit-history", "find-code", "fetch", "commit", "commit-and-push", "list-areas", "search-content", "impact", "pack-context", "what-changed", "classify"];
++const operations = ["status", "scope-task", "execution-brief", "repo-state", "review-changes", "commit-history", "find-code", "fetch", "commit", "commit-and-push", "list-areas", "search-content", "impact", "pack-context", "what-changed", "classify"];
+ const box = "warning: diagnostic line\\n\u{1F7E9} pixel " + args[0] + " \u2740 1.0ms\\n  \u2502\\n  \u2514\u2500\u2500\u2500\\n";
+ if (!args.includes("off") && !["--version", "--help"].includes(args[0])) process.stderr.write(box);
+ switch (args[0]) {
+@@ -52,6 +52,19 @@ switch (args[0]) {
+   case "status": console.log(JSON.stringify({index:{base_files:1},graph:{present:true},facts:{fresh:true}})); break;
+   case "config": console.log(JSON.stringify({policy: settings.policy ?? "advisory", source: "repo"})); break;
+   case "scope-task": console.log(JSON.stringify({padding: "x".repeat(settings.scopePadding ?? 0), targets:[{path:"src/main.rs"}]})); break;
++  case "execution-brief": console.log(JSON.stringify({
++    task: args[1], workstreams: [{ path: "src/main.rs", tier: "P0" }], route: {
++      first_command: "rtk pixel find-code " + JSON.stringify(args[1]),
++      steps: [
++        { order: 1, action: "retrieve", command: "rtk pixel find-code " + JSON.stringify(args[1]) },
++        { order: 2, action: "read_result", max_lines: 40, command: "read the first returned path:line only" },
++        { order: 3, action: "validate", command: "verify the answer against the bounded evidence" },
++      ],
++      retry: { after: "first result is unresolved, capped, or irrelevant", command: "rtk pixel find-code 'narrower behavior'" },
++      fallback: { after_pixel_calls: 2, command: "rtk rg -n -F -- 'task' ." },
++      on_unavailable: "Pixel is advisory; continue with native tools and report that retrieval was unavailable.",
++    },
++  })); break;
+   case "repo-state": console.log(JSON.stringify({branch:"fixture"})); break;
+   case "find-code": console.log(JSON.stringify(settings.findAmbiguous ? {confidence:"ranked",matches:[{path:"src/a.rs",raw:"main",symbol_kind:"function"},{path:"src/b.rs",raw:"main",symbol_kind:"function"}]} : {padding: "x".repeat(settings.findPadding ?? 0), confidence:"resolved",matches:[{path:"src/found.rs",raw:"main",symbol_kind:"function"}]})); break;
+   case "classify": {
+@@ -116,7 +129,7 @@ switch (args[0]) {
+     };
+     await emit("session_start", { reason: "startup" });
+     assert.ok(active.includes("pixel") && active.includes("pixel_project"), "session start activates both pixel tools");
+-    return { emit, tool, activateAgain: () => activate(api), boot: () => emit("before_agent_start", { prompt: "inspect the implementation" }) };
++    return { emit, tool, activateAgain: () => activate(api), boot: (prompt = "inspect the implementation") => emit("before_agent_start", { prompt }) };
+   };
+   const check = async (name, test) => {
+     configure();
+@@ -129,6 +142,11 @@ switch (args[0]) {
+   const read = (path = "src/main.rs", limit) => ({ toolName: "read", input: { path, ...(limit === undefined ? {} : { limit }) } });
+   const pixelResult = (isError = false, toolName = "pixel") => ({ toolName, toolCallId: "pixel", input: {}, content: [{ type: "text", text: "{}" }], isError });
+   const count = (op) => calls().filter(([name]) => name === op).length;
++  // The blocked-read guidance must name alternatives an agent can act on
++  // without a uid it does not have; pack-context stays conditional on a
++  // valid uid from an earlier pixel result.
++  const READ_REASON = "repository read: use pixel search-content for a known identifier, pixel find-code for behavior, or pixel pack-context only when a valid uid is available";
++  const SEARCH_REASON = "repository search: use pixel search-content for a known identifier or pixel find-code for behavior";
+ 
+   await check("advisory default and invalid settings preserve every native input", async () => {
+     for (const mode of [undefined, "advisory", "invalid"]) {
+@@ -143,6 +161,30 @@ switch (args[0]) {
+     }
+   });
+ 
++  await check("prompt bootstrap injects an ordered populated route and the agent uses its bounded result", async () => {
++    const h = await host("enforce");
++    const prompt = "Find the behavior that decides native repository reads and explain its guard";
++    const boot = await h.boot(prompt);
++    const route = boot.message.content;
++    assert.match(route, /DETERMINISTIC PIXEL ROUTE/);
++    assert.ok(route.indexOf("1. retrieve:") < route.indexOf("2. read_result (maximum 40 lines):"));
++    assert.ok(route.indexOf("2. read_result (maximum 40 lines):") < route.indexOf("3. validate:"));
++    assert.ok(route.includes(`rtk pixel find-code ${JSON.stringify(prompt)}`));
++    assert.match(route, /Retry only if the first result is unresolved, capped, or irrelevant/);
++    assert.match(route, /After two nonconverging Pixel calls, use: rtk rg/);
++    assert.match(route, /If Pixel is unavailable: Pixel is advisory/);
++    const briefCall = calls().findLast(([name]) => name === "execution-brief");
++    assert.equal(briefCall[1], prompt, "the exact current prompt reaches execution-brief");
++    assert.deepEqual(briefCall.slice(-2), ["--metrics", "off"], "bootstrap probes suppress metrics by design");
++
++    const result = await h.tool.execute("find", { action: "find_code", goal: prompt }, null, null, user(prompt));
++    assert.equal(result.content.length, 2);
++    assert.match(result.content[0].text, /matches/);
++    assert.equal(result.content[1].text, "🟩 pixel find-code ❀ 1.0ms\n  │\n  └───");
++    await h.emit("tool_result", { toolName: "pixel", toolCallId: "pixel", input: {}, ...result });
++    assert.equal(await h.emit("tool_call", read("src/found.rs", 40)), undefined, "the result path accepts a read bounded to the route's 40-line limit");
++  });
++
+   await check("configuration decides enforcement when the environment is silent", async () => {
+     for (const [policy, blocked, guidance] of [["advisory", false, /Native tools remain available/], ["enforce", true, /Enforcement is enabled/], ["off", false, /Native tools remain available/]]) {
+       configure({ policy });
+@@ -188,20 +230,20 @@ switch (args[0]) {
+       const result = await h.emit("tool_call", event);
+       return result ? JSON.parse(result.reason).redirect : undefined;
+     };
+-    assert.equal(await why("cat src/main.rs"), "repository read: use pixel search-content or pixel pack-context <uid>");
+-    assert.equal(await why("head src/main.rs"), "repository read: use pixel search-content or pixel pack-context <uid>");
+-    assert.equal(await why("awk '{print}' src/main.rs"), "repository read: use pixel search-content or pixel pack-context <uid>");
+-    assert.equal(await why("sed 's/a/b/' src/main.rs"), "repository read: use pixel search-content or pixel pack-context <uid>");
++    assert.equal(await why("cat src/main.rs"), READ_REASON);
++    assert.equal(await why("head src/main.rs"), READ_REASON);
++    assert.equal(await why("awk '{print}' src/main.rs"), READ_REASON);
++    assert.equal(await why("sed 's/a/b/' src/main.rs"), READ_REASON);
+     // bounded sed read: should be ALLOWED (not blocked), so returns undefined
+     assert.equal(await h.emit("tool_call", native("sed -n '1,20p' src/main.rs")), undefined);
+     assert.equal(await h.emit("tool_call", native("rtk sed -n '1,20p' src/main.rs")), undefined);
+-    assert.equal(await why("cp src/main.rs /tmp/x"), "repository read: use pixel search-content or pixel pack-context <uid>");
+-    assert.equal(await why("rg error src"), "repository search: use pixel search-content");
+-    assert.equal(await why("grep error src"), "repository search: use pixel search-content");
++    assert.equal(await why("cp src/main.rs /tmp/x"), READ_REASON);
++    assert.equal(await why("rg error src"), SEARCH_REASON);
++    assert.equal(await why("grep error src"), SEARCH_REASON);
+     // No path operand: the search runs over the cwd, the repository; the
+     // pattern must not be read as a path that does not exist.
+-    assert.equal(await why("rg error"), "repository search: use pixel search-content");
+-    assert.equal(await why("grep -rn error"), "repository search: use pixel search-content");
++    assert.equal(await why("rg error"), SEARCH_REASON);
++    assert.equal(await why("grep -rn error"), SEARCH_REASON);
+     assert.equal(await why("ls src"), "repository discovery: use pixel list-areas or find-code");
+     assert.equal(await why("find src"), "repository discovery: use pixel find-code or list-areas");
+     assert.equal(await why("git status"), "repository inspection: use pixel repo-state");
+@@ -242,7 +284,7 @@ switch (args[0]) {
+       "sed -n '1,20p' src", "sed -n '1,20p' notes.txt", "rtk sed -n '1,20p' notes.txt",
+       "sed -n '1,20p' .pixel/notes.txt", "sed -n '1,20p' .git/config", "sed -n '1,201p' src/main.rs",
+     ]) {
+-      assert.equal(await why(command), "repository read: use pixel search-content or pixel pack-context <uid>", command);
++      assert.equal(await why(command), READ_REASON, command);
+     }
+     // Missing paths, paths outside the repository and in-place edits keep
+     // their native handling, as they do in the guard.

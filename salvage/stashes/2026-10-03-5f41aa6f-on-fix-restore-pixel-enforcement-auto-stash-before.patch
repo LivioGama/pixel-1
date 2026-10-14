@@ -1,0 +1,127 @@
+# stash 5f41aa6f274355d39b108f3a2c919149c98eea3a (2026-10-03 23:31:12 +0200) On fix/restore-pixel-enforcement: auto-stash before switching to main
+# base 541e030c2ac3045dfd0fa39e08bc3cf0c330d98c
+diff --git a/.githooks/pre-push b/.githooks/pre-push
+index cbbd9b52..636e132a 100755
+--- a/.githooks/pre-push
++++ b/.githooks/pre-push
+@@ -1,11 +1,13 @@
+ #!/bin/sh
+-# Mutation coverage is proved in CI. Before pushing Rust changes, make its
+-# prospective mutation surface visible and require a receipt for this exact
+-# commit, base and listing.
++# Mutation coverage is proved before the push, off this machine: the gate
++# script bundles the committed diff to the gate host (PIXEL_MUTANTS_GATE_HOST,
++# default a2) where the campaign runs against a warm target/, and the push is
++# blocked on the remote verdict. Nothing mutant-related compiles or runs
++# locally; CI's Mutants in diff remains the required merge gate.
+ set -eu
+ 
+ repo=$(git rev-parse --show-toplevel) || exit 0
+-"$repo/scripts/mutants-preflight.sh" --check
++"$repo/scripts/mutants-remote-gate.sh"
+ 
+ # review-gate: the branch must sit on the freshest remote default and the
+ # deterministic review must hold no BLOCKER or CONCERN finding. Skipped when
+diff --git a/.github/workflows/board-sync.yml b/.github/workflows/board-sync.yml
+index 3ef7a935..3b69551f 100644
+--- a/.github/workflows/board-sync.yml
++++ b/.github/workflows/board-sync.yml
+@@ -24,6 +24,9 @@ concurrency:
+ 
+ jobs:
+   sync:
++    # A standard GitHub-hosted runner: this job never checks out the PR's
++    # code (one gh api call against the project), so pull_request_target
++    # stays safe, and there is no self-hosted runner to keep healthy.
+     runs-on: ubuntu-latest
+     steps:
+       - name: Sync project 3 status with the PR lifecycle
+diff --git a/Cargo.toml b/Cargo.toml
+index a16f2f48..042edf8a 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -71,6 +71,19 @@ mutants = "0.0.4"
+ # OpenSSL. Pulled in transitively via fastembed → hf-hub → native-tls.
+ openssl = { version = "0.10", features = ["vendored"] }
+ 
++# Inner-loop debug builds keep line tables only: full debuginfo is ~90% of
++# an incremental rebuild of the pixel crate (2.9 s vs 46.7 s, measured
++# 2026-10-03) and grows superlinearly with it. CI's Mutants shards already
++# run this way via CARGO_PROFILE_DEV_DEBUG. Backtraces keep file:line; a
++# debugger needs `cargo build --profile dev-full` below.
++[profile.dev]
++debug = "line-tables-only"
++
++# Full-debuginfo dev build for debugger sessions: `cargo build --profile dev-full`.
++[profile.dev-full]
++inherits = "dev"
++debug = true
++
+ [profile.release]
+ lto = "thin"
+ codegen-units = 1
+diff --git a/crates/pixel-install/src/antigravity.rs b/crates/pixel-install/src/antigravity.rs
+index 8469ed2d..dcaa1d43 100644
+--- a/crates/pixel-install/src/antigravity.rs
++++ b/crates/pixel-install/src/antigravity.rs
+@@ -593,19 +593,16 @@ mod tests {
+     #[test]
+     fn antigravity_prompt_should_require_scoped_reads_after_pixel_hits() {
+         assert!(
+-            AGENT_PROMPT_ASSET.contains(
+-                "A hit is the retrieval. When Pixel serves `path:line`, read that region"
+-            ),
++            AGENT_PROMPT_ASSET.contains("that answer is the retrieval. Read only the"),
+             "Antigravity guidance must treat a Pixel hit as the retrieval"
+         );
+         assert!(
+-            AGENT_PROMPT_ASSET.contains("scoped read of the served window")
+-                && AGENT_PROMPT_ASSET.contains("`sed -n '<line>,+40p' <path>`")
+-                && AGENT_PROMPT_ASSET.contains("`read(path, offset=<line>, limit≈40)`"),
++            AGENT_PROMPT_ASSET.contains("`sed -n '<line>,+40p' <path>`")
++                && AGENT_PROMPT_ASSET.contains("`offset=<line>, limit≈40` read"),
+             "Antigravity guidance must give bounded scoped-read examples"
+         );
+         assert!(
+-            AGENT_PROMPT_ASSET.contains("reading the whole file after Pixel"),
++            AGENT_PROMPT_ASSET.contains("a whole-file read pays for the answer"),
+             "Antigravity guidance must reject whole-file reads after a Pixel hit"
+         );
+     }
+diff --git a/crates/pixel-install/tests/install_tests.rs b/crates/pixel-install/tests/install_tests.rs
+index 9782aeb2..18cff6c5 100644
+--- a/crates/pixel-install/tests/install_tests.rs
++++ b/crates/pixel-install/tests/install_tests.rs
+@@ -908,7 +908,8 @@ fn doctor_install_artifact_checks_red_and_green() {
+     let prompt_path = home.join(".local/share/pixel/agent-prompt.md");
+     let mut edited = fs::read_to_string(&prompt_path).expect("agent-prompt deployed");
+     assert!(
+-        edited.contains("## Retrieval commands") && edited.contains("## Reading results"),
++        edited.contains("## Retrieval commands")
++            && edited.contains("## The stopping rule — a served hit ends the retrieval"),
+         "fixture: the edited prompt must still satisfy the old heuristic"
+     );
+     edited.push_str("\nOne extra rule the bundled prompt does not carry.\n");
+@@ -2793,7 +2794,7 @@ fn doctor_codex_config_check_is_red_until_the_current_block_is_in_place() {
+     let written = fs::read_to_string(codex_config_path(home)).unwrap();
+     fs::write(
+         codex_config_path(home),
+-        written.replace("## Reading results", "## Reading output"),
++        written.replace("## Retrieval commands", "## Reading output"),
+     )
+     .unwrap();
+     let check = status();
+diff --git a/crates/pixel/src/guard.rs b/crates/pixel/src/guard.rs
+index 3bfb14cd..9f04f880 100644
+--- a/crates/pixel/src/guard.rs
++++ b/crates/pixel/src/guard.rs
+@@ -7045,8 +7045,8 @@ mod tests {
+             );
+             for kept in [
+                 "# Pixel — indexed code retrieval",
++                "## The stopping rule — a served hit ends the retrieval",
+                 "## Retrieval commands",
+-                "## Reading results",
+                 "## When native tools are right",
+             ] {
+                 assert!(context.contains(kept), "{provider:?} lost {kept}");

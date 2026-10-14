@@ -1,0 +1,651 @@
+# stash 9258f1a922e4c3755b02aa7d6030609046698e8d (2026-09-29 21:49:06 +0200) On main: inner-loop: gates.sh --changed/--shared-target + docs (autostash before main fast-forward, 2026-09-29 21:48)
+# base ca1ce9e807c075b8c1f777e73ee4d7277a45dcc0
+diff --git a/AGENTS.md b/AGENTS.md
+index afdac142..02874cc0 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -21,6 +21,16 @@ For each `MISSED` line either:
+ 
+ Push the fix and let the workflow re-run until it reports `0 missed`. Skipping a business rule because the test is hard is not an option; see CONTRIBUTING.md "Mutation testing" for the outcome table and exit codes.
+ 
++## Core Development Loop
++
++While iterating, run the gates scoped to the diff instead of compiling all seventeen crates per edit, and make a worktree that has never built reuse the main checkout's build:
++
++```bash
++scripts/gates.sh --changed --shared-target   # fmt, clippy and the touched crates' tests
++```
++
++Clippy type-checks as it lints, so one scoped invocation replaces the edit/`cargo check` round trip. Neither flag is the gate: `scripts/gates.sh` with no flags is the run a push owes, and `--changed` says so when it finishes. The measurements behind both, and what `--changed` deliberately does not cover (the crates that depend on a changed library; a manifest or `.cargo/` change, which widens it back to the workspace), are in CONTRIBUTING.md, "The inner loop, and why a new worktree is not cold".
++
+ 
+ ## Rules Directory
+ 
+diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md
+index 56e88ad0..e3c9785b 100644
+--- a/CONTRIBUTING.md
++++ b/CONTRIBUTING.md
+@@ -122,6 +122,52 @@ the CPUs, unless those variables are already set. `--force` runs the gates
+ regardless; `CI=1` disables both behaviours. Its contract is pinned by
+ `scripts/test-gates.py`, which CI runs.
+ 
++### The inner loop, and why a new worktree is not cold
++
++The flagless run above is the gate: everything, before a push. While you are
++still editing, two flags make the feedback much cheaper, and both are
++measurements of this repository rather than advice.
++
++```bash
++scripts/gates.sh --changed                 # fmt, clippy and the tests of the crates the diff touches
++scripts/gates.sh --changed --shared-target # the same, reusing the main checkout's build
++```
++
++`--changed` reads the diff (committed against the merge base with `main`,
++plus the working tree) and derives the packages from it: `crates/<dir>/…`
++resolves through that crate's manifest, so `crates/pixel` is `pixel-cli`.
++Clippy type-checks as it lints, so one scoped invocation replaces the
++edit/`cargo check` round trip, and the test step runs those crates' tests
++rather than the workspace's. It covers two things less than the gate, and
++says so when it finishes: the crates that *depend* on a changed library are
++compiled by the flagless run alone, and a change to a manifest, the lockfile
++or `.cargo/` widens the scope back to the whole workspace, because features
++and dependency versions unify there. Seventeen crates compile once per gate
++run; this is the loop that keeps an edit from paying for all of them.
++
++`--shared-target` points cargo at the main checkout's `target/` instead of
++this worktree's. Cargo keys a workspace member's fingerprint on its path
++*inside* the workspace, not on where the workspace lives — the dep-info
++records `src/lib.rs`, not an absolute path — so a worktree that has never
++built reuses the units the main checkout already has. Measured on this
++repository with `cargo check -p pixel-proto`, counting artifacts from cargo's
++JSON stream (the counts are the finding; the machine was busy, so read the
++seconds as indicative): a worktree that had never built recompiled 0 of 18
++units in 1 s against an existing build directory, and 18 of 18 in 21 s with a
++`target/` of its own. Two worktrees that diverge keep separate fingerprint
++slots — an edit in one recompiled exactly its own crate and left the other
++checkout's units fresh — so the flag does not make two branches fight over
++one directory. What it does cost is the directory's lock: a build already
++running in the main checkout makes the run wait for it (it queues, it does
++not fail), which is why it is a flag and not the default when several
++worktrees build at once. A `CARGO_TARGET_DIR` you set yourself always wins.
++
++Starting a worktree this way is the difference between a cold workspace build
++and a warm one; `just disk` and `just clean` still price and reclaim every
++worktree's output (see "Reclaiming disk"), and `clean.sh` leaves the
++per-worktree `target/` alone while `CARGO_TARGET_DIR` points elsewhere,
++because those directories are then not cargo's output.
++
+ The `Mutants` workflow (`.github/workflows/mutants.yml`) runs on every pull
+ request that touches `crates/` and fails on a surviving mutant. It is the
+ gate; push and read its output rather than reproducing it locally (a
+diff --git a/justfile b/justfile
+index 08923b51..f3a5eca2 100644
+--- a/justfile
++++ b/justfile
+@@ -1,6 +1,13 @@
+-# Disk reclamation for a pixel checkout. `just` lists the recipes.
++# A pixel checkout: the local gate loop, and disk reclamation. `just` lists the recipes.
+ #
+-# The work is scripts/clean.sh, which runs the same way without just
++# The gates are scripts/gates.sh, which runs the same way without just (its
++# `--help` documents the flags): `just loop` is the inner loop -- the cargo
++# gates scoped to the crates the diff touches, built in the main checkout's
++# warm target/ -- and `just gates` is the gate itself, the whole workspace,
++# which is the run a push owes (CONTRIBUTING.md, "The inner loop, and why a
++# new worktree is not cold").
++#
++# The disk work is scripts/clean.sh, which runs the same way without just
+ # (`scripts/clean.sh --help` documents every scope and what it costs to
+ # rebuild): a recipe here only names a scope. Every scope covers all the
+ # worktrees `git worktree list` reports, not only the one just runs from --
+@@ -15,6 +22,14 @@
+ _default:
+     @just --list
+ 
++# The inner loop: fmt, clippy and the tests of the crates the diff touches, reusing the warm build. Not the gate.
++loop:
++    @scripts/gates.sh --changed --shared-target
++
++# The gate: fmt, clippy and the whole workspace's tests, exactly as CI runs them. Run it before pushing.
++gates *args:
++    @scripts/gates.sh {{args}}
++
+ # Report every reclaimable byte -- build output, indexes, caches, scratch. Removes nothing.
+ disk:
+     @scripts/clean.sh all --dry-run
+diff --git a/scripts/README.md b/scripts/README.md
+index db25fd21..1d5de1ea 100644
+--- a/scripts/README.md
++++ b/scripts/README.md
+@@ -15,8 +15,8 @@ pixel self-update --repo . --build "cargo build --profile dev-release -p pixel-c
+ 
+ | Script | Run | What |
+ | --- | --- | --- |
+-| `gates.sh` | `scripts/gates.sh [--force] [--mutants]` | fmt, clippy, nextest/test with laptop-safe defaults; exits 0 without compiling when nothing Rust-affecting changed |
+-| `test-gates.py` | `python3 scripts/test-gates.py` | contract of `gates.sh` (stub cargo in a throwaway repo) |
++| `gates.sh` | `scripts/gates.sh [--changed] [--shared-target] [--force] [--mutants]` | fmt, clippy, nextest/test with laptop-safe defaults; exits 0 without compiling when nothing Rust-affecting changed. `--changed` is the inner loop: the same gates, scoped to the crates the diff touches. `--shared-target` builds in the main checkout's warm `target/` instead of this worktree's |
++| `test-gates.py` | `python3 scripts/test-gates.py` | contract of `gates.sh` (stub cargo in a throwaway repo): the skip, the laptop-safe environment, the `--changed` scope, the `--shared-target` build directory |
+ | `mutants-preflight.sh` | `scripts/mutants-preflight.sh --check\|--ack\|--run [regex]` | fast pre-push listing and commit/base/listing-bound review receipt; `--run` executes the diff's mutants locally in a throwaway worktree, optionally `-F`-bounded |
+ | `test-mutants-preflight.sh` | `sh scripts/test-mutants-preflight.sh` | contract of the mutation exposure pre-push gate (stub cargo, disposable repo) |
+ | `test-prepare.py` | `python3 scripts/test-prepare.py` | contract of `.agents/skills/release/prepare.sh`'s pull request listing (stub gh/cargo, disposable repo, needs `jq`) |
+@@ -33,9 +33,11 @@ pixel self-update --repo . --build "cargo build --profile dev-release -p pixel-c
+ | --- | --- | --- |
+ | `clean.sh` | `scripts/clean.sh [build\|index\|cache\|bench\|all] [--dry-run]` | reclaim what this checkout can rebuild, across every worktree `git worktree list` reports. `--help` documents each scope and what getting it back costs |
+ 
+-The `justfile` is a front end for it: `just disk` is `clean.sh all --dry-run`,
+-`just clean` is the build scope, `just clean-index` / `clean-cache` /
+-`clean-bench` / `clean-all` are the others. Start with `just disk`: it prints
++The `justfile` fronts this and `gates.sh`: `just disk` is
++`clean.sh all --dry-run`, `just clean` is the build scope, `just clean-index` /
++`clean-cache` / `clean-bench` / `clean-all` are the others, and `just loop` /
++`just gates` are the two gate invocations of CONTRIBUTING.md "The inner loop,
++and why a new worktree is not cold". Start with `just disk`: it prints
+ the exact list the other recipes would remove and removes nothing. The recall
+ corpus and `~/.local/state/pixel` are never touched by any of them.
+ 
+diff --git a/scripts/gates.sh b/scripts/gates.sh
+index 0dc6f2c0..57087ee8 100755
+--- a/scripts/gates.sh
++++ b/scripts/gates.sh
+@@ -1,9 +1,11 @@
+ #!/bin/sh
+ # Local gate runner: the CI gates (fmt, clippy, test) with laptop-safe defaults.
+ #
+-#   scripts/gates.sh            # skip when nothing Rust-affecting changed
+-#   scripts/gates.sh --force    # run even when nothing changed
+-#   scripts/gates.sh --mutants  # also run cargo-mutants on the diff against main
++#   scripts/gates.sh                 # skip when nothing Rust-affecting changed
++#   scripts/gates.sh --changed       # inner loop: the gates scoped to the diff's crates
++#   scripts/gates.sh --shared-target # reuse the main checkout's warm target/
++#   scripts/gates.sh --force         # run even when nothing changed
++#   scripts/gates.sh --mutants       # also run cargo-mutants on the diff against main
+ #
+ # Why a script instead of three commands:
+ # - Skip-if-untouched: outside CI, when neither the diff against `main` nor
+@@ -14,6 +16,28 @@
+ #   contract is not a cargo gate and runs either way: it compiles nothing, and
+ #   a change to prepare.sh or to its own test must not need --force to be
+ #   checked.
++# - Inner loop (--changed): the same gates, compiled for the crates the diff
++#   touches instead of all seventeen. Clippy type-checks as it lints, so one
++#   scoped invocation replaces an edit/`cargo check` round trip, and the test
++#   step runs those crates' own tests. This is the loop; the run with no flag
++#   is still the gate, and --changed says so when it finishes. Two things it
++#   does not cover, by design: the crates that *depend* on a changed library
++#   (only the full pass compiles those), and any manifest or file above the
++#   crate (.cargo/, build.rs, a Cargo.toml anywhere, the lockfile), which
++#   selects every crate, because features and dependency versions unify
++#   across the workspace.
++# - Warm reuse (--shared-target): cargo writes to the main checkout's target/
++#   instead of this worktree's. A workspace member's fingerprint is keyed on
++#   its path *inside* the workspace, not on where the workspace lives -- its
++#   dep-info records `src/lib.rs`, not an absolute path -- so a worktree
++#   pointed at another checkout's build directory reuses every unit whose
++#   content matches: measured on this repository, a worktree that had never
++#   built recompiled 0 of 18 units for a leaf crate in 1 s, against 18 of 18
++#   in 21 s with a target/ of its own. Two worktrees that diverge keep
++#   separate fingerprint slots, so neither invalidates the other. The price
++#   is the directory's lock: a build already running in the main checkout
++#   makes this run wait (it queues, it does not fail), which is why the flag
++#   is opt-in and not the default.
+ # - Laptop safety: every cargo invocation runs under `nice` and with
+ #   CARGO_BUILD_JOBS defaulting to ncpu-2 (two cores stay free, peak rustc
+ #   memory drops with the job count) and RUST_TEST_THREADS to ncpu/2 (the
+@@ -28,16 +52,26 @@ set -eu
+ 
+ FORCE=0
+ MUTANTS=0
++CHANGED=0
++SHARED_TARGET=0
+ for arg in "$@"; do
+     case "$arg" in
+         --force) FORCE=1 ;;
+         --mutants) MUTANTS=1 ;;
+-        -h|--help) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
++        --changed) CHANGED=1 ;;
++        --shared-target) SHARED_TARGET=1 ;;
++        # The header above, to the first line that is not a comment. A line
++        # range would have to be moved by every edit to it, and the edit that
++        # forgets truncates this help mid-sentence without failing anything.
++        -h|--help) sed -n '2,/^[^#]/p' "$0" | sed -n 's/^# \{0,1\}//p'; exit 0 ;;
+         *) echo "gates.sh: unknown argument: $arg" >&2; exit 2 ;;
+     esac
+ done
+ 
+-REPO="$(cd "$(dirname "$0")/.." && pwd)"
++# Canonical, like clean.sh's root: git reports a worktree by its resolved path
++# (/private/tmp on macOS where the shell may hold /tmp), and the --shared-target
++# comparison against "the main checkout is me" has to compare the same spelling.
++REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
+ cd "$REPO"
+ 
+ # Paths whose change can alter a gate's outcome. Anything else (docs, prompts,
+@@ -46,15 +80,70 @@ rust_affecting() {
+     grep -E -q '(^|/)(Cargo\.toml|Cargo\.lock|build\.rs|rust-toolchain(\.toml)?|rustfmt\.toml|clippy\.toml)$|\.rs$|(^|/)\.cargo/'
+ }
+ 
++# Every path this change touches: the committed diff against the merge base
++# with `main`, plus the working tree including untracked files. Returns 1 when
++# git cannot answer (not a repo, no `main`).
++changed_paths() {
++    base="$(git merge-base main HEAD 2>/dev/null)" \
++        || base="$(git merge-base origin/main HEAD 2>/dev/null)" \
++        || return 1
++    committed="$(git diff --name-only "$base" HEAD 2>/dev/null)" || return 1
++    dirty="$(git status --porcelain --untracked-files=all 2>/dev/null | cut -c4-)" || return 1
++    printf '%s\n%s\n' "$committed" "$dirty"
++}
++
+ # Prints "run" when a gate could change outcome, "skip" when none can. Any
+ # git failure prints "run" (fail open).
+ gate_decision() {
+-    base="$(git merge-base main HEAD 2>/dev/null)" \
+-        || base="$(git merge-base origin/main HEAD 2>/dev/null)" \
+-        || { echo run; return; }
+-    committed="$(git diff --name-only "$base" HEAD 2>/dev/null)" || { echo run; return; }
+-    dirty="$(git status --porcelain --untracked-files=all 2>/dev/null | cut -c4-)" || { echo run; return; }
+-    if printf '%s\n%s\n' "$committed" "$dirty" | rust_affecting; then echo run; else echo skip; fi
++    paths="$(changed_paths)" || { echo run; return; }
++    if printf '%s\n' "$paths" | rust_affecting; then echo run; else echo skip; fi
++}
++
++# The `name` a manifest declares. The directory is not the name -- crates/pixel
++# holds `pixel-cli` -- so the manifest answers, and the first `name` after
++# `[package]` is the package's: a dependency called `name` cannot come first.
++package_name() {
++    [ -f "$1" ] || return 0
++    awk '
++        /^\[package\]/ { inside = 1; next }
++        /^\[/          { inside = 0 }
++        inside && /^[[:space:]]*name[[:space:]]*=/ {
++            match($0, /"[^"]*"/)
++            print substr($0, RSTART + 1, RLENGTH - 2)
++            exit
++        }
++    ' "$1"
++}
++
++# The packages the change touches, space-separated, for `cargo -p`: the
++# inverse of changed_paths for a scoped run. Prints `*` when the change
++# reaches above a crate -- features and dependency versions unify across the
++# workspace, so a manifest, the lockfile, .cargo/ or a build.rs can move every
++# crate at once and per-package selection cannot express it. Prints nothing
++# when no Rust-affecting path changed.
++changed_packages() {
++    paths="$(changed_paths)" || { echo '*'; return 0; }
++    [ -n "$paths" ] || return 0
++    if printf '%s\n' "$paths" \
++        | grep -E -q '(^|/)(Cargo\.toml|Cargo\.lock|build\.rs|rust-toolchain(\.toml)?|rustfmt\.toml|clippy\.toml)$|(^|/)\.cargo/'; then
++        echo '*'
++        return 0
++    fi
++    found=""
++    while IFS= read -r path; do
++        case "$path" in
++            crates/*/*.rs)
++                dir="${path#crates/}"; dir="${dir%%/*}"
++                name="$(package_name "crates/$dir/Cargo.toml")"
++                [ -n "$name" ] && found="$found $name"
++                ;;
++        esac
++    done <<EOF
++$paths
++EOF
++    [ -n "$found" ] || return 0
++    printf '%s\n' $found | sort -u | tr '\n' ' '
++    printf '\n'
+ }
+ 
+ if [ -z "${CI:-}" ]; then
+@@ -68,6 +157,31 @@ else
+     NICE=""
+ fi
+ 
++# --shared-target: the worktree that has been building all along owns the warm
++# directory, and the first entry of `git worktree list` is the main checkout.
++# Canonicalised (clean.sh does the same): the two spellings of one directory,
++# /tmp and /private/tmp on macOS, must compare equal.
++if [ "$SHARED_TARGET" -eq 1 ]; then
++    if [ -n "${CARGO_TARGET_DIR:-}" ]; then
++        echo "gates.sh: --shared-target: CARGO_TARGET_DIR is already $CARGO_TARGET_DIR; leaving it alone."
++    else
++        main_tree="$(git worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p' | head -1)"
++        main_tree="$(cd "${main_tree:-.}" 2>/dev/null && pwd -P || true)"
++        if [ -z "$main_tree" ]; then
++            echo "gates.sh: --shared-target: git lists no worktree; keeping this checkout's target/." >&2
++        elif [ "$main_tree" = "$REPO" ]; then
++            echo "gates.sh: --shared-target: this is the main checkout; its target/ is the shared one already."
++        elif [ -d "$main_tree/target" ]; then
++            export CARGO_TARGET_DIR="$main_tree/target"
++            echo "gates.sh: --shared-target: cargo writes to $CARGO_TARGET_DIR, not to this worktree's target/."
++            echo "gates.sh: a build running in the main checkout holds that directory's lock, so this run would queue behind it."
++        else
++            export CARGO_TARGET_DIR="$main_tree/target"
++            echo "gates.sh: --shared-target: $CARGO_TARGET_DIR does not exist yet; this run creates it (nothing to reuse)."
++        fi
++    fi
++fi
++
+ step() {
+     name="$1"; shift
+     printf '\n==> %s\n' "$name"
+@@ -89,9 +203,8 @@ step() {
+ # contract; test-mutants-config.py refuses an exclude_globs entry that would
+ # take a module out of the mutation gate; test-clean.py holds clean.sh to what
+ # it must not remove (a tracked file, a tree behind a symlink, the index under
+-# the default scope, the daemon sockets beside the shard cache). None compiles
+-# anything (17 s for the four, from this script's own step timings), which is
+-# why they run
++# the default scope, the daemon sockets beside the shard cache). None of them
++# compiles anything, which is why they run
+ # above the cargo skip rather than under it: none of the paths they cover is
+ # Rust-affecting, so under the skip a change to prepare.sh, to this file or to
+ # either test would still have needed --force to be checked. 0.4.0's release
+@@ -107,15 +220,41 @@ if [ "$FORCE" -eq 0 ] && [ -z "${CI:-}" ] && [ "$(gate_decision)" = skip ]; then
+     exit 0
+ fi
+ 
++# --changed: what the diff touches, as `-p <name>` arguments. SCOPED stays 0
++# when the change reaches above a crate, so the steps below run the full pass
++# and the closing note does not claim a narrower scope than it had.
++SCOPE=""
++SCOPED=0
++if [ "$CHANGED" -eq 1 ]; then
++    packages="$(changed_packages)"
++    case "$packages" in
++        '')
++            echo "gates.sh: --changed: no Rust-affecting change in the diff or the working tree; nothing to compile."
++            exit 0
++            ;;
++        '*')
++            echo "gates.sh: --changed: the change touches a manifest or another workspace-level file, so no crate is narrower than the workspace; running the full gates."
++            ;;
++        *)
++            SCOPED=1
++            for name in $packages; do SCOPE="$SCOPE -p $name"; done
++            echo "gates.sh: --changed: scoping the cargo gates to$SCOPE"
++            ;;
++    esac
++fi
++
+ step "cargo fmt --check" cargo fmt --all -- --check
+-step "cargo clippy" cargo clippy --workspace --all-targets -- -D warnings
++# ${SCOPE:---workspace} is `--workspace` for the full pass -- the gate stays
++# literally the command CI runs -- and `-p <name> ...` under --changed. The
++# splitting is the interface: cargo takes one -p per package.
++step "cargo clippy" cargo clippy ${SCOPE:---workspace} --all-targets -- -D warnings
+ # nextest (what CI runs, .config/nextest.toml) when installed, else cargo
+ # test. --no-fail-fast: a red test binary must not hide the ones after it.
+ if cargo nextest --version >/dev/null 2>&1; then
+-    step "cargo nextest" cargo nextest run --workspace --locked --no-fail-fast
+-    step "cargo test --doc" cargo test --workspace --locked --doc
++    step "cargo nextest" cargo nextest run ${SCOPE:---workspace} --locked --no-fail-fast
++    step "cargo test --doc" cargo test ${SCOPE:---workspace} --locked --doc
+ else
+-    step "cargo test" cargo test --workspace --locked --no-fail-fast
++    step "cargo test" cargo test ${SCOPE:---workspace} --locked --no-fail-fast
+ fi
+ 
+ if [ "$MUTANTS" -eq 1 ]; then
+@@ -125,5 +264,11 @@ if [ "$MUTANTS" -eq 1 ]; then
+     rm -f "$diff_file"
+ fi
+ 
++if [ "$SCOPED" -eq 1 ]; then
++    echo
++    echo "gates.sh: --changed covered$SCOPE -- the crates the diff touched, and not the crates that depend on them."
++    echo "gates.sh: run scripts/gates.sh with no flags before pushing; that run is the gate."
++fi
++
+ echo
+ echo "gates.sh: all gates passed"
+diff --git a/scripts/test-gates.py b/scripts/test-gates.py
+index a1ce8b04..e94d30ca 100755
+--- a/scripts/test-gates.py
++++ b/scripts/test-gates.py
+@@ -36,6 +36,15 @@ class GatesContract(unittest.TestCase):
+             )
+         (self.repo / "src").mkdir()
+         (self.repo / "src/lib.rs").write_text("pub fn a() {}\n")
++        # A workspace member whose directory is not its package name, like
++        # crates/pixel holding pixel-cli: the manifest is what names the
++        # package, so a scope derived from the path alone would be wrong.
++        (self.repo / "crates/dir-name/src").mkdir(parents=True)
++        (self.repo / "crates/dir-name/Cargo.toml").write_text(
++            '[package]\nname = "package-name"\nversion = "0.1.0"\n\n'
++            '[dependencies]\nserde = "1"\n'
++        )
++        (self.repo / "crates/dir-name/src/lib.rs").write_text("pub fn a() {}\n")
+         (self.repo / "README.md").write_text("readme\n")
+         self.git("init", "-q", "-b", "main")
+         self.git("add", ".")
+@@ -45,17 +54,23 @@ class GatesContract(unittest.TestCase):
+         fake.mkdir()
+         self.log = self.root / "cargo.log"
+         # `cargo nextest --version` answers only when HAVE_NEXTEST=1, so both
+-        # test-runner branches of the script are exercised.
++        # test-runner branches of the script are exercised. The other calls
++        # log their whole argv and the three variables beside it: the scope
++        # (--workspace or -p <name>) and the build directory are what the
++        # contract of --changed and --shared-target is made of.
+         (fake / "cargo").write_text(
+             "#!/bin/sh\n"
+             'if [ "$1" = nextest ] && [ "$2" = --version ]; then [ "${HAVE_NEXTEST:-0}" = 1 ]; exit $?; fi\n'
+-            'echo "cargo $1 jobs=${CARGO_BUILD_JOBS:-unset} threads=${RUST_TEST_THREADS:-unset}" >> "$GATES_LOG"\n'
++            'echo "cargo $* | jobs=${CARGO_BUILD_JOBS:-unset}'
++            ' threads=${RUST_TEST_THREADS:-unset} target=${CARGO_TARGET_DIR:-unset}"'
++            ' >> "$GATES_LOG"\n'
+             'case "$1" in clippy) exit "${FAIL_CLIPPY:-0}";; esac\n'
+         )
+         (fake / "cargo").chmod(0o755)
+         self.env = {
+             k: v for k, v in os.environ.items()
+-            if k not in ("CI", "CARGO_BUILD_JOBS", "RUST_TEST_THREADS")
++            if k not in ("CI", "CARGO_BUILD_JOBS", "RUST_TEST_THREADS",
++                         "CARGO_TARGET_DIR")
+         }
+         self.env.update({
+             "PATH": str(fake) + os.pathsep + os.environ["PATH"],
+@@ -78,9 +93,37 @@ class GatesContract(unittest.TestCase):
+             capture_output=True, text=True, timeout=30,
+         )
+ 
++    def in_worktree(self, *args, **extra_env):
++        """Run gates.sh from a second worktree of the fixture repository.
++
++        The main checkout is the first entry of `git worktree list`, and the
++        log is shared through the environment, so the invocations land beside
++        the main one's.
++        """
++        tree = self.root / "second"
++        if not tree.exists():
++            self.git("worktree", "add", "-q", "--detach", str(tree))
++        return subprocess.run(
++            ["sh", str(tree / "scripts/gates.sh"), *args],
++            cwd=tree, env={**self.env, **extra_env},
++            capture_output=True, text=True, timeout=30,
++        )
++
+     def invocations(self):
+         return self.log.read_text().splitlines() if self.log.exists() else []
+ 
++    # One (argv, environment) pair per stub cargo call: the argv carries the
++    # scope, `target` carries --shared-target.
++    def commands(self):
++        out = []
++        for line in self.invocations():
++            argv, _, env = line.partition(" | ")
++            out.append((argv, dict(f.split("=", 1) for f in env.split())))
++        return out
++
++    def subcommands(self):
++        return [argv.split()[1] for argv, _ in self.commands()]
++
+     def contracts(self):
+         if not self.prepare_log.exists():
+             return []
+@@ -131,11 +174,10 @@ class GatesContract(unittest.TestCase):
+         # Two cores stay free for the desktop; test binaries get half the
+         # CPUs (each integration test spawns a pixel process plus git).
+         threads = max(2, (os.cpu_count() or 4) // 2)
++        self.assertEqual(self.subcommands(), ["fmt", "clippy", "test"])
+         self.assertEqual(
+-            self.invocations(),
+-            [f"cargo fmt jobs=-2 threads={threads}",
+-             f"cargo clippy jobs=-2 threads={threads}",
+-             f"cargo test jobs=-2 threads={threads}"],
++            [env for _, env in self.commands()],
++            [{"jobs": "-2", "threads": str(threads), "target": "unset"}] * 3,
+         )
+         self.assertIn("all gates passed", result.stdout)
+ 
+@@ -143,10 +185,7 @@ class GatesContract(unittest.TestCase):
+         (self.repo / "src/lib.rs").write_text("pub fn b() {}\n")
+         result = self.gates(HAVE_NEXTEST="1")
+         self.assertEqual(result.returncode, 0, result.stderr)
+-        self.assertEqual(
+-            [line.split()[1] for line in self.invocations()],
+-            ["fmt", "clippy", "nextest", "test"],
+-        )
++        self.assertEqual(self.subcommands(), ["fmt", "clippy", "nextest", "test"])
+         self.assertIn("cargo test --doc ok", result.stdout)
+ 
+     def test_dirty_cargo_manifest_counts_as_rust_affecting(self):
+@@ -159,7 +198,8 @@ class GatesContract(unittest.TestCase):
+         (self.repo / "src/lib.rs").write_text("pub fn b() {}\n")
+         result = self.gates(CARGO_BUILD_JOBS="3", RUST_TEST_THREADS="5")
+         self.assertEqual(result.returncode, 0, result.stderr)
+-        self.assertEqual(self.invocations()[0], "cargo fmt jobs=3 threads=5")
++        self.assertEqual(self.commands()[0][1],
++                         {"jobs": "3", "threads": "5", "target": "unset"})
+ 
+     def test_force_runs_the_gates_without_a_rust_change(self):
+         result = self.gates("--force")
+@@ -170,10 +210,8 @@ class GatesContract(unittest.TestCase):
+         result = self.gates(CI="true")
+         self.assertEqual(result.returncode, 0, result.stderr)
+         self.assertEqual(
+-            self.invocations(),
+-            ["cargo fmt jobs=unset threads=unset",
+-             "cargo clippy jobs=unset threads=unset",
+-             "cargo test jobs=unset threads=unset"],
++            [env for _, env in self.commands()],
++            [{"jobs": "unset", "threads": "unset", "target": "unset"}] * 3,
+         )
+ 
+     def test_a_red_gate_stops_the_run_and_propagates_its_exit_code(self):
+@@ -181,7 +219,7 @@ class GatesContract(unittest.TestCase):
+         result = self.gates(FAIL_CLIPPY="7")
+         self.assertEqual(result.returncode, 7)
+         self.assertIn("cargo clippy FAILED", result.stderr)
+-        self.assertEqual([line.split()[1] for line in self.invocations()], ["fmt", "clippy"])
++        self.assertEqual(self.subcommands(), ["fmt", "clippy"])
+ 
+     def test_missing_main_branch_fails_open(self):
+         self.git("branch", "-D", "main")
+@@ -194,6 +232,105 @@ class GatesContract(unittest.TestCase):
+         self.assertEqual(result.returncode, 2)
+         self.assertEqual(self.invocations(), [])
+ 
++    # --- --changed: the inner loop -----------------------------------------
++
++    def test_changed_scopes_the_cargo_gates_to_the_diff_s_crates(self):
++        """A scoped run compiles the crate the diff touches, not the workspace.
++
++        The package is named by its manifest: crates/dir-name declares
++        package-name, the same way crates/pixel declares pixel-cli.
++        """
++        (self.repo / "crates/dir-name/src/lib.rs").write_text("pub fn b() {}\n")
++        self.git("commit", "-qam", "rust")
++        result = self.gates("--changed")
++        self.assertEqual(result.returncode, 0, result.stderr)
++        self.assertEqual(self.subcommands(), ["fmt", "clippy", "test"])
++        clippy = self.commands()[1][0].split()
++        self.assertIn("-p", clippy)
++        self.assertIn("package-name", clippy)
++        self.assertNotIn("--workspace", clippy)
++        # The run has to say it is not the gate: the crates that depend on the
++        # changed one are compiled by the flagless run alone.
++        self.assertIn("run scripts/gates.sh with no flags", result.stdout)
++
++    def test_changed_keeps_the_workspace_when_a_manifest_changed(self):
++        """Features and versions unify across the workspace.
++
++        A manifest, the lockfile or .cargo/ can move every crate at once, and
++        -p cannot express that, so the scope widens instead of guessing.
++        """
++        (self.repo / "crates/dir-name/Cargo.toml").write_text(
++            '[package]\nname = "package-name"\nversion = "0.2.0"\n'
++        )
++        self.git("commit", "-qam", "manifest")
++        result = self.gates("--changed")
++        self.assertEqual(result.returncode, 0, result.stderr)
++        clippy = self.commands()[1][0].split()
++        self.assertIn("--workspace", clippy)
++        self.assertNotIn("-p", clippy)
++        self.assertIn("no crate is narrower than the workspace", result.stdout)
++        # Not a scoped run, so the closing note must not claim it was one.
++        self.assertNotIn("run scripts/gates.sh with no flags", result.stdout)
++
++    def test_changed_with_nothing_rust_affecting_compiles_nothing(self):
++        """The contract tests still run above it: they are not cargo gates."""
++        (self.repo / "README.md").write_text("edited\n")
++        self.git("commit", "-qam", "docs")
++        result = self.gates("--changed")
++        self.assertEqual(result.returncode, 0, result.stderr)
++        self.assertEqual(self.invocations(), [])
++        self.assertEqual(len(self.contracts()), 4)
++
++    # --- --shared-target: reusing a warm build ------------------------------
++
++    def test_shared_target_writes_to_the_main_checkout_s_target(self):
++        """A new worktree reuses the build the main checkout already has.
++
++        cargo keys a workspace member's fingerprint on its path inside the
++        workspace, not on where the workspace lives, so the units a worktree
++        has not built itself come back fresh from the other directory.
++        """
++        result = self.in_worktree("--shared-target", "--force")
++        self.assertEqual(result.returncode, 0, result.stderr)
++        # The script resolves the directory (git reports /private/var where
++        # the fixture holds /var), so the expectation resolves too.
++        self.assertEqual(
++            [env["target"] for _, env in self.commands()],
++            [str(self.repo.resolve() / "target")] * 3,
++        )
++
++    def test_a_worktree_keeps_its_own_target_without_the_flag(self):
++        """The shared directory is opt-in: it is one lock, and one build runs.
++
++        Without the flag a worktree builds where it always did, so two
++        worktrees building at once never queue behind each other.
++        """
++        result = self.in_worktree("--force")
++        self.assertEqual(result.returncode, 0, result.stderr)
++        self.assertEqual(
++            [env["target"] for _, env in self.commands()],
++            ["unset"] * 3,
++        )
++
++    def test_shared_target_defers_to_an_explicit_cargo_target_dir(self):
++        """An explicit CARGO_TARGET_DIR is the developer's answer, not ours."""
++        result = self.in_worktree("--shared-target", "--force",
++                                  CARGO_TARGET_DIR=str(self.root / "mine"))
++        self.assertEqual(result.returncode, 0, result.stderr)
++        self.assertEqual(
++            [env["target"] for _, env in self.commands()],
++            [str(self.root / "mine")] * 3,
++        )
++        self.assertIn("leaving it alone", result.stdout)
++
++    def test_shared_target_in_the_main_checkout_uses_its_own(self):
++        result = self.gates("--shared-target", "--force")
++        self.assertEqual(result.returncode, 0, result.stderr)
++        # The main checkout is the directory that owns the warm build, so the
++        # flag is a no-op there rather than a redirect to an empty path.
++        self.assertEqual(self.commands()[0][1]["target"], "unset")
++        self.assertIn("its target/ is the shared one already", result.stdout)
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
