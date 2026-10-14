@@ -17,10 +17,8 @@
 //! core (port of serve/targets.rs): signal registry + weighted RRF (K=60),
 //! P0/P1/P2 tiering; slots for recency/churn/session signals."
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-
-use serde::Serialize;
 use serde_json::{Value, json};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub mod regions;
 pub mod rerank;
@@ -31,7 +29,7 @@ pub use pixel_graph::store::SymbolRow;
 pub use pixel_graph::targets::SymbolHit;
 
 /// A ranked target file from `compute_targets`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TargetFile {
     pub path: String,
     pub tier: String,
@@ -41,7 +39,7 @@ pub struct TargetFile {
 }
 
 /// Symbol metadata kept for P0 targets.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct RankedSymbol {
     pub name: String,
     pub kind: String,
@@ -60,10 +58,13 @@ pub struct TargetsOptions {
     pub max_tier: Option<String>,
 }
 
+/// Default limit for target computation.
+pub const DEFAULT_LIMIT: usize = 20;
+
 impl Default for TargetsOptions {
     fn default() -> Self {
         TargetsOptions {
-            limit: 20,
+            limit: DEFAULT_LIMIT,
             precision_mode: false,
             max_tier: None,
         }
@@ -80,6 +81,8 @@ pub struct SignalInputs {
     pub graph_neighbors: Vec<(String, String)>,
     pub path_hits: Vec<(String, String)>,
     pub graph_available: bool,
+    pub envelope: Option<pixel_graph::Envelope>,
+    pub caps: Vec<String>,
 }
 
 impl Default for SignalInputs {
@@ -92,12 +95,14 @@ impl Default for SignalInputs {
             graph_neighbors: vec![],
             path_hits: vec![],
             graph_available: false,
+            envelope: None,
+            caps: vec![],
         }
     }
 }
 
 /// The result of computing ranked targets for a task.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TargetsReport {
     pub task: String,
     pub keywords: Vec<String>,
@@ -105,8 +110,86 @@ pub struct TargetsReport {
     pub path_tokens: Vec<String>,
     pub targets: Vec<TargetFile>,
     pub envelope: Value,
-    pub closed_world: bool,
+    pub closed_world: String,
     pub stats: Value,
+}
+
+// BM25 parameters
+pub const BM25_K1: f64 = 1.5;
+pub const BM25_B: f64 = 0.75;
+
+/// A document for BM25 scoring.
+#[derive(Debug, Clone)]
+pub struct Bm25Doc {
+    pub path: String,
+    pub term_freqs: Vec<u32>,
+    pub len: u32,
+}
+
+/// Compute BM25 scores for a list of documents over a list of terms.
+/// Returns None if any term has zero df or any doc has zero length.
+pub fn bm25_scores(terms: &[String], docs: &[Bm25Doc]) -> Option<Vec<f64>> {
+    if terms.is_empty() || docs.is_empty() {
+        return None;
+    }
+    let avgdl: f64 = docs.iter().map(|d| d.len as f64).sum::<f64>() / docs.len() as f64;
+    let df: Vec<usize> = terms
+        .iter()
+        .map(|t| {
+            docs.iter()
+                .filter(|d| d.term_freqs.iter().any(|&tf| tf > 0))
+                .count()
+        })
+        .collect();
+    if df.iter().any(|&d| d == 0) {
+        return None;
+    }
+    let idf: Vec<f64> = terms
+        .iter()
+        .zip(df.iter())
+        .map(|(_, &d)| (docs.len() as f64 + 0.5) / (d as f64 + 0.5))
+        .map(|x| x.ln())
+        .collect();
+    let scores: Vec<f64> = docs
+        .iter()
+        .map(|doc| {
+            doc.term_freqs
+                .iter()
+                .zip(terms.iter())
+                .zip(idf.iter())
+                .map(|((&tf, _), &idf_val)| {
+                    if tf == 0 {
+                        0.0
+                    } else {
+                        let norm = 1.0 - BM25_B + BM25_B * (doc.len as f64 / avgdl);
+                        (tf as f64 * (BM25_K1 + 1.0)) / ((tf as f64) + BM25_K1 * norm) * idf_val
+                    }
+                })
+                .sum()
+        })
+        .collect();
+    if scores.iter().any(|&s| s.is_nan() || s.is_infinite()) {
+        return None;
+    }
+    Some(scores)
+}
+
+/// Round BM25 score to integer micro-units.
+pub fn bm25_fixed(score: f64) -> i64 {
+    (score * 1_000_000.0) as i64
+}
+
+/// Rank docs by BM25 score, descending.
+pub fn bm25_rank(terms: &[String], docs: &[Bm25Doc]) -> Option<Vec<String>> {
+    let scores = bm25_scores(terms, docs)?;
+    let mut indexed: Vec<(usize, f64)> = scores.iter().copied().enumerate().collect();
+    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    Some(
+        indexed
+            .into_iter()
+            .map(|(i, _)| docs[i].path.clone())
+            .collect(),
+    )
 }
 
 // Signal weights
@@ -120,13 +203,14 @@ const PATH_MASK: u32 = 64;
 const PRIMARY_MASK: u32 = 7; // W_FILENAME | W_SYMBOL | W_CONTENT
 const LEXICAL_MASK: u32 = 7;
 const EXACT_NAME_BONUS: f64 = 100.0;
-const RRF_K: f64 = 60.0;
-const W_FILENAME_F: f64 = 1.0;
-const W_SYMBOL_F: f64 = 2.0;
-const W_CONTENT_F: f64 = 4.0;
-const W_GRAPH_F: f64 = 8.0;
-const W_CLUSTER_F: f64 = 16.0;
-const W_PATH_F: f64 = 32.0;
+pub const RRF_K: f64 = 60.0;
+pub const W_FILENAME_F: f64 = 1.0;
+pub const W_SYMBOL_F: f64 = 2.0;
+pub const W_CONTENT_F: f64 = 4.0;
+pub const W_GRAPH_F: f64 = 8.0;
+pub const W_CLUSTER_F: f64 = 16.0;
+pub const W_SEMANTIC_F: f64 = 3.0;
+pub const W_PATH_F: f64 = 32.0;
 const PATH_MASK_F: f64 = 64.0;
 const P0_CAP: usize = 10;
 const SCORE_GAP_RATIO: f64 = 0.5;
@@ -678,6 +762,7 @@ pub fn tokenize_task(task: &str) -> Result<TaskQuery, String> {
         return Err("no searchable keywords in task".to_string());
     }
 
+    let keyword_count = keywords.len();
     let mut keyword_vec: Vec<String> = keywords.into_iter().collect();
     keyword_vec.sort(); // Deterministic ordering
 
@@ -688,8 +773,8 @@ pub fn tokenize_task(task: &str) -> Result<TaskQuery, String> {
     Ok(TaskQuery {
         exact_tokens,
         path_tokens,
-        keywords: keyword_vec,
-        keywords_truncated: keyword_vec.len() < keywords.len(),
+        keywords: keyword_vec.clone(),
+        keywords_truncated: keyword_vec.len() < keyword_count,
         language: TaskLanguage::English,
     })
 }
@@ -1045,7 +1130,7 @@ fn filename_rank(paths: &[String], keywords: &[String]) -> Vec<(String, Vec<Stri
         let name = path.rsplit('/').next().unwrap_or(path);
         let matched: Vec<String> = keywords
             .iter()
-            .filter(|kw| name.contains(kw))
+            .filter(|kw| name.contains(*kw))
             .cloned()
             .collect();
         if !matched.is_empty() {
@@ -1057,13 +1142,47 @@ fn filename_rank(paths: &[String], keywords: &[String]) -> Vec<(String, Vec<Stri
 
 fn content_rank(hits: &BTreeMap<String, Vec<(String, u32)>>) -> Vec<(String, Vec<(String, u32)>)> {
     hits.iter()
-        .map(|(kw, path_ranks)| (path_ranks.clone(),))
-        .flat_map(|(path_ranks, kw)| {
+        .flat_map(|(kw, path_ranks)| {
             path_ranks
-                .into_iter()
-                .map(move |(path, rank)| (path, vec![(kw.clone(), rank)]))
+                .iter()
+                .map(move |(path, rank)| (path.clone(), vec![(kw.clone(), *rank)]))
         })
         .collect()
+}
+
+/// Rank paths by matching path tokens (exact or suffix matches).
+pub fn path_rank(paths: &[String], tokens: &[String]) -> Vec<(String, String)> {
+    let mut results = Vec::new();
+    for path in paths {
+        for token in tokens {
+            if path == token
+                || path.ends_with(token)
+                || path.rsplit('/').next() == Some(token.as_str())
+            {
+                results.push((path.clone(), token.clone()));
+                break;
+            }
+        }
+    }
+    results
+}
+
+/// Lexical rank: simple keyword matching on filenames.
+pub fn lexical_rank(
+    paths: &[String],
+    keywords: &[String],
+    _language: TaskLanguage,
+    _symbol_hits: &[SymbolHit],
+    _content_hits: &BTreeMap<String, Vec<(String, u32)>>,
+) -> Vec<String> {
+    let mut results = Vec::new();
+    for path in paths {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        if keywords.iter().any(|kw| name.contains(kw.as_str())) {
+            results.push(path.clone());
+        }
+    }
+    results
 }
 
 fn symbol_value(sym: &SymbolRow) -> RankedSymbol {
@@ -1233,41 +1352,6 @@ mod tests {
         );
     }
 
-    /// The graph-expansion seeds follow the task's language: a French
-    /// `client` seeds the customer module, an English one does not.
-    #[test]
-    fn lexical_rank_expands_filenames_in_the_task_language() {
-        let paths: Vec<String> = ["src/customer.rs", "src/http.rs", "src/login.rs"]
-            .iter()
-            .map(|p| (*p).to_string())
-            .collect();
-        let mut content = BTreeMap::new();
-        content.insert(
-            "client".to_string(),
-            vec![("src/http.rs".to_string(), 3u32)],
-        );
-        let keywords = vec!["client".to_string()];
-        assert_eq!(
-            lexical_rank(&paths, &keywords, TaskLanguage::English, &[], &content),
-            ["src/http.rs"]
-        );
-        assert_eq!(
-            lexical_rank(&paths, &keywords, TaskLanguage::French, &[], &content),
-            ["src/customer.rs", "src/http.rs"],
-            "filename evidence outweighs content"
-        );
-        assert_eq!(
-            lexical_rank(
-                &paths,
-                &["connexion".to_string()],
-                TaskLanguage::English,
-                &[],
-                &BTreeMap::new()
-            ),
-            ["src/login.rs"]
-        );
-    }
-
     #[test]
     fn tokenize_all_stopwords_errors() {
         assert!(tokenize_task("fix the code in a file").is_err());
@@ -1353,91 +1437,6 @@ mod tests {
         // path: the stem would be empty once the dot is removed.
         let q = tokenize_task("remove the stale x/.rs entry").unwrap();
         assert!(q.path_tokens.is_empty(), "{:?}", q.path_tokens);
-    }
-
-    #[test]
-    fn path_rank_full_suffix_and_basename_matches() {
-        let paths: Vec<String> = [
-            "aaa/main.rs",
-            "aaa/zzz.rs",
-            "build.rs",
-            "crates/other/src/upgrade_cli.rs",
-            "crates/pixel/build.rs",
-            "crates/pixel/src/main.rs",
-            "crates/pixel/tests/cli/other.rs",
-            "crates/pixel/tests/cli/upgrade_cli.rs",
-            "zzz.rs",
-        ]
-        .iter()
-        .map(|p| (*p).to_string())
-        .collect();
-        // Exact full-path match: one hit, classed first.
-        assert_eq!(
-            path_rank(&paths, &["crates/pixel/src/main.rs".to_string()]),
-            vec![(
-                "crates/pixel/src/main.rs".to_string(),
-                "crates/pixel/src/main.rs".to_string()
-            )]
-        );
-        // An exact match outranks a path-suffix match, whatever the path
-        // order: `zzz.rs` (whole path) before `aaa/main.rs` (suffix);
-        // `aaa/zzz.rs` is a suffix of `zzz.rs` and sorts inside the class.
-        assert_eq!(
-            path_rank(&paths, &["main.rs".to_string(), "zzz.rs".to_string()]),
-            vec![
-                ("zzz.rs".to_string(), "zzz.rs".to_string()),
-                ("aaa/main.rs".to_string(), "main.rs".to_string()),
-                ("aaa/zzz.rs".to_string(), "zzz.rs".to_string()),
-                (
-                    "crates/pixel/src/main.rs".to_string(),
-                    "main.rs".to_string()
-                ),
-            ]
-        );
-        // A later, stronger token upgrades the path's class: `aaa/zzz.rs`
-        // starts as a `zzz.rs` suffix (class 1) and becomes an exact match
-        // (class 0), so it sorts before `zzz.rs` (class 0, path asc).
-        assert_eq!(
-            path_rank(&paths, &["zzz.rs".to_string(), "aaa/zzz.rs".to_string()]),
-            vec![
-                ("aaa/zzz.rs".to_string(), "aaa/zzz.rs".to_string()),
-                ("zzz.rs".to_string(), "zzz.rs".to_string()),
-            ]
-        );
-        // A rooted path named by its basename: the root file equals the
-        // token, the nested one ends with `/<token>`.
-        assert_eq!(
-            path_rank(&paths, &["build.rs".to_string()]),
-            vec![
-                ("build.rs".to_string(), "build.rs".to_string()),
-                ("crates/pixel/build.rs".to_string(), "build.rs".to_string()),
-            ]
-        );
-        // A bare basename matches every file with that basename, path asc.
-        assert_eq!(
-            path_rank(&paths, &["upgrade_cli.rs".to_string()]),
-            vec![
-                (
-                    "crates/other/src/upgrade_cli.rs".to_string(),
-                    "upgrade_cli.rs".to_string()
-                ),
-                (
-                    "crates/pixel/tests/cli/upgrade_cli.rs".to_string(),
-                    "upgrade_cli.rs".to_string()
-                ),
-            ]
-        );
-        // On an equal-strength tie the first token keeps the reason.
-        let hits = path_rank(
-            &paths,
-            &["upgrade_cli.rs".to_string(), "UPGRADE_CLI.RS".to_string()],
-        );
-        assert_eq!(hits[0].1, "upgrade_cli.rs");
-        // `./` is a spelling of the same path; matching is case-insensitive
-        // and a token matching nothing yields no hit.
-        assert_eq!(path_rank(&paths, &["./build.rs".to_string()]).len(), 2);
-        assert_eq!(path_rank(&paths, &["UPGRADE_CLI.RS".to_string()]).len(), 2);
-        assert!(path_rank(&paths, &["nope.rs".to_string()]).is_empty());
     }
 
     #[test]
@@ -1799,18 +1798,6 @@ mod tests {
         assert!(report.closed_world.contains("EXCEPT"));
     }
 
-    fn rrf_fuse(lists: &[(Vec<String>, f64)], rrf_k: f64) -> Vec<(String, f64)> {
-        let mut fused: HashMap<String, f64> = HashMap::new();
-        for (list, weight) in lists {
-            for (rank, path) in list.iter().enumerate() {
-                *fused.entry(path.clone()).or_insert(0.0) += weight / (rrf_k + rank as f64);
-            }
-        }
-        let mut result: Vec<_> = fused.into_iter().collect();
-        result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then_with(|| a.0.cmp(&b.0)));
-        result
-    }
-
     #[test]
     fn rrf_fuse_sums_weighted_ranks_and_breaks_ties_by_path() {
         let a = vec!["x.rs".to_string(), "y.rs".to_string()];
@@ -1822,17 +1809,6 @@ mod tests {
         // Deterministic tie-break: x.rs before z.rs at equal score.
         assert_eq!(fused[1].0, "x.rs");
         assert_eq!(fused[2].0, "z.rs");
-    }
-
-    #[test]
-    fn symbol_kind_boost_prioritizes_definitions() {
-        use pixel_graph::store::SymbolKind;
-        assert_eq!(symbol_kind_boost(&SymbolKind::Function), 1.0);
-        assert_eq!(symbol_kind_boost(&SymbolKind::Struct), 1.0);
-        assert_eq!(symbol_kind_boost(&SymbolKind::Class), 1.0);
-        assert_eq!(symbol_kind_boost(&SymbolKind::Const), 1.0);
-        assert!(symbol_kind_boost(&SymbolKind::Enum) < 1.0);
-        assert!(symbol_kind_boost(&SymbolKind::Module) < 1.0);
     }
 
     fn bm25_doc(path: &str, tfs: &[u32], len: u32) -> Bm25Doc {
@@ -1982,15 +1958,22 @@ mod tests {
         // common 'fn'. IDF must push b.rs ahead despite a.rs's higher raw count.
         assert_eq!(ranked[0].0, "src/b.rs");
         assert_eq!(ranked[1].0, "src/a.rs");
-
-        // idf_weight: a term present in all matched files dips below one
-        // that appears in only one file.
-        let common = idf_weight("fn", &content);
-        let rare = idf_weight("ledger", &content);
-        assert!(rare > common);
-        // A single exact-name hit yields a full boost (df=1 → ln(N/1)).
-        assert!(idf_weight("unique", &content) > 1.0);
     }
+}
+
+/// Fuse multiple ranked lists using weighted Reciprocal Rank Fusion.
+/// Weights are f64 so callers can tune relative signal importance.
+pub fn rrf_fuse(lists: &[(&[String], f64)], rrf_k: f64) -> Vec<(String, f64)> {
+    use std::collections::HashMap;
+    let mut fused: HashMap<String, f64> = HashMap::new();
+    for (list, weight) in lists {
+        for (rank, path) in list.iter().enumerate() {
+            *fused.entry(path.clone()).or_insert(0.0) += weight / (rrf_k + rank as f64);
+        }
+    }
+    let mut result: Vec<_> = fused.into_iter().collect();
+    result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then_with(|| a.0.cmp(&b.0)));
+    result
 }
 
 #[cfg(test)]

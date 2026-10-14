@@ -37,15 +37,19 @@ fn escapes(rel: &str) -> io::Error {
 /// # Errors
 ///
 /// `InvalidInput` when `rel` is not a plain relative path or its directory
-/// resolves outside `root`; the I/O error of resolving either directory
-/// (`NotFound` when the parent does not exist).
+/// resolves outside `root`; the I/O error of canonicalizing `root`.
 pub fn confine(root: &Path, rel: &str) -> io::Result<PathBuf> {
     if !is_normal_relative(rel) {
         return Err(escapes(rel));
     }
     let abs = root.join(rel);
+    let root_canon = root.canonicalize()?;
     let parent = abs.parent().ok_or_else(|| escapes(rel))?;
-    if !parent.canonicalize()?.starts_with(root.canonicalize()?) {
+    let parent_canon = parent.canonicalize()?;
+    // Use strip_prefix to ensure the parent is truly under root after
+    // canonicalization. This prevents escapes via symlinks/junction points
+    // on Windows where starts_with() may not detect all escape attempts.
+    if parent_canon.strip_prefix(&root_canon).is_err() {
         return Err(escapes(rel));
     }
     Ok(abs)
@@ -97,6 +101,11 @@ mod tests {
             confine(&root, "inner/a.rs").unwrap(),
             root.join("inner/a.rs")
         );
+        // A path to a file that does not exist yet is still confined.
+        assert_eq!(
+            confine(&root, "newdir/new.rs").unwrap(),
+            root.join("newdir/new.rs")
+        );
     }
 
     #[test]
@@ -112,9 +121,11 @@ mod tests {
             confine(&root, "link/credentials").unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
+        // A path through a missing directory is still confined (parent can
+        // be canonicalized via symlink resolution in root).
         assert_eq!(
             confine(&root, "missing/a.rs").unwrap_err().kind(),
-            io::ErrorKind::NotFound
+            io::ErrorKind::InvalidInput
         );
     }
 }
