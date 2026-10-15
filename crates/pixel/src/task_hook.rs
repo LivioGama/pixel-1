@@ -1046,11 +1046,43 @@ fn unavailable(event: TaskHookEvent, payload: Option<&Value>, enforced: bool) ->
     json!({"decision": if blocks { "deny" } else { "observe" }, "reason": UNAVAILABLE, "coverage": "unavailable"})
 }
 
-fn payload_cwd(payload: &Value) -> std::path::PathBuf {
+fn payload_cwd(provider: TaskProvider, payload: &Value) -> std::path::PathBuf {
+    if provider == TaskProvider::Antigravity {
+        let cwd = string(payload, &["cwd"]).filter(|path| !path.is_empty());
+        if let Some(root) = cwd.and_then(indexed_antigravity_root) {
+            return root;
+        }
+        if let Some(root) = payload["workspacePaths"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .find_map(indexed_antigravity_root)
+        {
+            return root;
+        }
+        if let Some(workspace) = payload["workspacePaths"]
+            .as_array()
+            .and_then(|paths| paths.first())
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+        {
+            return std::path::PathBuf::from(workspace);
+        }
+    }
     string(payload, &["cwd"]).map_or_else(
         || std::env::current_dir().unwrap_or_default(),
         std::path::PathBuf::from,
     )
+}
+
+/// Antigravity can report several workspaces; prefer one Pixel can brief.
+fn indexed_antigravity_root(path: &str) -> Option<std::path::PathBuf> {
+    let root = crate::discover_root(Path::new(path)).ok()?;
+    crate::execution_brief::chain::Gate::read(&root)
+        .indexed
+        .then_some(root)
 }
 
 /// Whether the unanswered decision would have been enforced. Unreadable input
@@ -1059,7 +1091,7 @@ fn enforcement_applies(provider: TaskProvider, payload: Option<&Value>) -> bool 
     let Some(payload) = payload else {
         return true;
     };
-    crate::discover_root(&payload_cwd(payload))
+    crate::discover_root(&payload_cwd(provider, payload))
         .ok()
         .is_none_or(|root| {
             crate::task_bridge::fallback_enforced(
@@ -1091,19 +1123,21 @@ fn process(
     // The brief runs beside the ledger: it needs neither, and a slow ledger
     // must not use up its window.
     let brief = start_brief(provider, event, &payload, part.map_or(1, |part| part.count));
-    forget_sent(event, &payload);
+    forget_sent(provider, event, &payload);
     if let Some(root) = session_start_root(provider, event, &payload) {
         // A start is a nicety: whatever it came to, the hook goes on.
         let _ = crate::execution_brief::autostart::warm(&root);
     }
     let ledger = || {
-        handle_at(&payload_cwd(&payload), provider, event, &payload).unwrap_or_else(|_| {
-            unavailable(
-                event,
-                Some(&payload),
-                enforcement_applies(provider, Some(&payload)),
-            )
-        })
+        handle_at(&payload_cwd(provider, &payload), provider, event, &payload).unwrap_or_else(
+            |_| {
+                unavailable(
+                    event,
+                    Some(&payload),
+                    enforcement_applies(provider, Some(&payload)),
+                )
+            },
+        )
     };
     let (decision, text) = if let Some(part) = first_of_many {
         // The other parts are waiting for the brief: publish it as soon as it
@@ -1124,7 +1158,7 @@ fn process(
 /// it, when the payload names a prompt and a repository.
 fn part_path(provider: TaskProvider, payload: &Value) -> Option<std::path::PathBuf> {
     let prompt = brief_prompt(provider, TaskHookEvent::PromptSubmit, payload)?;
-    let root = crate::discover_root(&payload_cwd(payload)).ok()?;
+    let root = crate::discover_root(&payload_cwd(provider, payload)).ok()?;
     Some(brief_parts::cache_path(
         &root,
         string(payload, &["session_id", "sessionId"]),
@@ -1204,7 +1238,7 @@ fn note_prompt(
     let Some(session) = string(payload, &["session_id", "sessionId"]) else {
         return;
     };
-    let Some(path) = crate::discover_root(&payload_cwd(payload))
+    let Some(path) = crate::discover_root(&payload_cwd(provider, payload))
         .ok()
         .and_then(|root| feedback::path_for(&root))
     else {
@@ -1263,7 +1297,7 @@ fn note_event(
     let Some(session) = string(&payload, &["session_id", "sessionId"]) else {
         return;
     };
-    let cwd = payload_cwd(&payload);
+    let cwd = payload_cwd(provider, &payload);
     let Ok(root) = crate::discover_root(&cwd) else {
         return;
     };
@@ -1314,13 +1348,13 @@ fn note_event(
 
 /// Whether the 🟩 prompt-submit line joins the response: the `metrics`
 /// configuration for the payload's repository, vetoed by `PIXEL_METRICS=0`.
-fn metrics_on(raw: Option<&str>) -> bool {
+fn metrics_on(provider: TaskProvider, raw: Option<&str>) -> bool {
     if std::env::var_os("PIXEL_METRICS").is_some_and(|v| v == "0") {
         return false;
     }
     let root = raw
         .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-        .and_then(|payload| crate::discover_root(&payload_cwd(&payload)).ok());
+        .and_then(|payload| crate::discover_root(&payload_cwd(provider, &payload)).ok());
     crate::config_cmd::metrics_enabled(root.as_deref())
 }
 
@@ -1389,7 +1423,7 @@ fn brief_prompt(provider: TaskProvider, event: TaskHookEvent, payload: &Value) -
 /// `clear`) no longer holds what the packs sent it: forget what was sent, so
 /// the next pack carries it again. A `resume` keeps the same context, so it
 /// keeps the record too.
-fn forget_sent(event: TaskHookEvent, payload: &Value) {
+fn forget_sent(provider: TaskProvider, event: TaskHookEvent, payload: &Value) {
     if event != TaskHookEvent::SessionStart
         || !matches!(string(payload, &["source"]), Some("compact" | "clear"))
     {
@@ -1398,7 +1432,7 @@ fn forget_sent(event: TaskHookEvent, payload: &Value) {
     let Some(session) = string(payload, &["session_id", "sessionId"]) else {
         return;
     };
-    if let Ok(root) = crate::discover_root(&payload_cwd(payload)) {
+    if let Ok(root) = crate::discover_root(&payload_cwd(provider, payload)) {
         crate::execution_brief::sent::reset(&root, session);
     }
 }
@@ -1413,7 +1447,7 @@ fn session_start_root(
     if provider == TaskProvider::Pi || event != TaskHookEvent::SessionStart {
         return None;
     }
-    crate::discover_root(&payload_cwd(payload)).ok()
+    crate::discover_root(&payload_cwd(provider, payload)).ok()
 }
 
 /// Start the evidence brief for a Claude or Codex prompt; Pi, every other
@@ -1425,7 +1459,7 @@ fn start_brief(
     parts: u8,
 ) -> Option<crate::execution_brief::chain::Pending> {
     let prompt = brief_prompt(provider, event, payload)?;
-    let root = crate::discover_root(&payload_cwd(payload)).ok()?;
+    let root = crate::discover_root(&payload_cwd(provider, payload)).ok()?;
     // The files the session is working on: its transcript's recent tool
     // calls and the dirty files of the tree. Only the path is taken here; the
     // transcript is read, for paths alone, inside the brief's own window.
@@ -1438,8 +1472,8 @@ fn start_brief(
 }
 
 /// The latest user turn in the transcript `transcriptPath` points at. The
-/// file is JSONL; a turn is any entry whose role reads "user", its text the
-/// `content`/`text` field (string or a parts array of `{"text": ...}`).
+/// file is JSONL; a turn is a user-role entry or an explicit Antigravity
+/// `USER_INPUT`, with text in `content`/`text` or a text-parts array.
 /// Tolerant on purpose: a transcript shape the reader cannot parse yields
 /// no brief, never a hook failure.
 fn antigravity_prompt(payload: &Value) -> Option<String> {
@@ -1451,7 +1485,9 @@ fn antigravity_prompt(payload: &Value) -> Option<String> {
             continue;
         };
         let role = entry["role"].as_str().or_else(|| entry["type"].as_str());
-        if role != Some("user") && role != Some("human") {
+        let explicit_user_input = entry["type"].as_str() == Some("USER_INPUT")
+            && entry["source"].as_str() == Some("USER_EXPLICIT");
+        if !explicit_user_input && role != Some("user") && role != Some("human") {
             continue;
         }
         let content = entry["content"].as_str().map_or_else(
@@ -1580,7 +1616,7 @@ pub fn run(provider: TaskProvider, event: TaskHookEvent, part: Option<BriefPart>
         && part.is_none_or(|part| part.index == 1)
         && let Some(output) = &mut output
         && output.get("hookSpecificOutput").is_some()
-        && metrics_on(raw.as_deref())
+        && metrics_on(provider, raw.as_deref())
     {
         output["systemMessage"] = json!(format!(
             "🟩 pixel prompt-submit ❀ {:.1}ms",
@@ -1612,6 +1648,7 @@ pub fn run(provider: TaskProvider, event: TaskHookEvent, part: Option<BriefPart>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     /// A Claude-argued `task-event` inside a host that imports Claude's
     /// configuration must exit without acting: the marker names the real host.
@@ -2533,6 +2570,14 @@ mod tests {
                 }})
             );
         }
+        assert_eq!(
+            envelope(
+                TaskProvider::Antigravity,
+                TaskHookEvent::PromptSubmit,
+                &decision
+            ),
+            json!({"injectSteps":[{"ephemeralMessage":context}]})
+        );
     }
 
     #[test]
@@ -2672,6 +2717,163 @@ mod tests {
             );
         }
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn antigravity_workspace_should_skip_an_unindexed_first_root() {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let parent = std::env::temp_dir().join(format!(
+            "pixel-antigravity-workspaces-{}-{unique}",
+            std::process::id()
+        ));
+        let unindexed = parent.join("first");
+        let indexed = parent.join("second");
+        let explicit = parent.join("cwd");
+        for root in [&unindexed, &indexed, &explicit] {
+            std::fs::create_dir_all(root.join(".git")).unwrap();
+        }
+        for root in [&indexed, &explicit] {
+            let shard = root
+                .join(pixel_index::index::SHARD_DIR)
+                .join(pixel_index::index::SHARD_FILE);
+            std::fs::create_dir_all(shard.parent().unwrap()).unwrap();
+            std::fs::write(shard, b"fixture").unwrap();
+        }
+
+        let payload = json!({
+            "workspacePaths": [unindexed.clone(), indexed.clone()],
+        });
+        assert_eq!(
+            payload_cwd(TaskProvider::Antigravity, &payload),
+            indexed.canonicalize().unwrap()
+        );
+        let payload = json!({
+            "cwd": explicit.clone(),
+            "workspacePaths": [indexed.clone(), unindexed],
+        });
+        assert_eq!(
+            payload_cwd(TaskProvider::Antigravity, &payload),
+            explicit.canonicalize().unwrap()
+        );
+
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn antigravity_native_user_input_should_inject_a_brief_from_its_workspace() {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "pixel-antigravity-native-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/fetch.ts"), "function fetchUser() {}\n").unwrap();
+        let initialized = Command::new("git")
+            .current_dir(&root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(["init", "-q"])
+            .status()
+            .expect("git is installed for the fixture");
+        assert!(initialized.success());
+        let staged = Command::new("git")
+            .current_dir(&root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args(["add", "."])
+            .status()
+            .expect("git is installed for the fixture");
+        assert!(staged.success());
+        let committed = Command::new("git")
+            .current_dir(&root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .args([
+                "-c",
+                "user.name=Pixel Test",
+                "-c",
+                "user.email=pixel-test@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ])
+            .status()
+            .expect("git is installed for the fixture");
+        assert!(committed.success());
+        let root = root.canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(".pixel")).unwrap();
+        std::fs::write(
+            root.join(".pixel/config.yaml"),
+            "daemon_auto_start: false\n",
+        )
+        .unwrap();
+        pixel_index::index::build(&root, &pixel_index::TrigramExtractor).unwrap();
+        let graph = root
+            .join(pixel_index::index::SHARD_DIR)
+            .join(pixel_daemon::api::GRAPH_DB_FILE);
+        std::fs::create_dir_all(graph.parent().unwrap()).unwrap();
+        pixel_graph::build::build_graph(&root, &graph).unwrap();
+        let transcript = root.join("transcript.jsonl");
+        std::fs::write(
+            &transcript,
+            json!({
+                "source": "USER_EXPLICIT",
+                "type": "USER_INPUT",
+                "content": "Where is `fetchUser` defined?"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let payload = json!({
+            "invocationNum": 0,
+            "transcriptPath": transcript,
+            "workspacePaths": [root.clone()],
+        });
+        assert_eq!(
+            brief_prompt(
+                TaskProvider::Antigravity,
+                TaskHookEvent::PromptSubmit,
+                &payload
+            )
+            .as_deref(),
+            Some("Where is `fetchUser` defined?")
+        );
+        assert_eq!(payload_cwd(TaskProvider::Antigravity, &payload), root);
+        let gate = crate::execution_brief::chain::Gate::read(&root);
+        assert!(gate.enabled && gate.indexed, "{gate:?}");
+        let brief = start_brief(
+            TaskProvider::Antigravity,
+            TaskHookEvent::PromptSubmit,
+            &payload,
+            1,
+        )
+        .expect("the native prompt starts a brief from the indexed workspace");
+        let context = finish_brief(
+            TaskProvider::Antigravity,
+            TaskHookEvent::PromptSubmit,
+            &payload,
+            Some(brief),
+        )
+        .expect("the indexed fixture returns read-only evidence");
+        let decision = with_context(json!({"decision":"observe"}), Some(context));
+        let output = envelope(
+            TaskProvider::Antigravity,
+            TaskHookEvent::PromptSubmit,
+            &decision,
+        );
+        let message = output["injectSteps"][0]["ephemeralMessage"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!("Antigravity receives its brief through injectSteps: {output}")
+            });
+        assert!(message.starts_with("[PIXEL:BRIEF]\n"), "{message}");
+        assert!(message.contains("src/fetch.ts:1"), "{message}");
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
