@@ -6,14 +6,26 @@
 //! gates, so these crates may not grow a dependency on a `pixel-*` crate,
 //! and they keep pixel-mvp's own shape: `mvp-model` depends on no internal
 //! crate, every other `mvp-*` crate on `mvp-model` only (pixel-mvp's
-//! ADR-0013). On the other side, only `pixel-graph` reads them: a second
-//! reader would tie another crate's code to a copy it cannot edit.
+//! ADR-0013). On the other side, each reader is named here with what it may
+//! read and why: a reader ties its code to a copy it cannot edit, so it reads
+//! through one adapter module.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// The one crate allowed to depend on an `mvp-*` crate.
-const READERS: [&str; 1] = ["pixel-graph"];
+/// The crates allowed to depend on an `mvp-*` crate, and which ones each may
+/// read:
+///
+/// - `pixel-graph` reads pixel-mvp's index (`mvp-index`, `mvp-store`,
+///   `mvp-model`) through `pixel_graph::mvp_adapter` (ADR-0035 there);
+/// - `pixel-cli` reads pixel-mvp's French-prompt rules (`mvp_model::language`,
+///   `sub_words`, `prompt_terms`, `fold`, `Lexicon`: pure functions over a
+///   prompt's text) through `execution_brief/french.rs` only (ADR-0032, moved
+///   under ADR-0036 there), and no index crate.
+const READERS: [(&str, &[&str]); 2] = [
+    ("pixel-graph", &["mvp-index", "mvp-model", "mvp-store"]),
+    ("pixel-cli", &["mvp-model"]),
+];
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -81,16 +93,51 @@ fn vendored_mvp_crates_depend_only_on_mvp_model() {
 }
 
 #[test]
-fn only_pixel_graph_reads_the_vendored_crates() {
+fn only_the_named_readers_read_the_vendored_crates() {
     for (name, deps) in members() {
-        if name.starts_with("mvp-") || READERS.contains(&name.as_str()) {
+        if name.starts_with("mvp-") {
             continue;
         }
-        let read: Vec<_> = deps.iter().filter(|dep| dep.starts_with("mvp-")).collect();
+        let allowed: &[&str] = READERS
+            .iter()
+            .find(|(reader, _)| *reader == name)
+            .map_or(&[], |(_, crates)| crates);
+        let read: Vec<_> = deps
+            .iter()
+            .filter(|dep| dep.starts_with("mvp-") && !allowed.contains(&dep.as_str()))
+            .collect();
         assert!(
             read.is_empty(),
-            "`{name}` depends on {read:?}; only {READERS:?} reads the vendored mvp-* crates, \
-             through its adapter (pixel_graph::mvp_adapter)"
+            "`{name}` depends on {read:?}; the vendored mvp-* crates are read by {READERS:?} \
+             only, each through its adapter (pixel_graph::mvp_adapter, the brief's french.rs)"
         );
     }
+}
+
+/// In `pixel-cli`, one module reads pixel-mvp's rules: a second would tie
+/// more of the brief to a copy that cannot be edited here.
+#[test]
+fn only_the_briefs_french_module_reads_mvp_model_in_the_cli() {
+    let src = repo_root().join("crates/pixel/src");
+    let mut readers = Vec::new();
+    let mut pending = vec![src.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                && std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains("mvp_model")
+            {
+                readers.push(path.strip_prefix(&src).unwrap().to_path_buf());
+            }
+        }
+    }
+    assert_eq!(
+        readers,
+        [PathBuf::from("execution_brief/french.rs")],
+        "pixel-cli reads mvp_model through execution_brief/french.rs only"
+    );
 }
