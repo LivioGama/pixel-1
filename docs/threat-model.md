@@ -120,6 +120,18 @@ no longer parse: `pixel run-hook` prints an error on stderr and exits 0, so a
 registration an old install left behind can neither block a host nor add text
 to its context.
 
+On a code prompt in a repository with no index, `prompt-submit` also starts
+one detached `pixel prepare-repo <root>` (`execution_brief::chain::lazy_index`
+through `spawn_detached`): the running binary with fixed arguments, stdin,
+stdout and stderr null, in its own process group. The hook neither waits for
+the build nor checks that it succeeded, so a later prompt may still find no
+index (the build failed or is running) and decline again. The root is the repository the payload's agent-controlled `cwd`
+resolves to, the same one the brief reads; a continuation, a prompt with no
+code signal, any other decline and `daemon_auto_start` off
+(`PIXEL_DAEMON_AUTO_START=0`) start nothing, and the index build lock
+serializes overlapping starts. The build is the ordinary indexing of 3.4 and
+3.5, writing only under that repository's `.pixel/`.
+
 The active `metrics` hook relays only a finalized Pixel invocation's metric,
 correlated to its tool call, rather than a global latest record. Claude Code
 and Codex receive a `systemMessage`. Antigravity returns `{}` at `PostToolUse`
@@ -178,6 +190,15 @@ The verified-history store (`.pixel/classify-history.jsonl`,
 than read; the write path creates `.pixel/` with `sidecar::private_dir`; and
 `save` replaces the file through `nofollow::write_replace`, so a pre-planted
 `.tmp` symlink cannot redirect the write.
+A brief split over several prompt-submit hooks is stored for the parts that
+print it under `.pixel/brief-parts/` (`brief_parts`): the file name is the
+first 16 hex digits of the SHA-256 of the host's session id (of the empty
+string when the host sends none) and the SHA-256 of the prompt, so no host
+text reaches a path; the store refuses a `.pixel` or
+`brief-parts` directory that is a symbolic link, writes with mode 0600
+through `nofollow::write_replace`, and every part-1 write deletes entries
+older than one hour. The other parts only read their slice, bounded by
+`PART_CHARS`.
 
 ### 3.6 Git operations (B1, B2)
 
@@ -330,7 +351,11 @@ install <source>` and `pixel uninstall <name>` add and remove them and
   with `https://`, `ssh://`, `file://` or `git@` (`ext::` and `fd::`
   transports run commands), is cloned shallowly through `GitRunner` (timeout,
   redacted stderr) into a temporary directory, and only the plugin directory
-  is copied (`.git` left behind). A URL's userinfo is removed before the
+  is copied (`.git` left behind). The clone runs with
+  `GIT_ALLOW_PROTOCOL=https:ssh:file`, so git itself refuses any other
+  transport wherever the URL comes from (an `insteadOf` rewrite, a redirect),
+  and `GIT_TERMINAL_PROMPT=0`, so a source that asks for credentials fails
+  instead of waiting on the terminal. A URL's userinfo is removed before the
   source is recorded or shown, and `logged_args` removes it from the action
   log. `github:<owner>/<repo>[@<ref>]` is parsed first (ASCII names, no
   option form, no `..`), then built into an `https://github.com` clone URL;
@@ -848,6 +873,7 @@ the later threats hold.
 | Typed prompts in the brief log | `decision_log::{logged_typed, mask_keys, append}` | `logged_typed_should_mask_a_credential_and_cut_at_the_bound`, `logged_typed_should_keep_only_the_last_paragraph_of_a_pasted_log`, `mask_keys_should_hide_a_prefixed_key_and_a_long_run_and_keep_prose`, `append_should_be_owner_only_and_not_create_a_missing_directory`, `append_should_refuse_a_link_at_the_log_and_leave_its_target_alone`, `append_should_refuse_a_linked_directory_and_write_nothing_through_it` (`decision_log.rs`), `the_decision_log_should_stay_off_when_pixel_brief_log_says_so` (`prompt_brief_cli.rs`) |
 | Secrets in the action log | `logged_args` | `only_the_remote_key_command_starts_the_mask`, `a_plugin_source_url_is_logged_without_its_credentials` (`main.rs`) |
 | Repo plugin trust | `pixel_plugin::resolve`, `dir_digest`, `contained_program` | `a_repo_plugin_is_refused_until_trusted_and_again_after_an_edit`, `every_kind_of_change_moves_the_digest`, `a_run_that_escapes_through_a_symlink_is_refused` (`pixel-plugin`); `plugin_cli.rs` |
+| Plugin clone transports | `pixel_plugin::add` (`clone_repo`, `looks_like_git_url`) | `url_schemes_are_a_whitelist`, `a_clone_is_held_to_authenticated_or_local_transports_by_git_itself` (`install.rs`) |
 | Keys over clear text | `sends_in_clear_text` | `a_key_never_leaves_the_machine_over_cleartext_http`, `only_plain_http_to_another_host_counts_as_clear_text` |
 | Untrusted shard files | `Shard::open` | `malformed_shard_rejected_gracefully`, `corrupt_posting_cannot_escape_section_or_overflow_delta` (`shard.rs`) |
 | Source parsing | `pixel_graph::extract::extract_file` | `graph_extract` fuzz target |
