@@ -377,11 +377,11 @@ fn outside_a_git_work_tree_there_is_no_index() {
     assert!(!dir.path().join(".pixel/.pixel-mvp").exists());
 }
 
-// pixel-mvp's writer may keep a copy of git's index in its own state
+// pixel-mvp's writer keeps a copy of git's index in its own state
 // directory (`git_index`, ADR-0039 there), named `git-index.<key>`. This
 // repository's state is `.pixel/` alone, and its `## On-disk state` lists
-// what `.pixel/.pixel-mvp/` holds: the adapter places no such copy, makes
-// no `.pixel-mvp/` at the work tree's top level, and leaves git's own
+// what `.pixel/.pixel-mvp/` holds: the adapter places that one copy there,
+// makes no `.pixel-mvp/` at the work tree's top level, and leaves git's own
 // index as it found it.
 #[cfg(unix)]
 #[test]
@@ -405,9 +405,12 @@ fn a_refresh_writes_only_its_index_under_the_state_directory_it_is_given() {
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     held.sort();
-    assert!(
-        held.iter().all(|name| !name.starts_with("git-index.")),
-        "{held:?}"
-    );
+    // pixel-mvp's copy of git's index lives beside its index, one copy,
+    // not under the root's `.pixel-mvp/` (ADR-0039 there).
+    let copies: Vec<&String> = held
+        .iter()
+        .filter(|name| name.starts_with("git-index."))
+        .collect();
+    assert_eq!(copies.len(), 1, "{held:?}");
     assert!(held.contains(&"graph.db".to_owned()), "{held:?}");
 }
