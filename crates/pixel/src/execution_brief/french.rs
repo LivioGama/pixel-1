@@ -57,7 +57,9 @@ const QUESTION_OPENERS: [(&str, &str); 9] = [
     ("quoi", "what"),
 ];
 
-/// How many words of the prompt the gate looks at for a question word.
+/// How many words of the text the gate looks at for a question word: the words
+/// written (`out.len()`), not the words typed, because the gate reads the
+/// text this module hands it.
 const QUESTION_WINDOW: usize = 3;
 
 /// Whether [`FRENCH_ENV`]'s value turns the mapping on.
@@ -263,6 +265,27 @@ mod tests {
                 .as_deref()
                 .map(|text| text.split(' ').any(|word| word == "how")),
             Some(false)
+        );
+    }
+
+    // The gate reads the first three words of the text it is handed, so the
+    // window counts the words written, not the words typed: the French words
+    // that open a question ("tu peux") are dropped and do not push the
+    // question word out, while a translation that writes more words than were
+    // typed pushes it past the third, where the gate would not see it anyway.
+    #[test]
+    fn the_question_window_should_count_the_words_written() {
+        assert_eq!(
+            english("tu peux regarder pourquoi le webhook plante dans le système").as_deref(),
+            Some("why webhook crash system")
+        );
+        assert_eq!(
+            english("abonnements comment les rembourser dans le système").as_deref(),
+            Some("subscription how refund system")
+        );
+        assert_eq!(
+            english("abonnements expirés comment les rembourser dans le système").as_deref(),
+            Some("subscription expire expiration refund system")
         );
     }
 
