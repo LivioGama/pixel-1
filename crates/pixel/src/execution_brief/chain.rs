@@ -2625,6 +2625,9 @@ pub(crate) struct Around {
     pub(crate) sent: Option<(PathBuf, String)>,
     /// Where the brief's probes are looked up and run, when they may be.
     pub(crate) probes: Option<ProbeSetup>,
+    /// Whether a French prompt is searched and gated on the English words
+    /// code uses (`french::english`) instead of its own.
+    pub(crate) french: bool,
 }
 
 /// The repository whose brief is probed and the plugin host that offers the
@@ -2925,6 +2928,9 @@ fn try_start_as(
             seen,
             sent: sent_to,
             probes: probes_setup,
+            french: super::french::enabled(
+                std::env::var(super::french::FRENCH_ENV).ok().as_deref(),
+            ),
         },
     );
     kick_index(result.as_ref().err(), prompt, &for_index, lazy_index);
@@ -3000,6 +3006,7 @@ where
         seen,
         sent,
         probes,
+        french,
     } = around;
     if !gate.open() {
         return Err(if gate.enabled {
@@ -3031,7 +3038,15 @@ where
     }));
     let (finished, done) = mpsc::channel();
     let worker = Arc::clone(&state);
+    // The decision log and the probes keep the text as typed; the searches,
+    // the gate and the plan read a French prompt in the English words code
+    // uses.
     let task = typed.clone();
+    let typed = if french {
+        super::french::english(&typed).unwrap_or(typed)
+    } else {
+        typed
+    };
     // The session's files are collected beside the worker, inside their own
     // short window, and only a prompt that is going to be briefed pays for it.
     let context_deadline = (started + session_paths::CONTEXT_WINDOW).min(deadline);

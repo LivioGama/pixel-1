@@ -2109,6 +2109,7 @@ dependencies = [
  "ignore",
  "libc",
  "mutants",
+ "mvp-model",
  "pixel-actionlog",
  "pixel-daemon",
  "pixel-facts",

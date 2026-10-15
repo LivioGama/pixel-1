@@ -38,7 +38,7 @@ MCP server. `pixel setup` registers no MCP server with any agent.
 
 | Crate | Role | Depends on (pixel crates) |
 | --- | --- | --- |
-| `pixel-cli` (bin `pixel`, in `crates/pixel`) | Command-line surface. Parses argv with clap, talks to the daemon or runs the service in-process, prints text or JSON. Also hosts the hook entry point under `run-hook` (`task-event`, `metrics`). | every library crate except `pixel-context` (reached through the daemon), `pixel-ultraflow`, `pixel-session` (reached through the daemon and the ranker), `pixel-bench` and the vendored `mvp-model`, `mvp-store` and `mvp-index` |
+| `pixel-cli` (bin `pixel`, in `crates/pixel`) | Command-line surface. Parses argv with clap, talks to the daemon or runs the service in-process, prints text or JSON. Also hosts the hook entry point under `run-hook` (`task-event`, `metrics`). | every library crate except `pixel-context` (reached through the daemon), `pixel-ultraflow`, `pixel-session` (reached through the daemon and the ranker), `pixel-bench` and the vendored `mvp-store` and `mvp-index` (of the vendored crates it reads mvp-model only, for the brief's French prompts: see the dependency rule below) |
 | `pixel-proto` | The shared contract crate: `Envelope`, `PixelError` and `ErrorCode`, `Epistemics`, `SnapshotInfo`, `Budget`, `Warning`, and the `Op` request enum. No I/O, no business logic. Every other crate that speaks the wire format depends on it, and it depends on nothing internal. | none |
 | `pixel-daemon` | Transport-agnostic `Service` (`api.rs`) and the Unix-socket NDJSON daemon with filesystem watching (`daemon.rs`). Dispatches each `Op` to the right library, attaches snapshot and epistemics metadata, and is the one place a retrieval envelope is built. Also hosts the recall daemon service. | index, graph, context, rank, proto, ops, facts, session, recall, git |
 | `pixel-index` | Sparse n-gram (trigram) text index: gram extraction, window weighting, posting-list algebra, git-anchored base and delta shards, working-tree overlay, query planner, verification, and the `gitsync` helpers that read HEAD, branch, and porcelain status. | git |
@@ -60,7 +60,7 @@ MCP server. `pixel setup` registers no MCP server with any agent.
 | `mvp-store` | Vendored from pixel-mvp like `mvp-model`: pixel-mvp's graph store, one SQLite file (`graph.db`) in a `.pixel-mvp/` state directory under the root it is given, with one writer behind a lock, one generation published per transaction, and a damaged or foreign file refused and rebuilt. `pixel-graph`'s `mvp_adapter` refreshes and reads it. | mvp-model |
 | `mvp-index` | Vendored from pixel-mvp like `mvp-model`: pixel-mvp's indexer for Ruby and Rust. `tree` scans the work tree through git (tracked and untracked files, the commit and the dirty flag a generation names), `link::plan` diffs it against the stored generation, `extract` parses the planned files with tree-sitter into symbols and edges, and `link::link` decides every site of the generation again under each language's rules: an edge only where the rule proves its target, every other site kept unresolved. It writes nothing; its caller hands the rows to `mvp-store`. It spawns `git` itself (`tree.rs`), outside `pixel-git`'s `GitRunner`: no timeout and no output cap. `pixel-graph`'s `mvp_adapter` runs it. | mvp-model |
 
-Dependency rule: `pixel-proto` and `pixel-git` are leaves (so are `pixel-context` and `pixel-release`; `pixel-session`, `pixel-actionlog` and `pixel-plugin` depend on `pixel-git` only). The vendored `mvp-*` crates depend on each other and on third-party crates only, never on a `pixel-*` crate, so that each sync stays a copy; `pixel-graph` is the one crate that depends on them. `pixel-daemon` is
+Dependency rule: `pixel-proto` and `pixel-git` are leaves (so are `pixel-context` and `pixel-release`; `pixel-session`, `pixel-actionlog` and `pixel-plugin` depend on `pixel-git` only). The vendored `mvp-*` crates depend on each other and on third-party crates only, never on a `pixel-*` crate, so that each sync stays a copy; `pixel-graph` depends on them for the index (through `mvp_adapter`), and `pixel-cli` on `mvp-model` alone for the French-prompt rules of the brief (through `execution_brief/french.rs`); `crates/pixel/tests/cli/vendored_boundary.rs` names both readers and what each may read. `crates/mvp-lexicon/` is data, not a crate: pixel-mvp's French lexicon (`fr-en.tsv`), vendored byte for byte with its `VENDORED.md`, compiled into the brief. `pixel-daemon` is
 the integration point and is the only library crate allowed to depend on
 almost everything. The CLI depends on the daemon plus whatever it needs for
 commands that never touch the daemon (install, check-release).
@@ -778,6 +778,18 @@ long untagged paste:
   or deploy request, not an acknowledgement): the intent judge, the
   relevance probe and the meaning search run at once on the deadline, and
   only the gate decides whether the repository is the subject.
+
+With `PIXEL_BRIEF_FRENCH=1` (off by default), a prompt that pixel-mvp's
+rule reads as French (`mvp_model::language`: two French function words or
+more, outnumbering its English ones) is searched, judged and gated on the
+English words code uses (`execution_brief/french.rs`, ADR-0032 of pixel-mvp,
+moved under its ADR-0036): each word is dropped when it carries nothing,
+replaced by the English words of the vendored lexicon
+(`crates/mvp-lexicon/fr-en.tsv`), or kept with its accents folded; a
+code-shaped token is kept as typed, and a French question word among the
+first three becomes its English opener for the gate's `question`. The
+signal above, the decision log's `typed` and the probes still read the text
+as typed. An English prompt is never rewritten.
 
 The gate (`execution_brief/relevance.rs`, constants in `gate_model.rs`) has
 no language model in it. From the daemon's `facts.relevance` (`targets_facts`
