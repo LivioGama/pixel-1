@@ -253,7 +253,7 @@ python3 -I scripts/bench/probe-test.py my-probe --live   # opt-in: the agent wit
 ```
 
 - **Contract.** `pixel-plugin.toml` (the plugin host's manifest) with `capabilities = ["brief-probe"]` and a
-  `[brief-probe]` table: `owner`, `when_kinds` / `skip_kinds` / `when_prompt` (when it runs), `budget_ms` (at most
+  `[brief-probe]` table: `owner`, `when_kinds` / `skip_kinds` / `when_prompt` (when it runs), `when_gate_closed` (also run when the brief's gate closed; needs a `when_prompt`), `budget_ms` (at most
   2500), `mode` (`lead` puts its blocks before the brief's, `append` after). The executable named by `run` reads
   `{prompt, repo_root, brief, kind, session_files}` as JSON on stdin and prints brief blocks (`### path:lo-hi —
   label`, then numbered lines `N| text`), and optionally `drop: <regex>` / `first: <regex>` lines that remove or
@@ -270,10 +270,11 @@ python3 -I scripts/bench/probe-test.py my-probe --live   # opt-in: the agent wit
   contributor needs no private data. A maintainer's local census is an optional second source, `--census-db
   <census.db>`; its prompts are never committed. The PR states the `PROBE ... | KEEP` line `probe-test` prints and
   `report.md`.
-- Shipping: a probe merged under `probes/` is embedded in the binary and installed by `pixel setup` into
+- Shipping: register a validated probe in `crates/pixel-setup/src/bundled_probes.rs` and its explicit shipping
+  allowlist test. Registered probes are embedded in the binary and installed by `pixel setup` into
   `~/.pixel/plugins/<name>/`; the prompt-submit brief runs it (see ARCHITECTURE.md, "Agent integration").
   `pixel plugin disable <name>` switches one off, `enable` back on. CI runs `probe-test.py --check-all` on every
-  directory of `probes/`.
+  directory of `probes/`; experimental directories are not automatically installed.
 
 ## Mutation testing
 
@@ -377,13 +378,12 @@ scripts/dev/pixel-smoke-test.sh   # the installed binary end to end (read-only)
 incremental rebuild takes seconds and the binary is optimised the same way.
 Drop `--build` for the exact shipped `release` profile.
 
-`pixel setup` removes the retired `claude()` shell wrapper from the
-account's login-shell profile, and `pixel doctor` reports one that remains
-(`install.legacy-wrappers`). The login shell is read from the user database
+`pixel doctor` asks the account's login shell whether `pixel` is on its PATH
+(`binary.shell-path`). The login shell is read from the user database
 rather than `$SHELL`: a coding agent's command tool frequently runs under
 another shell than the login one (a `/bin/zsh` tool shell on a fish machine).
-`--shell fish` overrides the lookup when the shell you launch `claude` from
-is not the account's.
+`pixel doctor --shell fish` overrides the lookup when the shell you launch
+`claude` from is not the account's.
 
 `pixel self-update` reads the built binary from the profile its `--build`
 command names (`target/<profile>/pixel`).

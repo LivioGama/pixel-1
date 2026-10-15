@@ -41,6 +41,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import types
 import unittest
 from pathlib import Path
 
@@ -83,6 +84,8 @@ class Probe:
         self.kinds = list(table.get("when_kinds") or [])
         self.skip = list(table.get("skip_kinds") or [])
         self.pattern = str(table.get("when_prompt") or "")
+        self.closed_gate = bool(table.get("when_gate_closed"))
+        self.post = str(table.get("stage") or "") == "post"
         self.budget_ms = table.get("budget_ms", 0)
         self.mode = table.get("mode", "append")
         self.run = str(doc.get("run", "probe"))
@@ -111,6 +114,10 @@ class Probe:
             for kind in kinds:
                 if kind not in KINDS:
                     problems.append(f"{key}: unknown kind `{kind}`")
+        if str(table.get("stage") or "") not in ("", "post"):
+            problems.append('stage must be "post" or absent')
+        if self.closed_gate and not self.pattern:
+            problems.append("when_gate_closed needs a when_prompt (a closed gate runs only probes that name their questions)")
         if self.pattern:
             try:
                 re.compile(self.pattern)
@@ -119,7 +126,7 @@ class Probe:
         program = self.dir / self.run
         if not program.is_file() or not os.access(program, os.X_OK):
             problems.append(f"`{self.run}` is not an executable file")
-        for extra in sorted(set(table) - {"owner", "when_kinds", "skip_kinds", "when_prompt", "budget_ms", "mode"}):
+        for extra in sorted(set(table) - {"owner", "when_kinds", "skip_kinds", "when_prompt", "when_gate_closed", "stage", "budget_ms", "mode"}):
             problems.append(f"[brief-probe] unknown key `{extra}`")
 
     def applies(self, kind, prompt):
@@ -205,14 +212,15 @@ def safe_search(pattern, text):
 
 def merge(brief, outputs, cap=PART_CHARS * PARTS):
     """The brief after its probes. ``outputs``: ``[(name, mode, stdout)]`` of the probes that ran, any order (they
-    are applied by name). Drops and firsts act on the brief's own blocks only; a probe's block whose header the
+    are applied by name). A drop removes the brief's own blocks only (never a probe's block, as in the native
+    ``probes::merge``); a first moves the brief's own blocks; a probe's block whose header the
     brief already has is skipped; when the text is over ``cap`` characters the append blocks go first, then the
     brief's last blocks, then the lead blocks, whole, and the first block is never removed."""
     head, existing, footer = split_brief(brief)
     if not head:
         head = ["[PIXEL:BRIEF]"]
     lead, append, drops, firsts = [], [], [], []
-    for name, mode, stdout in sorted(outputs, key=lambda o: o[0]):
+    for _name, mode, stdout in sorted(outputs, key=lambda o: o[0]):
         blocks, d, f, _ = parse_output(stdout)
         drops += d
         firsts += f
@@ -348,6 +356,9 @@ doing down during each from further have having here into just keep keeps more m
 should some such than that their them then there these they this those through under until very want what when
 where which while will with would your how why who its are and the for not you can any all but was has our""".split())
 
+ECOSYSTEM = set("""readme cargo cargo.toml crate crates workspace workspaces package package.json packages commit commits
+pyproject pyproject.toml go.mod go.work pnpm-workspace.yaml monorepo""".split())
+
 
 def literals_of_prompt(prompt, oracle_paths=()):
     """What a probe written for ONE question would hard-code: its content words (five letters or more) and the
@@ -362,7 +373,7 @@ def literals_of_prompt(prompt, oracle_paths=()):
         stem = base.rsplit(".", 1)[0]
         if len(stem) >= 4:
             lits.add(stem)
-    return {x for x in lits if x}
+    return {x for x in lits if x and x.lower() not in ECOSYSTEM}
 
 
 def overfit(probe_dir, prompt, oracle_paths=(), others=None):
@@ -399,10 +410,10 @@ def evaluate(probe, qset, pixel_bin, ids, home):
     rows = []
     for qid in ids:
         q = qset.open(qid)
-        gate_open = (q["meta"].get("gate") or "open") == "open"
+        gate = q["meta"].get("gate") or "open"
         request = {"prompt": q["prompt"], "repo_root": q["clone"], "brief": q["text"] or "[PIXEL:BRIEF]\n",
                    "kind": q["kind"], "session_files": []}
-        applies = gate_open and probe.applies(q["kind"], q["prompt"])
+        applies = gate_runs(gate, probe) and probe.applies(q["kind"], q["prompt"])
         row = {"id": qid, "repo": q["repo"], "kind": q["kind"], "applies": applies, "ran": False, "error": None,
                "probe_ms": 0, "deterministic": True, "read_only": True, "stray": 0}
         before = qset.score(q, q["text"])
@@ -565,7 +576,7 @@ def hook_shim(config_path, args):
             later = [f"{k}/{count}" if a == args[args.index("--part") + 1] else a for a in args]
             context += context_of(subprocess.run([real, *later], input=stdin, capture_output=True, text=True).stdout)
         kind, gate = last_decision(Path.cwd())
-        if gate == "open" and probe.applies(kind, prompt):
+        if gate_runs(gate, probe) and probe.applies(kind, prompt):
             request = {"prompt": prompt, "repo_root": str(Path.cwd()), "brief": context or "[PIXEL:BRIEF]\n",
                        "kind": kind, "session_files": []}
             stdout, _, error = run_probe(probe, request, real, os.environ.get("HOME", "/"))
@@ -582,6 +593,12 @@ def hook_shim(config_path, args):
     done.write_text(json.dumps(state))
     sys.stdout.write(out)
     return 0
+
+
+def gate_runs(gate, probe):
+    """Whether the native ``probe_stage`` runs ``probe`` for a logged ``gate``: an open or unjudged brief runs every
+    matching probe, a closed gate only the ones with ``when_gate_closed``, a denied or declined prompt none."""
+    return gate in (None, "open", "unjudged") or (gate == "closed" and probe.closed_gate)
 
 
 def last_decision(root):
@@ -930,6 +947,17 @@ class SelfTest(unittest.TestCase):
         for case in cases:
             outputs = [(o["name"], o["mode"], o["stdout"]) for o in case["outputs"]]
             self.assertEqual(merge(case["brief"], outputs, case["cap"]), case["expected"], case["name"])
+
+    def test_a_drop_never_removes_another_probes_block_as_in_the_native_merge(self):
+        text = merge("[PIXEL:BRIEF]\n### keep — x\nk\n### gone — y\ng\n",
+                     [("a", "append", "### other — o\nbody\n"), ("b", "append", "drop: ^gone\ndrop: ^other\n")])
+        self.assertEqual(text, "[PIXEL:BRIEF]\n### keep — x\nk\n### other — o\nbody\n")
+
+    def test_a_denied_gate_runs_no_probe_and_a_closed_one_only_the_opted_in(self):
+        opted, plain = types.SimpleNamespace(closed_gate=True), types.SimpleNamespace(closed_gate=False)
+        self.assertTrue(all(gate_runs(g, plain) for g in (None, "open", "unjudged")))
+        self.assertTrue(gate_runs("closed", opted) and not gate_runs("closed", plain))
+        self.assertFalse(gate_runs("denied", opted) or gate_runs("declined", opted))
 
     def test_an_empty_brief_gets_the_tag_and_the_probe_blocks(self):
         text = merge("", [("p", "lead", "### a — b\nline\n")])

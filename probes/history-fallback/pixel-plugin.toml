@@ -8,5 +8,7 @@ capabilities = ["brief-probe"]
 [brief-probe]
 owner = "pixel"
 when_kinds = ["history"]
+when_prompt = "(?i)\\b(commits?|changelog|git history|introduced|blame|released?|tagged?)\\b"
+when_gate_closed = true
 budget_ms = 1500
 mode = "append"

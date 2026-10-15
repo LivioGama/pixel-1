@@ -941,7 +941,6 @@ pub(crate) struct Brief {
     /// Where the evidence came from: `daemon` or `local`.
     route: Option<&'static str>,
     admission: Admission,
-    /// The gate refused the prompt and the refusal binds: nothing renders.
     silenced: bool,
     /// The relevance decision, when the probe answered.
     relevance: Option<relevance::Verdict>,
@@ -2722,10 +2721,6 @@ impl Pending {
         self.finish_with_record().text
     }
 
-    /// The probes' turn: when the gate let this prompt through, every
-    /// probe that fits its question runs inside what is left of the window and
-    /// the blocks they print are merged into `text` (or into an empty brief,
-    /// for a prompt the gate opened that the chain had nothing to say to).
     fn probe_stage(
         &self,
         brief: &Brief,
@@ -2734,7 +2729,8 @@ impl Pending {
         let Some(setup) = &self.probes else {
             return (text, Vec::new());
         };
-        if brief.admission.label() != "open" || brief.silenced {
+        let gate_closed = matches!(brief.admission, Admission::Closed(_));
+        if matches!(brief.admission, Admission::Denied(_)) || (brief.silenced && !gate_closed) {
             return (text, Vec::new());
         }
         let kind = brief.kind.map(QuestionKind::as_str);
@@ -2743,6 +2739,7 @@ impl Pending {
             root: &setup.root,
             prompt: &self.task,
             kind,
+            gate_closed,
             deadline: probe_deadline(self.started, self.deadline, Instant::now(), setup.floor),
             cap: setup.cap,
             max_bytes: setup.max_bytes,
@@ -2769,6 +2766,7 @@ impl Pending {
             None => (None, AnswerStats::default()),
         };
         let (text, probe_runs) = self.probe_stage(&brief, text);
+        let recovered = matches!(brief.admission, Admission::Closed(_)) && text.is_some();
         let elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         // The daemon start has had the whole brief to launch; a hook about to
         // exit sees it through, for at most the hook bound.
@@ -2781,7 +2779,8 @@ impl Pending {
             ts_ms: pixel_task::now_ms(),
             signal: Some(self.signal.as_str()),
             gate: brief.admission.label(),
-            enforced: gate_enforced(self.signal, brief.silenced, ENFORCE_GATE_ON_WEAK),
+            enforced: gate_enforced(self.signal, brief.silenced, ENFORCE_GATE_ON_WEAK)
+                && !recovered,
             reason: brief.admission.reason().map(str::to_string),
             tier: brief.tier().map(Tier::as_str),
             model: gate_model_source(),
@@ -2841,8 +2840,6 @@ impl Pending {
 }
 
 /// Start the brief for `prompt` of a hook session in `root`, or decline: a
-/// switched-off brief, a repository without an index and a prompt that asks
-/// nothing about code start no thread and run no lookup.
 ///
 /// `parts` is how many hooks deliver the brief (`brief_parts`, or 1 for a host
 /// with one hook): the region pack may fill that many. `session` is what the
@@ -2883,6 +2880,7 @@ fn try_start_as(
     let root = root.to_path_buf();
     let for_start = root.clone();
     let for_context = root.clone();
+    let for_index = root.clone();
     let dedupe = sent::enabled();
     let session_id = session.as_ref().and_then(|session| session.id.clone());
     // What this session was sent by earlier prompts, and where this prompt's
@@ -2912,7 +2910,7 @@ fn try_start_as(
             floor: if command { Duration::ZERO } else { PROBE_FLOOR },
             max_bytes: (command && pack.parts <= 1).then_some(COMMAND_MAX_BYTES),
         });
-    try_start_with(
+    let result = try_start_with(
         prompt,
         gate,
         window,
@@ -2928,7 +2926,26 @@ fn try_start_as(
             sent: sent_to,
             probes: probes_setup,
         },
-    )
+    );
+    kick_index(result.as_ref().err(), prompt, &for_index, lazy_index);
+    result
+}
+
+fn kick_index(declined: Option<&Declined>, prompt: &str, root: &Path, launch: impl FnOnce(&Path)) {
+    if matches!(declined, Some(Declined::Unindexed))
+        && !crate::prompt_continuation::is_trivial_continuation(prompt)
+        && brief_signal(prompt).is_some()
+    {
+        launch(root);
+    }
+}
+
+fn lazy_index(root: &Path) {
+    let args = [
+        std::ffi::OsString::from("prepare-repo"),
+        root.as_os_str().to_os_string(),
+    ];
+    let _ = crate::spawn_detached(&args);
 }
 
 /// [`start_in`] with its gate, window, evidence source and intent judge given and
@@ -6798,6 +6815,38 @@ mod tests {
     }
 
     #[test]
+    fn kick_index_should_launch_once_for_an_unindexed_code_prompt() {
+        let root = Path::new("/repo");
+        let mut launched = Vec::new();
+        kick_index(
+            Some(&Declined::Unindexed),
+            "where is retrieval_route called",
+            root,
+            |launched_root| launched.push(launched_root.to_path_buf()),
+        );
+        assert_eq!(launched, vec![root.to_path_buf()]);
+    }
+
+    #[test]
+    fn kick_index_should_not_launch_for_a_continuation_a_plain_prompt_or_another_decline() {
+        let root = Path::new("/repo");
+        for (declined, prompt) in [
+            (Some(&Declined::Unindexed), "thanks"),
+            (Some(&Declined::Unindexed), "hello there"),
+            (
+                Some(&Declined::NotAboutCode),
+                "where is retrieval_route called",
+            ),
+            (Some(&Declined::Disabled), "where is retrieval_route called"),
+            (None, "where is retrieval_route called"),
+        ] {
+            let mut launches = 0;
+            kick_index(declined, prompt, root, |_| launches += 1);
+            assert_eq!(launches, 0, "{declined:?} {prompt:?}");
+        }
+    }
+
+    #[test]
     fn gate_enforced_should_bind_prose_always_and_a_weak_prompt_when_asked_or_refused() {
         assert!(gate_enforced(Signal::Prose, false, false));
         assert!(gate_enforced(Signal::Weak, true, false));
@@ -9463,5 +9512,84 @@ mod tests {
         .finish_with_record();
         assert!(finished.text.is_some());
         assert!(sent::load(&root, "s", pixel_task::now_ms()).is_empty());
+    }
+
+    #[test]
+    fn finishing_should_allow_probe_recovery_but_preserve_denials_and_explicit_silence() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let plugin = root.join(".pixel/plugins/recovery");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(
+            plugin.join("pixel-plugin.toml"),
+            "name = \"recovery\"\nversion = \"0.1.0\"\napi = 1\ndescription = \"recovery evidence\"\nrun = \"probe\"\ncapabilities = [\"brief-probe\"]\n[brief-probe]\nowner = \"test\"\nbudget_ms = 400\nwhen_prompt = \"crate\"\nwhen_gate_closed = true\n",
+        ).unwrap();
+        let program = plugin.join("probe");
+        std::fs::write(
+            &program,
+            "#!/bin/sh\ncat >/dev/null\nprintf '### source.rs:1-1 — evidence\\n1| pub struct Library;\\n'\n",
+        ).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (admission, silenced, expected) in [
+            (Admission::Closed("no graph vocabulary".into()), true, true),
+            (Admission::Unjudged, false, true),
+            (Admission::Kind(QuestionKind::Overview), false, true),
+            (Admission::Denied("not a coding task".into()), true, false),
+            (Admission::Denied("not a coding task".into()), false, false),
+            (Admission::Open, true, false),
+        ] {
+            let label = admission.label();
+            let (send, done) = mpsc::channel();
+            send.send(()).unwrap();
+            let started = Instant::now();
+            let pending = Pending {
+                state: Arc::new(Mutex::new(Brief {
+                    admission,
+                    silenced,
+                    ..Brief::default()
+                })),
+                done,
+                deadline: started + SECOND,
+                started,
+                log: None,
+                kicked: None,
+                task: "what does this crate expose".into(),
+                signal: Signal::Prose,
+                sent: None,
+                probes: Some(ProbeSetup {
+                    host: pixel_plugin::Host {
+                        home: root.clone(),
+                        repo_root: None,
+                        path: std::ffi::OsString::new(),
+                        github_base: None,
+                    },
+                    root: root.clone(),
+                    cap: 1_000,
+                    floor: Duration::ZERO,
+                    max_bytes: None,
+                }),
+            };
+            let finished = pending.finish_with_record();
+            if expected {
+                assert_eq!(
+                    finished.text.as_deref(),
+                    Some("[PIXEL:BRIEF]\n### source.rs:1-1 — evidence\n1| pub struct Library;\n"),
+                    "{label}"
+                );
+                assert_eq!(finished.record.probes.len(), 1, "{label}");
+                assert_eq!(finished.record.probes[0].outcome, "ok", "{label}");
+                if label == "closed" {
+                    assert!(
+                        !finished.record.enforced,
+                        "recovery bypassed the relevance verdict"
+                    );
+                }
+            } else {
+                assert_eq!(finished.text, None, "{label}");
+                assert_eq!(finished.record.probes, [], "{label}");
+            }
+        }
     }
 }

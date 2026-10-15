@@ -48,3 +48,5 @@ eval/brief-bench/adhoc/
 # The private tool census (#905): its 20 prompts and its database stay on the maintainer's machine.
 scripts/bench/tool-census/manifest.json
 census.db*
+
+/.arena-reports/

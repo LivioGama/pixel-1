@@ -299,9 +299,23 @@ fn parse_within(parser: &mut Parser, content: &[u8], budget: Duration) -> Option
     )
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_PARSE_BUDGET: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn parse_budget() -> Duration {
+    #[cfg(test)]
+    if let Some(budget) = TEST_PARSE_BUDGET.with(std::cell::Cell::get) {
+        return budget;
+    }
+    PARSE_BUDGET
+}
+
 /// [`parse_within`] at [`PARSE_BUDGET`]: the parse every extractor uses.
 pub(crate) fn parse_bounded(parser: &mut Parser, content: &[u8]) -> Option<Tree> {
-    parse_within(parser, content, PARSE_BUDGET)
+    parse_within(parser, content, parse_budget())
 }
 
 /// Parse one file into a tree-sitter tree for the language its extension

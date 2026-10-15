@@ -9,7 +9,7 @@ what ``arena.sh run-set --brief-extra`` hangs on the frozen binary's prompt-subm
 protocol of ``probe-test.py``'s hook shim: the environment carries ``CLONE`` (the repository), ``PROMPT`` and
 ``BRIEF_FILE`` (the brief the binary printed); the output is nothing (no change) or ``@@REPLACE@@`` followed by the
 merged brief. The kind and the gate are read from the last line of ``.pixel/brief-decisions.jsonl`` that the hook
-just wrote; a closed gate runs no probe. A probe that times out or fails is skipped.
+just wrote; a closed gate runs only the probes with `when_gate_closed`. A probe that times out or fails is skipped.
 
     probe-chain.py                      (environment as above)
     probe-chain.py --only a,b           only these probes
@@ -48,21 +48,32 @@ def last_decision(root):
         return None, None
 
 
-def chain(pt, probes_dir, root, prompt, brief, kind, pixel_bin, only=None):
+def chain(pt, probes_dir, root, prompt, brief, kind, pixel_bin, only=None, closed=False):
     """The merged brief, or ``None`` when no probe added anything."""
     home = tempfile.mkdtemp(prefix="chain-home-")
     probes = [pt.Probe(d) for d in sorted(Path(probes_dir).glob("*/")) if not d.name.startswith(("_", "."))]
-    probes = [p for p in probes if not p.problems and (not only or p.name in only) and p.applies(kind, prompt)]
+    probes = [p for p in probes if not p.problems and (not only or p.name in only) and p.applies(kind, prompt) and (p.closed_gate or not closed)]
     request = {"prompt": prompt, "repo_root": str(root), "brief": brief or "[PIXEL:BRIEF]\n", "kind": kind,
                "session_files": []}
-    outputs = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(probes))) as pool:
-        futures = {pool.submit(pt.run_probe, p, request, pixel_bin, home): p for p in probes}
-        for future, probe in futures.items():
-            stdout, _ms, error = future.result()
-            if not error and stdout.strip():
-                outputs.append((probe.name, probe.mode, stdout))
-    return pt.merge(brief or "[PIXEL:BRIEF]\n", outputs) if outputs else None
+    def run(group, req):
+        outs = []
+        if not group:
+            return outs
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(group)) as pool:
+            futures = {pool.submit(pt.run_probe, p, req, pixel_bin, home): p for p in group}
+            for future, probe in futures.items():
+                stdout, _ms, error = future.result()
+                if not error and stdout.strip():
+                    outs.append((probe.name, probe.mode, stdout))
+        return outs
+
+    base = brief or "[PIXEL:BRIEF]\n"
+    first = run([p for p in probes if not p.post], request)
+    merged = pt.merge(base, first) if first else None
+    late = run([p for p in probes if p.post], {**request, "brief": merged or base})
+    if late:
+        merged = pt.merge(merged or base, late)
+    return merged
 
 
 def main(argv=None):
@@ -78,10 +89,10 @@ def main(argv=None):
     root, prompt = os.environ["CLONE"], os.environ["PROMPT"]
     brief = Path(os.environ["BRIEF_FILE"]).read_text()
     kind, gate = last_decision(root)
-    if gate not in (None, "open"):
+    if gate in ("denied", "declined"):
         return 0
     merged = chain(load_probe_test(), args.probes, root, prompt, brief, kind, args.bin,
-                   set(args.only.split(",")) if args.only else None)
+                   set(args.only.split(",")) if args.only else None, closed=gate == "closed")
     if merged:
         sys.stdout.write("@@REPLACE@@\n" + merged)
     return 0
