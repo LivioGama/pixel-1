@@ -1,0 +1,1 @@
+**docs:** Lead the README with the prompt-submit brief and a recorded Codex comparison, explain indexing and agent setup, and retain the full local Jev guide. Scope the example's elapsed times to its single recorded run, not total token savings.
