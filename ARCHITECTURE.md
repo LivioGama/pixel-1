@@ -172,7 +172,11 @@ Machine-wide:
   replaced ownership receipt. It stores original bytes/modes of rewritten files,
   fingerprints of installed files and which output directories setup created.
   It covers the guided and unattended paths, including global YAML settings;
-  previews and repository installs write no receipt.
+  previews and repository installs write no receipt. Removal verifies every receipt
+  path against setup's output paths before changing anything, restores/deletes
+  unchanged files and prunes only created empty directories. Edited files stay
+  in place with a yellow report step; older installs without a receipt use the
+  legacy marker-based removers.
 
 - `~/.pixel/plugins/<name>/`: the user's plugins (`pixel install` copies
   one here; `pixel uninstall` deletes it). `~/.pixel/trusted.toml`: one `[[trusted]]`
@@ -573,6 +577,10 @@ Codex TOML review state without rewriting it. Gemini and Antigravity use this
 writer too, taking a `.pixel-bak.*` copy before every changed configuration write.
 Global CLI setup records its output paths in the private ownership receipt;
 reinstalls retain the original ownership rather than adopting their own outputs.
+Removal takes back unchanged writes, including the global YAML template and newly
+created hook files, while reporting and preserving files edited after setup.
+Recovery copies stay in place and the report lists them, including nested skill
+backups; preexisting empty directories are kept.
 
 Setup and removal edit JSON settings by key, retaining untouched values and their
 formatting. Codex hook writes use the shared atomic settings writer; setup reads
