@@ -422,9 +422,11 @@ def evaluate(probe, qset, pixel_bin, ids, home):
         if applies:
             snap = snapshot(q["clone"])
             first, ms, error = run_probe(probe, request, pixel_bin, home)
-            second, _, _ = run_probe(probe, request, pixel_bin, home) if not error else ("", 0, None)
+            second, _, again = run_probe(probe, request, pixel_bin, home) if not error else ("", 0, None)
+            # A second run that failed or overran its budget is that error, not a different answer.
+            error = error or (again and f"second run: {again}")
             row.update(probe_ms=ms, error=error, ran=error is None and bool(first.strip()),
-                       deterministic=first == second, read_only=snapshot(q["clone"]) == snap)
+                       deterministic=error is not None or first == second, read_only=snapshot(q["clone"]) == snap)
             row["stray"] = parse_output(first)[3]
             if row["ran"]:
                 text = merge(q["text"] or "[PIXEL:BRIEF]\n", [(probe.name, probe.mode, first)])
@@ -714,9 +716,9 @@ def check_all(probes_dir=None):
                        "kind": "lookup", "session_files": []}
             before = snapshot(repo)
             first, ms, error = run_probe(probe, request, "pixel", tmp)
-            second, _, _ = run_probe(probe, request, "pixel", tmp)
-            if error:
-                problems.append(f"{directory.name}: {error}")
+            second, _, again = run_probe(probe, request, "pixel", tmp)
+            if error or again:
+                problems.append(f"{directory.name}: {error or 'second run: ' + again}")
             elif first != second:
                 problems.append(f"{directory.name}: not deterministic")
             elif parse_output(first)[3]:
@@ -825,7 +827,12 @@ class SelfTest(unittest.TestCase):
             self.write_probe(tmp, "ok", body="#!/bin/sh\ncat >/dev/null\nprintf '### a — b\\nline\\n'\n")
             self.write_probe(tmp, "noisy", body="#!/bin/sh\ncat >/dev/null\necho stray\n")
             self.write_probe(tmp, "flaky", body="#!/bin/sh\ncat >/dev/null\nprintf '### a — %s\\n' $$\n")
+            # Over its budget on the second run only: a timeout, not a different answer.
+            self.write_probe(tmp, "slow", body="#!/bin/sh\ncat >/dev/null\n[ -e \"$HOME/slow-ran\" ] && sleep 2\n"
+                                               "touch \"$HOME/slow-ran\"\nprintf '### a — b\\nline\\n'\n")
             problems = check_all(tmp)
+            self.assertIn("slow: second run: timeout", problems)
+            self.assertFalse(any(p.startswith("slow: not deterministic") for p in problems), problems)
             self.assertTrue(any(p.startswith("noisy: lines outside") for p in problems), problems)
             self.assertTrue(any(p.startswith("flaky: not deterministic") for p in problems), problems)
             self.assertFalse(any(p.startswith("ok:") for p in problems), problems)
