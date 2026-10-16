@@ -679,6 +679,73 @@ mod tests {
     use super::*;
 
     #[test]
+    fn brief_installers_should_keep_original_bytes_and_not_duplicate_backups() {
+        for gemini in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path();
+            let path = if gemini {
+                home.join(".gemini/settings.json")
+            } else {
+                hooks_path(home)
+            };
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let original = b"{ \"userSetting\": true }\n";
+            fs::write(&path, original).unwrap();
+            let exe = Path::new("/usr/local/bin/pixel");
+            let install = if gemini {
+                install_gemini_brief
+            } else {
+                install_antigravity_brief
+            };
+            install(home, exe, true).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), original);
+            install(home, exe, false).unwrap();
+            install(home, exe, false).unwrap();
+            let prefix = format!("{}.pixel-bak.", path.file_name().unwrap().to_str().unwrap());
+            let backups: Vec<_> = fs::read_dir(path.parent().unwrap())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(&prefix)
+                })
+                .collect();
+            assert_eq!(
+                backups.len(),
+                1,
+                "one recoverable original for {}",
+                path.display()
+            );
+            assert_eq!(fs::read(&backups[0]).unwrap(), original);
+            let installed: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(installed["userSetting"], true);
+            if !gemini {
+                let before_remove = fs::read(&path).unwrap();
+                remove_brief_hook(home, exe, false).unwrap();
+                let backup_bytes: Vec<_> = fs::read_dir(path.parent().unwrap())
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .filter(|path| {
+                        path.file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .starts_with(&prefix)
+                    })
+                    .map(|path| fs::read(path).unwrap())
+                    .collect();
+                assert_eq!(backup_bytes.len(), 2);
+                assert!(backup_bytes.contains(&before_remove));
+                assert_eq!(
+                    read_json_object(&path).unwrap(),
+                    json!({"userSetting": true})
+                );
+            }
+        }
+    }
+
+    #[test]
     fn brief_rewrites_should_back_up_original_bytes_and_preserve_user_formatting() {
         for gemini in [true, false] {
             let home = tempfile::tempdir().unwrap();
