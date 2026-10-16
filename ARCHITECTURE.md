@@ -576,11 +576,18 @@ formatting. Codex hook writes use the shared atomic settings writer; setup reads
 Codex TOML review state without rewriting it. Gemini and Antigravity use this
 writer too, taking a `.pixel-bak.*` copy before every changed configuration write.
 Global CLI setup records its output paths in the private ownership receipt;
-reinstalls retain the original ownership rather than adopting their own outputs.
+reinstalls retain the original ownership of unchanged outputs. If a user edited
+an output before reinstalling, that edit becomes its restore baseline.
 Removal takes back unchanged writes, including the global YAML template and newly
 created hook files, while reporting and preserving files edited after setup.
 Recovery copies stay in place and the report lists them, including nested skill
-backups; preexisting empty directories are kept.
+backups; preexisting empty directories are kept. When removal preserves edits,
+the remaining receipt stays private so repeated removal cannot delete those edits
+through the legacy removers. Symlinked output directories are followed without
+cycles; a retargeted link preserves files at its new destination. Generated-file
+writes follow complete file-symlink chains and preserve target permissions.
+Snapshotting rejects directory links to ancestors and non-regular files before
+setup writes, preventing a scan of the whole home or a blocking read of a FIFO.
 
 Setup and removal edit JSON settings by key, retaining untouched values and their
 formatting. Codex hook writes use the shared atomic settings writer; setup reads
