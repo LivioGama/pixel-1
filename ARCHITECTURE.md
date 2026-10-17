@@ -139,7 +139,7 @@ Per repository, under `.pixel/` (git-ignored):
 | `history.db` (+ `-wal`, `-shm`, `history.db.lock`) | `pixel-facts` | SQLite: commit facts, diff text, lifecycle, FTS5 trigram indexes. Populated by `pixel build-index --history` or the daemon ingest thread on the first history query; capped by the window and budget above, with `auto_vacuum = INCREMENTAL` so an eviction shrinks the file. Schema version `FACTS_SCHEMA_VERSION` (3) in `PRAGMA user_version`: another version is rebuilt, except 2 (`UPGRADES_IN_PLACE_FROM`), whose dates are repaired in place. |
 | `code-vectors/` (`manifest.json`, `seg-*.vec`, `lock`) | `pixel-recall` | `search-meaning` chunk vectors, keyed by the xxh3-128 hash of the chunk text seeded with the model id, embedder revision and `CHUNKER_VERSION`; stored as the model's `f32`s. Written only when the search root carries `base.shard` and is not `$HOME`, never by the daemon's semantic fallback. `flock` on `lock` (shared to read, exclusive to write), segments immutable, the manifest replaced by rename; rewritten with the live rows once unreachable ones exceed a quarter of them. |
 | `actions.jsonl` | `pixel-actionlog` | One line per invocation, with the route and phase timings of each request it served (`serve`). |
-| `brief-decisions.jsonl` | CLI `brief` (`execution_brief/decision_log.rs`) | One JSON line per prompt the prompt-submit brief judged, or declined for being about nothing: time, signal (`strong`, `weak`, `prose`), gate (`open`, `closed`, `denied`, `unjudged`, `declined`) and its reason, the gate's tier (`high`, `low`, `off`), score and model source, the best file and the features the score read, the intent judge's verdict, ops, bytes (and whether it carried the search receipt and answer excerpts, with the excerpt bytes, and for a region pack its bytes, hook parts, symbols, located blocks and whether the text search stood in for a stale graph) and milliseconds spent, the evidence route (`daemon` or `local`) and what the daemon start the prompt gave came to (`launched`, `running`, `skipped: …`, `launch failed`), the typed text (never a pasted block, credential shapes masked, cut at 600 characters) and its SHA-256. The last 500 lines, mode 0600, never creates `.pixel/`; `PIXEL_BRIEF_LOG=0\|false\|off` writes nothing. `pixel brief --json` prints the same record beside the brief. |
+| `brief-decisions.jsonl` | CLI `brief` (`execution_brief/decision_log.rs`) | One JSON line per prompt the prompt-submit brief judged, or declined for being about nothing: time, signal (`strong`, `weak`, `prose`), gate (`open`, `closed`, `denied`, `unjudged`, `declined`) and its reason, the gate's tier (`high`, `low`, `off`), score and model source, the best file and the features the score read, the intent judge's verdict, ops, bytes (and whether it carried the search receipt and answer excerpts, with the excerpt bytes, and for a region pack its bytes, hook parts, symbols, located blocks and whether the text search stood in for a stale graph) and milliseconds spent, the evidence route (`daemon` or `local`) and what the daemon start the prompt gave came to (`launched`, `running`, `skipped: …`, `launch failed`), the task text and its SHA-256 (credential shapes masked and cut at 600 characters; when the prompt contains only a pasted block, this can include the bounded excerpt used as its plain-language task). The last 500 lines, mode 0600, never creates `.pixel/`; `PIXEL_BRIEF_LOG=0\|false\|off` writes nothing. `pixel brief --json` prints the same record beside the brief. |
 | `brief-feedback.jsonl` | CLI `run-hook task-event` (`execution_brief/feedback.rs`) | What the agent read after the brief, per host session (the id is stored as 16 hex digits of its SHA-256). `prompt`: one line per prompt the brief saw, with the brief's bytes, gate and kind, the repository paths it injected (best first, at most 32) and the SHA-256 of the typed text that joins it to `brief-decisions.jsonl`. `part`: the bytes each prompt-submit hook part printed to the host, and whether the part gave up waiting for the brief (`late`), so a brief that never arrived is told from an empty one. `tool`: one line per `PostToolUse` or `PostToolUseFailure` with the tool name, whether it changed a file, and the repository files it named (the `file_path`, `path` or `notebook_path` of its input and the existing files among the words of its shell command; a file outside the repository, a link out of it or a credential-shaped path is never named). `stop`, and with it a `turn` line that closes the prompt: injected, read and edited paths, their overlap and the tool calls before the first answer. Paths and counts only, never prompt, command or output text. The last 1,500 lines, mode 0600, written through `decision_log::append_with` (never through a link, never creates `.pixel/`); `PIXEL_BRIEF_LOG=0\|false\|off` writes nothing. `scripts/bench/brief-feedback-summary.py` turns the `turn` lines into the zero-call rate and the injected-versus-read precision and recall. |
 | `brief-sessions/<session>.json` | CLI `run-hook task-event` (`execution_brief/sent.rs`) | The line ranges the region packs already sent to one host session, so the next pack leaves them out and spends its room on source the session has not got. The name is the first 16 hex digits of the SHA-256 of the host's session id; the file holds keys only: per range the first 16 hex digits of the SHA-256 of the path, its first and last line and when it was sent. A key older than 24 hours is forgotten (every write also deletes session files nobody has written for a day), at most 1,000 are kept, and `SessionStart` with source `compact` or `clear` deletes the file (a `resume` keeps it: the context is the same). Written atomically with mode 0600 in a 0700 directory, never through a link (`.pixel` or `brief-sessions` as a symbolic link is refused), and never creates `.pixel/`. `PIXEL_BRIEF_DEDUPE=0\|false\|off` sends everything again. |
 | `brief-parts/<session>-<prompt>.txt` | CLI `run-hook task-event --part` (`brief_parts.rs`) | The whole prompt-submit brief of one prompt, stored by part 1 of a brief split over several hooks and read by parts 2 to N (see "Agent integration"). The name is the first 16 hex digits of the SHA-256 of the host's session id, a dash and the SHA-256 of the prompt, so no host text reaches a file name. Written atomically with mode 0600 (`pixel_git::nofollow::write_replace`), never through a link (`.pixel` or `brief-parts` as a symbolic link is refused); an empty file means the prompt got no brief, so the other parts do not wait. Part 1 deletes the entry before it computes the brief, leaves an empty `.done` file with the same stem once its own output is written, and every part-1 write deletes the entries older than one hour. |
@@ -866,6 +866,25 @@ long untagged paste:
   relevance probe and the meaning search run at once on the deadline, and
   only the gate decides whether the repository is the subject.
 
+A prompt with nothing typed but a `<pasted_content>` block has no shape of its
+own, and the paste is someone else's text. It is judged on the head of the
+paste's first paragraph and the tail of its last (`pasted_task`: 300 and 299
+characters joined by a line break, so the whole stays within `PASTE_TAIL_CHARS`
+and neither `brief_task` nor the decision log cuts it; links dropped), and only
+ever as plain language, whatever identifiers the paste holds, so the gate above
+always decides it. The plain-language rule applies to that excerpt, so a paste
+that comes down to operations, one content word or a link stays declined. The
+decision log's `typed` is the excerpt, credential shapes masked like any typed
+text; a declined paste logs nothing of it.
+
+An acknowledgement, a greeting and a harness envelope start no brief
+(`prompt_continuation.rs`). A prompt is an envelope when it opens, after any
+leading `<system-reminder>` block, with one of recall's `ORCHESTRATOR_PREFIXES`
+(`pixel_recall::intent`): `<task-notification>`, a command wrapper, Codex's
+`<realtime_delegation>` and `<send_user_message_question_reply>`. The same list
+keeps those turns out of recall's embeddings and session titles, so a new
+envelope is added there, once.
+
 Unless `PIXEL_BRIEF_FRENCH=0`, a prompt that pixel-mvp's
 rule reads as French (`mvp_model::language`: two French function words or
 more, outnumbering its English ones) is searched, judged and gated on the
@@ -1099,9 +1118,14 @@ short follow-up (`is_follow_up`: at most ten words that ask for a change or
 lean on what came before) that the gate would have closed is let through
 instead, when the session has files: the files are the brief
 (`Admission::Context`, gate `open`, reason `context: …`, rendered as a low-tier
-maybe) and the off-topic leads of its words are dropped. A source that has not
-answered inside its window adds nothing. `PIXEL_BRIEF_CONTEXT=0|false|off`
-turns it off, and the `brief` command, which has no session, never uses it.
+maybe) and the off-topic leads of its words are dropped. The lift is checked
+before the relevance probe's outcome (`refusal_lifting`), so a probe that
+failed (`relevance: facts: index_stale`) or did not answer in time no more
+closes the follow-up than an off-topic score does, and a lifted brief counts as
+answered when neither probe could be asked: the session's files alone make it.
+A source that has not answered inside its window adds nothing.
+`PIXEL_BRIEF_CONTEXT=0|false|off` turns it off, and the `brief` command, which
+has no session, never uses it.
 
 **Evidence sent once** (`execution_brief/sent.rs`). A session that asks again
 about code it was just sent would get the same lines again, and they would fill
