@@ -91,15 +91,18 @@ Need more than the brief? `pixel setup` drops a `pixel` skill into each agent's 
 
 ## 🆚 Alternatives
 
-Keeping the agent's context bill down is an idea whose time has come — teams at AWS and Spotify ship their own takes on it:
+Keeping the agent's context bill down is an idea whose time has come — teams at AWS and Spotify, and projects like xerj, ship their own takes on it:
 
 | | What it does | Mechanism | Cost model |
 |---|---|---|---|
 | **Pixel** | Attaches cited repo context (`file:line` brief: definitions, callers, tests, git history) before the model sees your prompt | Local code graph + prompt-submit hook | Deterministic index lookup — no model call, no latency, free |
 | [AWS AgentCore Memory sample](https://github.com/aws-samples/anthropic-on-aws/tree/main/agent-sdk-agentcore-memory) | Wraps every `query()`: fetches short-term history and long-term summaries before the call, saves turns after | Claude Agent SDK + managed AgentCore Memory | Managed AWS service; LLM-extracted cross-session memory, not code structure |
 | [Spotify `shunt`](https://github.com/spotify/portal-ai-plugins/tree/main/plugins/shunt) | Hooks block the agent from reading large files directly; a skill delegates the read to a cheaper internal LLM that summarizes (82–94% token savings claimed) | Claude Code `PreToolUse` hooks → AiKA modes via Portal CLI | An extra billed model call per delegated read or codegen |
+| [xerj](https://github.com/xerj-org/xerj) | Indexes any folder (code through tree-sitter, plus docs, logs and PDFs) into a local Elasticsearch-compatible engine that the agent searches instead of reading files (2.7× fewer output tokens than grep claimed on reference coding) | Local server + `xerj search` / `xerj def` CLI, or the MCP tool and skill `xerj init` installs | Free and local, but a server to keep running and a search call per lookup |
 
-Same goal, different lever: those delegate work to another model or service, Pixel makes the context a **deterministic lookup in a local index**. No extra tokens, no extra round trip, no cloud dependency — the same brief every time, cited to the line.
+We put a xerj brief (its top passages for the prompt, through the same hook and at the same size) in place of Pixel's on 13 arena prompts in Claude Code: **26 and 25 tool calls with Pixel's brief in two runs, 37 with xerj's**. Installed with `xerj init` (MCP tools and a skill), the agent never called xerj (58 calls, none to xerj). [Method, per-prompt results and indexing times](docs/bench/vs-xerj.md).
+
+Same goal, different lever: AWS and Spotify delegate work to another model or service, and xerj gives the agent a search engine it still has to call. Pixel makes the context a **deterministic lookup in a local index**, attached before the prompt. No extra tokens, no extra round trip, no cloud dependency — the same brief every time, cited to the line.
 
 ## 🔌 Works with
 
