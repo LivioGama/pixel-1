@@ -611,8 +611,7 @@ impl FactsStore {
     /// Either `git` call failed.
     pub fn refs_hash(&self) -> Result<String> {
         let mut buf = Vec::new();
-        let refs = self
-            .runner
+        let refs = crate::ingest::enumeration_runner(self)
             .run(&["for-each-ref", "--format=%(refname)%00%(objectname)"])?;
         buf.extend_from_slice(&refs);
         let head = self.runner.run(&["rev-parse", "HEAD"])?;
