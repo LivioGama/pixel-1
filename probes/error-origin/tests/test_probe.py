@@ -44,16 +44,16 @@ class DescribedMessage(unittest.TestCase):
     def test_the_emitted_message_beats_a_manual_that_shares_more_words(self):
         root = repo({"src/main.rs": MESSAGE, "src/flags.rs": MANUAL})
         out, head = origin(root, "where does the message about no files being found come from and when is it printed")
-        self.assertEqual(head, "### error origin — the message the question describes is raised at src/main.rs:3 in "
-                               "eprint_nothing_found")
-        self.assertIn("### src/main.rs:9-13 — run → eprint_nothing_found: the lines leading to the call", out)
+        self.assertEqual(head, "### error origin — described occurrence candidate; emission unverified at src/main.rs:3 near "
+                               "eprint_nothing_found (scope unresolved)")
+        self.assertIn("### src/main.rs:9-13 — run → eprint_nothing_found: lexical call candidate; receiver/binding unresolved", out)
 
     def test_a_python_message_in_triple_quotes_is_found_on_its_own_line(self):
         source = ('_no_scope_msg = """\\\nWorking outside of the request scope.\n\nOpen one with scope().\n"""\n\n\n'
                   "def current():\n    raise RuntimeError(_no_scope_msg)\n")
         root = repo({"pkg/globals.py": source, "pkg/other.py": "def scope():\n    return 'a request scope'\n"})
         _out, head = origin(root, "where does the runtime error about working outside of the request scope come from")
-        self.assertEqual(head, "### error origin — the message the question describes is raised at pkg/globals.py:2")
+        self.assertEqual(head, "### error origin — message definition; emission unverified at pkg/globals.py:2")
 
     def test_a_catalogue_entry_is_followed_to_the_code_that_names_its_key(self):
         root = repo({
@@ -62,9 +62,9 @@ class DescribedMessage(unittest.TestCase):
             "src/App.tsx": "function onDrop() {\n  setAlert(t(\"alerts.invalidDrop\"));\n}\n",
         })
         out, head = origin(root, "where is the alert text for a file that could not be loaded defined")
-        self.assertEqual(head, "### error origin — the message the question describes is raised at src/App.tsx:2 in "
-                               "onDrop")
-        self.assertIn("### locales/en.json:3-3 — the text, in its message catalogue", out)
+        self.assertEqual(head, "### error origin — described occurrence candidate; emission unverified at src/App.tsx:2 near "
+                               "onDrop (scope unresolved)")
+        self.assertIn("### locales/en.json:3-3 — message definition in catalogue; emission unverified", out)
 
     def test_a_string_longer_than_the_window_is_a_manual_and_never_the_origin(self):
         manual = "pub fn doc() -> &'static str {\n    r\"\n" + "No files being found is printed here.\n" * 20 + "\"\n}\n"
@@ -77,6 +77,102 @@ class DescribedMessage(unittest.TestCase):
         root = repo({"src/walk.rs": source})
         self.assertEqual(origin(root, "where does the message about no files being found by the walker come from")[0],
                          "")
+
+
+class EvidenceQualification(unittest.TestCase):
+    def test_documentation_and_definitions_do_not_claim_an_emission(self):
+        for body, category in [
+            ('def explain():\n    """The amber river is frozen."""\n', 'documentation occurrence; no emission proved'),
+            ('NOTICE = "The amber river is frozen"\n', 'message definition; emission unverified'),
+        ]:
+            with self.subTest(category=category):
+                out, _ = origin(repo({'engine.py': body}), 'where is "The amber river is frozen" raised')
+                self.assertIn(category, out)
+                self.assertNotIn('is raised', out)
+                self.assertNotIn('emits it', out)
+
+    def test_local_emission_keeps_the_last_source_line(self):
+        out, _ = origin(repo({'engine.py': 'def fail():\n    raise ValueError("The amber river is frozen")\n'}),
+                        'where is "The amber river is frozen" raised')
+        self.assertIn('local raise syntax', out)
+        self.assertIn('2|     raise ValueError("The amber river is frozen")', out,
+                      'the evidence must include the actual raise, even when it is the final source line')
+
+    def test_conversions_and_rethrows_keep_the_branch_and_dependency_boundary(self):
+        for statement in ['raise GatewayError(exc)', 'raise']:
+            with self.subTest(statement=statement):
+                source = ('from transport.errors import LinkDisconnected\n\ndef perform():\n'
+                          '    try:\n        connect()\n    except LinkDisconnected as exc:\n'
+                          '        if retry_allowed():\n            recover()\n        ' + statement + '\n')
+                out, _ = origin(repo({'engine.py': source}), 'where does the link disconnected error come from')
+                self.assertIn('conversion/rethrow candidate', out)
+                self.assertIn('if retry_allowed():', out)
+                self.assertIn(f'9|         {statement}', out, 'quote the source raise, not only a role label')
+                self.assertIn('dependency boundary', out)
+                self.assertIn('external emission not inspected', out)
+                self.assertIn('message identity unverified', out)
+
+    def test_a_homonymous_receiver_is_never_a_proven_call_edge(self):
+        source = ('def send():\n    raise ValueError("The amber river is frozen")\n\n'
+                  'class Reporter:\n    def send(self):\n        return "log only"\n\n'
+                  'def unrelated(reporter):\n    reporter.send()\n\ndef execute():\n    send()\n')
+        out, _ = origin(repo({'engine.py': source}), 'where is "The amber river is frozen" raised')
+        self.assertIn('local raise syntax', out)
+        edges = [line for line in out.splitlines() if ' → send:' in line]
+        self.assertTrue(edges, 'keep a bounded level of call context, rather than hiding all callers')
+        self.assertTrue(all('receiver/binding unresolved' in edge for edge in edges), edges)
+        self.assertNotIn('the lines leading to the call', out)
+
+    def test_unparseable_python_is_only_a_candidate(self):
+        source = 'def broken(:\n    raise ValueError("The amber river is frozen")\n'
+        out, _ = origin(repo({'engine.py': source}), 'where is "The amber river is frozen" raised')
+        self.assertIn('occurrence candidate; emission unverified', out)
+        self.assertNotIn('local raise syntax', out)
+
+
+class ReviewRegressions(unittest.TestCase):
+    def test_a_global_message_is_not_inside_the_previous_function(self):
+        source = 'def unrelated():\n    return None\n\nNOTICE = "The amber river is frozen"\n'
+        out, head = origin(repo({'engine.py': source}), 'where is "The amber river is frozen" raised')
+        self.assertIn('message definition; emission unverified', head)
+        self.assertNotIn('in unrelated', head)
+        self.assertNotIn(' → unrelated:', out)
+
+    def test_nested_scopes_are_not_attributed_as_conversions_of_the_handler(self):
+        for nested in ['def later():', 'async def later():', 'class Later:']:
+            with self.subTest(nested=nested):
+                source = ('from transport.errors import LinkDisconnected\n\ndef perform():\n'
+                          '    try:\n        connect()\n    except LinkDisconnected as exc:\n'
+                          '        ' + nested + '\n            raise GatewayError(exc)\n        return None\n')
+                out, _ = origin(repo({'engine.py': source}), 'where does the link disconnected error come from')
+                self.assertNotIn('conversion/rethrow candidate', out)
+                self.assertNotIn('local raise/rethrow syntax in this handler', out)
+
+    def test_import_name_shadowing_does_not_prove_a_dependency_binding(self):
+        source = ('from transport.errors import LinkDisconnected\n\ndef perform():\n'
+                  '    class LinkDisconnected(Exception):\n        pass\n    try:\n        connect()\n'
+                  '    except LinkDisconnected as exc:\n        raise GatewayError(exc)\n')
+        out, _ = origin(repo({'engine.py': source}), 'where does the link disconnected error come from')
+        self.assertIn('dependency boundary candidate: matching import name; binding unresolved', out)
+        self.assertNotIn('dependency boundary: imported caught type', out)
+
+    def test_second_level_context_keeps_conditions_without_composing_a_call_path(self):
+        source = ('def emit():\n    raise ValueError("The amber river is frozen")\n\n'
+                  'def first():\n    emit()\n\ndef entry(enabled):\n    if enabled:\n        first()\n')
+        out, _ = origin(repo({'engine.py': source}), 'where is "The amber river is frozen" raised')
+        self.assertIn('if enabled:', out)
+        self.assertIn('independent context, no composed path', out)
+        self.assertTrue(all('binding unresolved' in l for l in out.splitlines() if ' → ' in l))
+
+    def test_direct_sites_are_not_hidden_by_an_indirect_homonym_in_the_same_function(self):
+        source = ('def emit():\n    raise ValueError("The amber river is frozen")\n\n'
+                  'def first():\n    emit()\n\ndef parallel(obj, ready):\n    obj.first()\n'
+                  '    if not ready:\n        emit()\n')
+        out, _ = origin(repo({'engine.py': source}), 'where is "The amber river is frozen" raised')
+        self.assertIn('parallel → emit:', out)
+        self.assertIn('if not ready:', out)
+        self.assertIn('parallel → first:', out)
+        self.assertTrue(all('binding unresolved' in l for l in out.splitlines() if ' → ' in l))
 
 
 class StringPart(unittest.TestCase):
