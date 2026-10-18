@@ -325,7 +325,7 @@ impl QuestionKind {
         if asks_overview(typed) && symbol_anchors == 0 && anchors.paths().is_empty() {
             return Self::Overview;
         }
-        if asks_review(typed) {
+        if asks_review(typed) && symbol_anchors == 0 && anchors.paths().is_empty() {
             return Self::Review;
         }
         if asks_phrase(typed, HISTORY_PHRASES) && !asks(TEST_WORDS) {
@@ -459,6 +459,27 @@ mod tests {
     /// the chain would extract from it.
     fn kind_of(typed: &str) -> QuestionKind {
         QuestionKind::heuristic(typed, &Anchors::from_text(typed))
+    }
+
+    #[test]
+    fn review_words_should_not_hijack_a_prompt_that_names_a_symbol_or_path() {
+        let named = "check why `pick_sites` in the working tree picks import lines";
+        assert_ne!(kind_of(named), QuestionKind::Review);
+        let pathed = "review the working tree changes in src/lib.rs";
+        assert_ne!(kind_of(pathed), QuestionKind::Review);
+    }
+
+    #[test]
+    fn a_qualified_name_should_be_one_anchor_not_its_pascal_prefix() {
+        let anchors = Anchors::from_text("how does QuestionKind::heuristic route prompts");
+        assert_eq!(
+            anchors.qualified_symbol_name(),
+            Some("QuestionKind::heuristic")
+        );
+        assert_eq!(
+            Anchors::from_text("who calls pick_sites").qualified_symbol_name(),
+            None
+        );
     }
 
     #[test]

@@ -205,7 +205,7 @@ static PATHLIKE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[\w.-]+(?:/[\w.-]+)+").expect("the path-anchor pattern is a literal")
 });
 static CASED: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b[a-z]+[A-Z]\w*\b|\b[A-Z][a-z0-9]+[A-Z]\w*\b|\b\w+(?:::\w+)+\b|\b\w+_\w+\b")
+    Regex::new(r"\b\w+(?:::\w+)+\b|\b[a-z]+[A-Z]\w*\b|\b[A-Z][a-z0-9]+[A-Z]\w*\b|\b\w+_\w+\b")
         .expect("the cased-anchor pattern is a literal")
 });
 static WORD: LazyLock<Regex> =
@@ -661,6 +661,12 @@ impl Anchors {
             .next()
             .map(ToString::to_string)
             .or_else(|| self.sole_path_stem())
+    }
+
+    /// The first symbol anchor when it carries a `::` qualifier
+    /// (`QuestionKind::heuristic`).
+    pub(crate) fn qualified_symbol_name(&self) -> Option<&str> {
+        self.names().next().filter(|name| name.contains("::"))
     }
 
     /// The stem of the one path a prompt names, as an identifier to search
@@ -1391,7 +1397,18 @@ pub(crate) fn run(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, de
     if let Some(name) = plan.anchors.symbol_name()
         && spend(state, deadline)
     {
-        match evidence.symbols(&name, deadline) {
+        let resolved = plan
+            .anchors
+            .qualified_symbol_name()
+            .and_then(|qualified| {
+                evidence
+                    .symbols(qualified, deadline)
+                    .ok()
+                    .filter(|hits| !hits.is_empty())
+                    .map(Ok)
+            })
+            .unwrap_or_else(|| evidence.symbols(&name, deadline));
+        match resolved {
             Ok(hits) => {
                 let (pick, note) = pick_uid(&hits, &name, &plan.anchors.paths());
                 let target = pick.map_or_else(|| name.clone(), |hit| hit.uid.clone());
@@ -1505,10 +1522,16 @@ pub(crate) fn run(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, de
 /// so a window that ends first still renders complete blocks.
 fn pack_evidence(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, deadline: Instant) {
     let mut brief = edit(state, |brief| brief.clone());
-    // History rows answer a rationale question better than regions do.
+    let phrases = region_pack::prompt_phrases(&plan.typed);
+    // History rows answer an unanchored rationale question better than
+    // regions do; when the prompt names a symbol, path, or literal phrase
+    // (`graph.freshness`, `prepare-repo`), pack its source regions too.
     if !brief.pack_limit.on()
         || Instant::now() >= deadline
-        || (!brief.history.is_empty() && plan.kind != QuestionKind::History)
+        || (!brief.history.is_empty()
+            && plan.kind != QuestionKind::History
+            && plan.anchors.0.is_empty()
+            && phrases.is_empty())
     {
         return;
     }
@@ -1527,9 +1550,11 @@ fn pack_evidence(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, dea
         .map(|name| name.rsplit("::").next().unwrap_or(name).to_string())
         .collect();
     let strong = brief.signal == Some(Signal::Strong);
-    let first_rows = (strong && brief.searched && !plan.anchors.names().any(|n| n.contains("::")))
-        .then(|| brief.files.clone())
-        .filter(|rows| !rows.is_empty());
+    let first_rows = (strong
+        && brief.searched
+        && (!plan.anchors.names().any(|n| n.contains("::")) || !brief.defined.is_empty()))
+    .then(|| brief.files.clone())
+    .filter(|rows| !rows.is_empty());
     let terms: Vec<String> = brief
         .receipt
         .as_ref()
@@ -1586,7 +1611,7 @@ fn pack_evidence(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, dea
     }
     let input = region_pack::Input {
         names,
-        phrases: region_pack::quoted_phrases(&plan.typed),
+        phrases,
         hints: if own { Vec::new() } else { hints },
         terms,
         paths: plan
@@ -2589,6 +2614,7 @@ pub(crate) fn declined_record(declined: Declined, prompt: &str) -> Record {
         pack_targets: 0,
         pack_located: 0,
         fallback: false,
+        coverage: "none",
         elapsed_ms: 0,
         route: None,
         daemon: None,
@@ -2749,7 +2775,13 @@ impl Pending {
         if matches!(brief.admission, Admission::Denied(_)) || (brief.silenced && !gate_closed) {
             return (text, Vec::new());
         }
-        let kind = brief.kind.map(QuestionKind::as_str);
+        let kind = brief
+            .kind
+            .or_else(|| {
+                let typed = super::typed_text(&self.task);
+                Some(QuestionKind::heuristic(&typed, &Anchors::from_text(&typed)))
+            })
+            .map(QuestionKind::as_str);
         let stage = probes::Stage {
             host: &setup.host,
             root: &setup.root,
@@ -2783,6 +2815,30 @@ impl Pending {
         };
         let (text, probe_runs) = self.probe_stage(&brief, text);
         let recovered = matches!(brief.admission, Admission::Closed(_)) && text.is_some();
+        let coverage = match text.as_deref() {
+            None | Some("") => "none",
+            Some(rendered) if rendered.contains(region_pack::LEAD) => "degraded",
+            // The prompt named a symbol and the graph found no definition of
+            // it: whatever else is shown does not answer what was asked.
+            Some(_)
+                if brief.defined.is_empty()
+                    && brief.likely_def.is_none()
+                    && brief
+                        .unresolved
+                        .iter()
+                        .any(|gap| gap.starts_with("find-symbol ")) =>
+            {
+                "degraded"
+            }
+            Some(rendered)
+                if rendered.contains("incomplete: ")
+                    || !brief.unresolved.is_empty()
+                    || stats.fallback =>
+            {
+                "partial"
+            }
+            Some(_) => "full",
+        };
         let elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         // The daemon start has had the whole brief to launch; a hook about to
         // exit sees it through, for at most the hook bound.
@@ -2825,6 +2881,7 @@ impl Pending {
             pack_targets: stats.pack_targets,
             pack_located: stats.pack_located,
             fallback: stats.fallback,
+            coverage,
             elapsed_ms,
             route: brief.route,
             daemon,

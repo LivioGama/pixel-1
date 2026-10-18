@@ -742,9 +742,30 @@ pub(crate) fn pick_sites(
     wants_docs: bool,
     cap: usize,
 ) -> Sites {
+    fn site_tier(text: Option<&str>) -> u8 {
+        let Some(trimmed) = text.map(str::trim_start) else {
+            return 0;
+        };
+        if trimmed.starts_with("//")
+            || trimmed.starts_with("/*")
+            || trimmed.starts_with('*')
+            || trimmed.starts_with('#')
+        {
+            2
+        } else if trimmed.starts_with("use ")
+            || trimmed.starts_with("pub use ")
+            || trimmed.starts_with("pub(crate) use ")
+            || trimmed.starts_with("import ")
+            || trimmed.starts_with("from ")
+        {
+            1
+        } else {
+            0
+        }
+    }
     let mut seen: Vec<(&str, u64)> = Vec::new();
     let mut order: Vec<&str> = Vec::new();
-    let mut by_file: HashMap<&str, Vec<u64>> = HashMap::new();
+    let mut by_file: HashMap<&str, Vec<(u8, u64)>> = HashMap::new();
     let mut tests: Vec<Site> = Vec::new();
     for row in rows {
         if is_noise_path(&row.path)
@@ -776,7 +797,10 @@ pub(crate) fn pick_sites(
         if !by_file.contains_key(row.path.as_str()) {
             order.push(row.path.as_str());
         }
-        by_file.entry(row.path.as_str()).or_default().push(row.line);
+        by_file
+            .entry(row.path.as_str())
+            .or_default()
+            .push((site_tier(row.text.as_deref()), row.line));
     }
     let total = by_file.values().map(Vec::len).sum();
     for lines in by_file.values_mut() {
@@ -788,7 +812,7 @@ pub(crate) fn pick_sites(
         let mut took = false;
         for path in &order {
             if code.len() < cap
-                && let Some(line) = by_file.get(path).and_then(|lines| lines.get(round))
+                && let Some((_, line)) = by_file.get(path).and_then(|lines| lines.get(round))
             {
                 code.push(Site {
                     path: (*path).to_string(),
@@ -927,6 +951,12 @@ static QUOTED_PHRASE: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("the quoted-phrase pattern is a literal")
 });
+static DOTTED_OR_KEBAB_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?:^|[\s(`'"\[])([a-z_][a-z0-9_-]*\.[a-z_][a-z0-9_.-]*|[a-z][a-z0-9]*(?:-[a-z0-9]+)+)(?:$|[\s.,;:!?`'"\)\]])"#,
+    )
+    .expect("the dotted-or-kebab pattern is a literal")
+});
 
 /// Characters of a phrase segment worth a text search of its own.
 const MIN_NEEDLE_CHARS: usize = 12;
@@ -946,6 +976,47 @@ pub(crate) fn quoted_phrases(typed: &str) -> Vec<String> {
         if phrase.split_whitespace().count() >= 2 && !found.iter().any(|held| held == phrase) {
             found.push(phrase.to_string());
         }
+    }
+    found.truncate(MAX_PHRASES);
+    found
+}
+
+/// [`quoted_phrases`], plus dotted config/check keys (`graph.freshness`) and
+/// hyphenated CLI/flag names (`prepare-repo`) that the symbol graph does not
+/// index as identifiers.
+pub(crate) fn prompt_phrases(typed: &str) -> Vec<String> {
+    let mut found = quoted_phrases(typed);
+    for caps in DOTTED_OR_KEBAB_TOKEN.captures_iter(typed) {
+        if found.len() >= MAX_PHRASES {
+            break;
+        }
+        let Some(matched) = caps.get(1) else {
+            continue;
+        };
+        let token = matched.as_str().trim_matches('.');
+        if token.len() < 5 || found.iter().any(|held| held == token) {
+            continue;
+        }
+        if let Some((_, ext)) = token.rsplit_once('.') {
+            let lower = ext.to_ascii_lowercase();
+            if CODE_EXTENSIONS.contains(&lower.as_str())
+                || matches!(
+                    lower.as_str(),
+                    "md" | "txt"
+                        | "json"
+                        | "toml"
+                        | "yaml"
+                        | "yml"
+                        | "lock"
+                        | "sh"
+                        | "html"
+                        | "css"
+                )
+            {
+                continue;
+            }
+        }
+        found.push(token.to_string());
     }
     found.truncate(MAX_PHRASES);
     found
@@ -977,6 +1048,12 @@ pub(crate) fn rank_identifiers(hints: &[String], terms: &[String]) -> Vec<String
         for found in IDENTIFIER.find_iter(hint) {
             let name = found.as_str();
             let words: HashSet<String> = answer::tokens(name).into_iter().collect();
+            if !wanted.contains("test")
+                && !wanted.contains("tests")
+                && (words.contains("test") || words.contains("tests"))
+            {
+                continue;
+            }
             let overlap = words.intersection(&wanted).count();
             if overlap < 2 || scored.iter().any(|(_, held)| held == name) {
                 continue;
@@ -1397,6 +1474,8 @@ pub(crate) fn build(
             block: Block::new("call graph facts".to_string(), input.facts.clone()),
         });
     }
+    let named_def =
+        !input.names.is_empty() && targets.iter().any(|target| target.definition.is_some());
     for (rank, block) in input
         .locators
         .iter()
@@ -1404,7 +1483,11 @@ pub(crate) fn build(
         .enumerate()
     {
         base.push(Candidate {
-            priority: rank,
+            priority: if named_def {
+                MAX_TARGETS + 4 + MAX_TARGETS + rank
+            } else {
+                rank
+            },
             order: (usize::MAX - 1, rank, 0),
             part: Part::Locator,
             block: block.clone(),
@@ -1443,6 +1526,7 @@ pub(crate) fn build(
                 shown = level
                     .blocks
                     .iter()
+                    .filter(|candidate| candidate.part == Part::Definition)
                     .filter_map(|candidate| block_range(&candidate.block))
                     .collect();
             }
@@ -2112,6 +2196,13 @@ fn assemble(
         .iter()
         .filter(|held| held.part == Part::Locator)
         .count();
+    if !input.names.is_empty()
+        && chosen
+            .iter()
+            .all(|held| !matches!(held.part, Part::Definition | Part::Usage))
+    {
+        pack.anchored = false;
+    }
     pack.blocks = chosen.iter().map(|held| held.block.clone()).collect();
     pack.searched = header(input, targets, &chosen, *found_sites, fallback);
     (!pack.blocks.is_empty()).then_some((pack, all))
@@ -2897,6 +2988,53 @@ mod tests {
         let tests = Block::new("tests of x".into(), Vec::new());
         assert_eq!(block_range(&tests), None);
         assert!(!overlaps(&taken, &tests));
+    }
+
+    #[test]
+    fn prompt_phrases_should_add_dotted_keys_and_kebab_commands_but_not_files() {
+        assert_eq!(
+            prompt_phrases("when does doctor report graph.freshness red"),
+            ["graph.freshness"]
+        );
+        assert_eq!(
+            prompt_phrases("what does pixel prepare-repo do"),
+            ["prepare-repo"]
+        );
+        assert!(prompt_phrases("what is in region_pack.rs and README.md").is_empty());
+        assert!(prompt_phrases("a b-c e.g").is_empty());
+        let quoted =
+            prompt_phrases("why \"index is stale now\" after prepare-repo and build-index");
+        assert_eq!(quoted, ["index is stale now", "prepare-repo"]);
+    }
+
+    #[test]
+    fn rank_identifiers_should_skip_test_names_unless_the_prompt_asks_for_tests() {
+        let hints = vec!["PIXEL_BRIEF_TEST_PAD_PARTS PIXEL_BRIEF_PARTS".to_string()];
+        let terms = vec!["brief".to_string(), "parts".to_string()];
+        assert_eq!(rank_identifiers(&hints, &terms), ["PIXEL_BRIEF_PARTS"]);
+        let with_tests = vec!["brief".to_string(), "parts".to_string(), "test".to_string()];
+        assert!(
+            rank_identifiers(&hints, &with_tests)
+                .contains(&"PIXEL_BRIEF_TEST_PAD_PARTS".to_string())
+        );
+    }
+
+    #[test]
+    fn pick_sites_should_take_code_before_imports_and_comments_in_a_file() {
+        let row = |line: u64, text: &str| RichHit {
+            path: "src/a.rs".to_string(),
+            line,
+            text: Some(text.to_string()),
+        };
+        let rows = vec![
+            row(1, "//! pick_sites docs"),
+            row(2, "use crate::pick_sites;"),
+            row(40, "    let s = pick_sites(rows);"),
+        ];
+        let sites = pick_sites(&rows, "pick_sites", None, None, false, 2);
+        let lines: Vec<u64> = sites.code.iter().map(|site| site.line).collect();
+        assert_eq!(lines, [40, 2]);
+        assert_eq!(sites.total, 3);
     }
 
     #[test]

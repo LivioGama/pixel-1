@@ -1063,11 +1063,14 @@ fn roots(
     evidence: &dyn Evidence,
     deadline: Instant,
 ) -> Vec<(SymbolHit, Vec<FlowNode>)> {
-    if let Some(hit) = input
-        .names
-        .iter()
-        .find_map(|name| declaration(evidence, name, None, deadline))
-    {
+    if !input.names.is_empty() {
+        let Some(hit) = input
+            .names
+            .iter()
+            .find_map(|name| declaration(evidence, name, None, deadline))
+        else {
+            return Vec::new();
+        };
         let tree = evidence
             .flow_tree(&hit.uid, TRACE_DEPTH, TRACE_NODES, deadline)
             .unwrap_or_default();

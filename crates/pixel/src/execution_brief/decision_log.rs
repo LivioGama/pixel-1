@@ -83,6 +83,10 @@ pub(crate) struct Record {
     pub(crate) pack_located: usize,
     /// The text search stood in for a graph that could not answer.
     pub(crate) fallback: bool,
+    /// Whether the rendered brief answered with verified context (`full`),
+    /// partial/fallback context (`partial`), unverified closest regions
+    /// (`degraded`), or nothing (`none`).
+    pub(crate) coverage: &'static str,
     pub(crate) elapsed_ms: u64,
     /// Where the evidence came from: `daemon` or `local`.
     pub(crate) route: Option<&'static str>,
@@ -202,6 +206,7 @@ impl Record {
             "pack_targets": self.pack_targets,
             "pack_located": self.pack_located,
             "fallback": self.fallback,
+            "coverage": self.coverage,
             "elapsed_ms": self.elapsed_ms,
             "route": self.route,
             "daemon": self.daemon,
@@ -366,6 +371,7 @@ mod tests {
             pack_targets: 2,
             pack_located: 1,
             fallback: true,
+            coverage: "partial",
             elapsed_ms: 188,
             route: Some("daemon"),
             daemon: Some("running"),
@@ -441,6 +447,7 @@ mod tests {
                 "pack_targets": 2,
                 "pack_located": 1,
                 "fallback": true,
+                "coverage": "partial",
                 "elapsed_ms": 188,
                 "route": "daemon",
                 "daemon": "running",

@@ -17,7 +17,8 @@ from pathlib import Path
 STOP = {"what", "where", "which", "that", "this", "with", "from", "does", "the", "and", "how", "is", "a", "of", "it",
         "defined", "define", "number", "returns", "return", "set", "get", "use", "used", "make", "could", "there"}
 GENERIC = {"for", "to", "in", "on", "my", "its", "keep", "file", "line", "code", "thing", "error", "change", "nothing",
-           "make", "read", "ignored", "get", "files", "lines", "work", "works", "happens", "nothing", "time"}
+           "make", "read", "ignored", "get", "files", "lines", "work", "works", "happens", "time", "report", "reports",
+           "control", "controls", "check", "checks", "pixel", "brief", "prompt", "submitted", "walk", "through"}
 SRC = ("*.rs", "*.ts", "*.tsx", "*.js", "*.py", "*.go", "*.rb")
 FILE_LINES, DEFINITION_LINES, MAX_FILE_LINES = 180, 60, 220
 
@@ -50,7 +51,21 @@ def body(path, lo, count):
     except OSError:
         return []
     hi = min(len(source), lo + count - 1)
-    return [f"{i}| {source[i - 1][:160]}" for i in range(lo, hi + 1)]
+    out = []
+    depth = 0
+    opened = False
+    for i in range(lo, hi + 1):
+        line = source[i - 1]
+        out.append(f"{i}| {line[:160]}")
+        if i >= lo + 3:
+            depth += line.count("{") - line.count("}")
+            if "{" in line:
+                opened = True
+            if opened and depth <= 0:
+                break
+            if not opened and line.rstrip().endswith(";"):
+                break
+    return out
 
 
 def common_dirs(a, b):
@@ -64,10 +79,10 @@ def common_dirs(a, b):
 
 
 def compounds(prompt):
-    tokens = re.findall(r"[a-z]+", prompt.lower())
     out = []
-    for a, b in zip(tokens, tokens[1:]):
-        if {a, b} & (STOP | GENERIC) or len(a) < 3 or len(b) < 3:
+    for m in re.finditer(r"(?<![a-z0-9_.-])([a-z]{3,})\s+([a-z]{3,})(?![a-z0-9_.-])", prompt.lower()):
+        a, b = m.group(1), m.group(2)
+        if {a, b} & (STOP | GENERIC):
             continue
         out.append((a.capitalize() + b.capitalize(), f"{a}_{b}", f"{a}-{b}"))
     return out
@@ -103,6 +118,8 @@ def definitions(root, pairs, globs):
 def main():
     req = json.load(sys.stdin)
     root, prompt, brief = req["repo_root"], req["prompt"], req.get("brief", "")
+    if " definition (" in brief and "closest to the question" not in brief:
+        return
     globs = sum((["-g", g] for g in SRC), [])
     pairs = compounds(prompt)
     # The two searches are independent scans of one tree; run them together so their I/O overlaps
@@ -116,7 +133,11 @@ def main():
         for path, line in defs.get(index, [])[:2]:
             found.append(f"### {path.lstrip('./')}:{line} — {camel} definition (named by the prompt: '{kebab.replace('-', ' ')}')")
             found += body(Path(root) / path, max(1, int(line) - 3), DEFINITION_LINES)
-    stems = {w for w in re.findall(r"[a-z]{4,}", prompt.lower()) if w not in STOP and w not in GENERIC}
+    stems = {
+        w
+        for w in re.findall(r"(?<![a-z0-9_.-])[a-z]{4,}(?![a-z0-9_.-])", prompt.lower())
+        if w not in STOP and w not in GENERIC
+    }
     near = [h.split(":")[0].split(" ")[0] for h in re.findall(r"^### (\S+)", brief, re.M)]
     candidates = []
     for name in sorted(f.lstrip("./") for f in listing):

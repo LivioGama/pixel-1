@@ -392,11 +392,30 @@ fn is_url(word: &str) -> bool {
     word.starts_with("http://") || word.starts_with("https://") || word.starts_with("www.")
 }
 
+/// An angle-bracketed uppercase wrapper tag added by an agent harness
+/// (`<USER_REQUEST>`, `</USER_REQUEST>`, `<SYSTEM_REMINDER>`), not a symbol
+/// in the repository.
+fn is_harness_tag(token: &str) -> bool {
+    let trimmed = token.trim_matches(|ch: char| ",.;:!?\"'`()[]{}".contains(ch));
+    let Some(inner) = trimmed
+        .strip_prefix("</")
+        .or_else(|| trimmed.strip_prefix('<'))
+        .and_then(|rest| rest.strip_suffix('>'))
+    else {
+        return false;
+    };
+    inner.len() >= 3
+        && inner.contains('_')
+        && inner
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+}
+
 /// `text` without its links: the query string of a pasted URL
 /// (`?utm_source=x`) is not a code identifier. Whitespace is kept as typed.
 pub(crate) fn strip_urls(text: &str) -> String {
     fn flush(word: &mut String, out: &mut String) {
-        if !is_url(word) {
+        if !is_url(word) && !is_harness_tag(word) {
             out.push_str(word);
         }
         word.clear();
@@ -435,6 +454,9 @@ fn find_tag(haystack: &str, tag: &str) -> Option<usize> {
 /// extension (in any case, so `README.MD` counts). Surrounding punctuation,
 /// a sentence's closing period and backticks are not part of the token.
 fn names_code(token: &str) -> bool {
+    if is_harness_tag(token) {
+        return false;
+    }
     let token = token.trim_matches(|ch: char| "()[]{}<>,.;:!?\"'`".contains(ch));
     let inner = |separator: char| {
         token.split(separator).count() > 1
@@ -1532,6 +1554,30 @@ mod tests {
         ] {
             assert!(!names_code(token), "{token}");
         }
+    }
+
+    #[test]
+    fn a_harness_tag_should_be_neither_code_nor_kept_in_the_typed_text() {
+        for tag in ["<USER_REQUEST>", "</USER_REQUEST>", "<SYSTEM_REMINDER>,"] {
+            assert!(is_harness_tag(tag), "{tag}");
+            assert!(!names_code(tag), "{tag}");
+        }
+        // Lowercase, no underscore, too short, or unclosed: not a harness tag.
+        for token in [
+            "<pasted_contents>",
+            "<USER>",
+            "<A_>",
+            "<USER_REQUEST",
+            "USER_REQUEST>",
+            "Vec<T>",
+        ] {
+            assert!(!is_harness_tag(token), "{token}");
+        }
+        assert_eq!(
+            strip_urls("<USER_REQUEST>\nwhy pick_sites\n</USER_REQUEST>"),
+            "\nwhy pick_sites\n"
+        );
+        assert!(names_code("pick_sites"));
     }
 
     #[test]

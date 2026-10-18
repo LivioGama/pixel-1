@@ -164,6 +164,7 @@ def main():
         return
     while top > 1 and re.match(r'\s*(//|#|/\*|\*|@)', dlines[top - 2]):
         top -= 1
+    emit(sym['path'], top, min(sym['end_line'], top + BODY_CAP - 1), f"{sym['name']} definition ({sym['kind']})")
     envs = sorted(set(ENV.findall('\n'.join(dlines[top - 1:sym['end_line']]))))
     callers = sorted(edges(root, sym['uid'], 'callers'), key=lambda e: (e['symbol']['path'], e['symbol']['start_line']))
     for edge in callers[:MAX_CALLERS]:
