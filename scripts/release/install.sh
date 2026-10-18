@@ -155,7 +155,13 @@ else
     echo "The downloaded binary did not run." >&2
     exit 1
 fi
+# Flush the staged bytes before the rename, and the directory after it, so a
+# crash or power loss leaves either the previous binary or the whole new one.
+# `sync FILE` is GNU coreutils 8.24+; elsewhere (macOS, busybox) a plain
+# `sync` flushes everything. Best effort: a PATH without `sync` still installs.
+sync "$TMP_DEST" 2>/dev/null || sync 2>/dev/null || :
 mv -f "$TMP_DEST" "$DEST"
+sync "$STAGE_DIR" 2>/dev/null || sync 2>/dev/null || :
 
 # GitHub Actions reads GITHUB_PATH after the step. Appending here makes the
 # one-liner enough: later steps see pixel without a second command.
