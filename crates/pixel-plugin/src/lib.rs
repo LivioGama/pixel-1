@@ -44,7 +44,7 @@ pub use error::Error;
 pub use fetch::{Downloaded, Unverified, asset_name, release_target};
 pub use hash::dir_digest;
 pub use install::{
-    Added, Binary, Enabled, add, add_with, cargo_install_command, disable, enable,
+    Added, Binary, Enabled, add, add_with, cargo_install_command, disable, enable, installed_skill,
     looks_like_git_url, redact_source, remove, trust,
 };
 pub use invoke::{
