@@ -1,0 +1,109 @@
+{
+  "files": {
+    "probes/cand-k-member-manifest/probe": "a70add40ce2407880966b71754ac84ffe3e7fa2a3941daae5619a6619e2194c3",
+    "probes/cand-k-commit-patch/probe": "fb20b7b66ce1f6fdc5881f6180680e29adfda287b0cd83ccdd114bbc78d4cb19",
+    "probes/_template/probe": "b422dfde73813d795d9a571207a8c9e2604f5d2d47d4467c8bc127832979f138",
+    "probes/error-origin/probe": "4ac1e75eba7c210cd9dea367160e77d6156b3cbd16cc3f420616cc7bbc6e1b86",
+    "probes/prune-noise/probe": "5e9ce2bd534dfefcdd5a75c3edd7c357b35e35b5896e76732c6606695d1dfbf5",
+    "probes/config-registry/probe": "8a46a18bd8c94c9acf04fb08056955521f80e66c5d0a2b7a2c2f33a673d28248",
+    "probes/cand-j-callers/probe": "cf14ec0a61e34b8870a1c8421b0fde17e3e88870a3859e7b4cb5f7cd06e77ded",
+    "probes/name-files/probe": "2610d8fee44776b1d94c5b95685991e3f80d630ce514b742796a9de3393c312e",
+    "probes/cand-j-chain/probe": "6a88df37b0cc2b95b1d05f3094d9197a7ad5a14c24102ae23e9e96b548bfba44",
+    "probes/overview-answer-evidence/probe": "7f5f1be8239240a3ba92f20d3527fa80dcb3d74f32405c75b077d704e966d052",
+    "probes/history-fallback/probe": "5a10186276dbd868ec4b7c4a43bcc06092aceda634207417045a08c4a214fc62",
+    "probes/workspace-overview/probe": "850e661b599cbe165a8e97458c29bee1864514fb53a72048af01e56e8ef01edf",
+    "probes/cand-k-code-sites/probe": "1475af5454eaf32311734f48107f0a9612907d0d53e1f2c059a057323826e127",
+    "probes/doc-sections/probe": "03e62d444eb63973dfcf6cc7b39b1df77722085934e22e862b17be2763cc5c08",
+    "probes/cand-j-stop-cause/probe": "2fa455eaa2eba65815f0765ed3e2a92ecaec85f7e7621310dedfcb75f5f6e38b",
+    "probes/flow-rank/probe": "6fdd598ae2b9fae7b3430f8284e6fb69f992390b10e7476738b048d74afff456",
+    "probes/rank-blocks/probe": "854f122c9733d5c87080ce2f015c84cbfc20e219f59d09fe0f468c5d5640068c",
+    "probes/test-bodies/probe": "d567573894e029893f61384d5370a2260dad3a230620ce51af0b67ebc52ac0c7",
+    "probes/cand-k-member-manifest/pixel-plugin.toml": "2ab38c22476e9f4460644ace7cf4f244bd1014028c6cfff952f63cc3ff4636ce",
+    "probes/cand-k-commit-patch/pixel-plugin.toml": "c184afb77ce51ced638eb42b2910a64e67a8a7349badb21f644f2f24e285499c",
+    "probes/_template/pixel-plugin.toml": "fcb69d95973fc2b237c33087058ce7ac32b8f38a826b9a29a7cee2577ec3ba4f",
+    "probes/error-origin/pixel-plugin.toml": "56f8b3a0f3258d1b647e47e6763bb663e216200e45433e0d4cf98f713f38be06",
+    "probes/prune-noise/pixel-plugin.toml": "f126dbccb3a86113aa7902160cdf7301ceb5adcec232428b07296e999850c398",
+    "probes/config-registry/pixel-plugin.toml": "f0472c59644ec3c8db2a2109d889e898d66b65951d793f45acff300e75e4c2fc",
+    "probes/cand-j-callers/pixel-plugin.toml": "4535fb5b9935b31ea72219c476dea36944022c163b948630d7b87ec0a43fec30",
+    "probes/name-files/pixel-plugin.toml": "2ac1224e87eda108ceec6273c85001e0c7fcf58e702884297b414120cfc9d7eb",
+    "probes/cand-j-chain/pixel-plugin.toml": "36940a8b4be105293d3c6aae9c4bd6db30bf3f5867765c6f8f0e1e836c286231",
+    "probes/overview-answer-evidence/pixel-plugin.toml": "bad7296859efc2e4da03b9c0ed59cb6af56a1380409610891b02101c7c922926",
+    "probes/history-fallback/pixel-plugin.toml": "bd45e81583779cb3d58476e67661fdeb131b1fe91ef48a4c0ddfcbd97b155b82",
+    "probes/workspace-overview/pixel-plugin.toml": "2e993844f5436d5aa1df1202cb0f8678921a877a185d6278c48b829d94cf16c3",
+    "probes/cand-k-code-sites/pixel-plugin.toml": "4b6934d13a144eb7fbae56091112dff1024910a5942263c30d33eb33e94e6966",
+    "probes/doc-sections/pixel-plugin.toml": "84f80d2e9ea03c81947bb0b547ef4c7f506d9622545a661cc7746358c233fb3e",
+    "probes/cand-j-stop-cause/pixel-plugin.toml": "60cc795e085b65800467713223553ad68f7f02ce4bcc48d3cb978e508a52bfad",
+    "probes/flow-rank/pixel-plugin.toml": "78e574d59e33613dd6cd72522c4135f2c9000882121a89e11a1add7c82fadc9f",
+    "probes/rank-blocks/pixel-plugin.toml": "fca68611008fc8b35facd2081197e51afa8d04ccb3ab9b5316930a37792c6060",
+    "probes/test-bodies/pixel-plugin.toml": "2c3f3f5d5cd96edc80039e3d579030ebd5db1bb70dd7599e922efa6a4670be72",
+    "probes/error-origin/tests/test_probe.py": "37c68e9b71c375d6cadff1d42651ac2ada9c1483e2d3328f472cb0a30def69c1",
+    "probes/config-registry/tests/test_probe.py": "591d0d3931310d589518bf0e25a7e9b08344b84e3fb9f538af85169dd23d29a5",
+    "probes/name-files/tests/test_probe.py": "90d9e537e21c33883907183b1999f13d6f3d626be9a1fc2d28dff2517d15550b",
+    "probes/overview-answer-evidence/tests/test_probe.py": "d2de18f62c7216cabaaf7597b706a83bd342e6930631cb63a33fc00f096a55b6",
+    "probes/history-fallback/tests/test_subjects.py": "7317badfc4409d1d7b8b5c14604e0e2bdbeca76ce76a6205c1879bada477a090",
+    "probes/doc-sections/tests/test_probe.py": "61bd8db85887e06726f2d3cf2621ad61b8172de14c36fbfee25194d12b806dad",
+    "probes/doc-sections/tests/test_admission.py": "a7f176fe3a9dc4497bc4be3789746e46fa752c2f3ee92d72f93c15ad6e23a58f",
+    "probes/flow-rank/tests/test_probe.py": "ac60e2ef5d06d3d8baf6741a5e990e8f407e6b3b966e04da5274da4b210bfa34",
+    "probes/test-bodies/tests/test_probe.py": "bceb06b49f238a63ee0c02b507b7d27a3a6edafc14d117dd0ee9325f89363bbf"
+  },
+  "results": [
+    {
+      "name": "manifest-contract",
+      "command": [
+        "rtk",
+        "python3",
+        "-I",
+        "scripts/bench/probe-test.py",
+        "--check-all"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "history-fallback",
+      "command": [
+        "rtk",
+        "python3",
+        "probes/history-fallback/tests/test_subjects.py"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "config-registry",
+      "command": [
+        "rtk",
+        "python3",
+        "probes/config-registry/tests/test_probe.py"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "error-origin",
+      "command": [
+        "rtk",
+        "python3",
+        "probes/error-origin/tests/test_probe.py"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "name-files",
+      "command": [
+        "rtk",
+        "python3",
+        "probes/name-files/tests/test_probe.py"
+      ],
+      "exit": 0
+    },
+    {
+      "name": "test-bodies",
+      "command": [
+        "rtk",
+        "python3",
+        "probes/test-bodies/tests/test_probe.py"
+      ],
+      "exit": 0,
+      "log": "test-bodies-final.log"
+    }
+  ],
+  "source_commit": "7dc83944d88d91d7eb170d6860c9d964d5d4acef"
+}

@@ -1,0 +1,47 @@
+{
+  "source_repo": "/Users/livio/Documents/pixel-worktrees/relevant-brief",
+  "source_commit": "7dc83944d88d91d7eb170d6860c9d964d5d4acef",
+  "changed_probes": [
+    "config-registry",
+    "history-fallback",
+    "cand-k-commit-patch",
+    "test-bodies",
+    "error-origin",
+    "name-files"
+  ],
+  "source_hashes": {
+    "config-registry": {
+      "probe": "8a46a18bd8c94c9acf04fb08056955521f80e66c5d0a2b7a2c2f33a673d28248",
+      "pixel-plugin.toml": "f0472c59644ec3c8db2a2109d889e898d66b65951d793f45acff300e75e4c2fc",
+      "tests/test_probe.py": "591d0d3931310d589518bf0e25a7e9b08344b84e3fb9f538af85169dd23d29a5"
+    },
+    "history-fallback": {
+      "probe": "5a10186276dbd868ec4b7c4a43bcc06092aceda634207417045a08c4a214fc62",
+      "pixel-plugin.toml": "bd45e81583779cb3d58476e67661fdeb131b1fe91ef48a4c0ddfcbd97b155b82",
+      "tests/test_subjects.py": "7317badfc4409d1d7b8b5c14604e0e2bdbeca76ce76a6205c1879bada477a090"
+    },
+    "cand-k-commit-patch": {
+      "probe": "fb20b7b66ce1f6fdc5881f6180680e29adfda287b0cd83ccdd114bbc78d4cb19",
+      "pixel-plugin.toml": "c184afb77ce51ced638eb42b2910a64e67a8a7349badb21f644f2f24e285499c"
+    },
+    "test-bodies": {
+      "probe": "d567573894e029893f61384d5370a2260dad3a230620ce51af0b67ebc52ac0c7",
+      "pixel-plugin.toml": "2c3f3f5d5cd96edc80039e3d579030ebd5db1bb70dd7599e922efa6a4670be72",
+      "tests/test_probe.py": "bceb06b49f238a63ee0c02b507b7d27a3a6edafc14d117dd0ee9325f89363bbf"
+    },
+    "error-origin": {
+      "probe": "4ac1e75eba7c210cd9dea367160e77d6156b3cbd16cc3f420616cc7bbc6e1b86",
+      "pixel-plugin.toml": "56f8b3a0f3258d1b647e47e6763bb663e216200e45433e0d4cf98f713f38be06",
+      "tests/test_probe.py": "37c68e9b71c375d6cadff1d42651ac2ada9c1483e2d3328f472cb0a30def69c1"
+    },
+    "name-files": {
+      "probe": "2610d8fee44776b1d94c5b95685991e3f80d630ce514b742796a9de3393c312e",
+      "pixel-plugin.toml": "2ac1224e87eda108ceec6273c85001e0c7fcf58e702884297b414120cfc9d7eb",
+      "tests/test_probe.py": "90d9e537e21c33883907183b1999f13d6f3d626be9a1fc2d28dff2517d15550b"
+    }
+  },
+  "runtime_manifest_sha256": "ceaa21b9734021776e77ce560d06b987c8cdf0a83cb9e10d0676d410f2e10ae2",
+  "model_onnx_sha256": "4ae01f822538b000fa0e55859d4b3e6b40871d860149397e8784428b2a42ee5e",
+  "classify_config_sha256": "f755968bb624a9de11e4699c902403ec7a325c7cb4b2ac9be9264f19adf67887",
+  "manifest_file_errors": []
+}

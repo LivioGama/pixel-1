@@ -1,0 +1,18 @@
+[
+  "What is the orbital period of Neptune and why does it take so long?",
+  "Where does PostgreSQL decide when to flush a database checkpoint?",
+  "Which Kubernetes controller restarts a pod after a node fails?",
+  "How does the Linux kernel choose a task during CPU scheduling?",
+  "Where does Blender store the shader nodes for volumetric rendering?",
+  "How does SQLite rebalance a B-tree after deleting a database page?",
+  "Which Redis code expires keys during the active expiration cycle?",
+  "How does OpenSSL verify an X.509 certificate chain?",
+  "Has the benchmark replay finished yet?",
+  "Please merge the open pull requests and close their linked issues.",
+  "Write a prompt for another agent to review this repository.",
+  "Put those results in a table in the chat.",
+  "Continue with the next step.",
+  "Thanks, that is all.",
+  "Explain how to bake sourdough bread with a starter.",
+  "What is the weather in Zurich tomorrow?"
+]

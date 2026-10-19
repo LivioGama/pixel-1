@@ -1,0 +1,16 @@
+{
+  "paired-baseline": {
+    "count": 56,
+    "uncompressed_bytes": 611083,
+    "gzip_sha256": "0aa3b7cb1b05c40c1325f408a92644d1424a8bab6ba8baa55791fc17551798bb"
+  },
+  "paired-candidate": {
+    "count": 56,
+    "uncompressed_bytes": 605852,
+    "gzip_sha256": "67f594176ed0be7762f8d83af72e941e6e6d4e6880d3ee2acf3b9325b1a01675"
+  },
+  "paired-candidate-repeat": {
+    "count": 20,
+    "gzip_sha256": "acca71b0a5e3ec0838fd2f1f4e00fd0778ae087ab8621864ecf49d1b9172ead2"
+  }
+}

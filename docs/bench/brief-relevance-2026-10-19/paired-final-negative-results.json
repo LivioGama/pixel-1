@@ -1,0 +1,1388 @@
+[
+  {
+    "probe": "config-registry",
+    "repo": "BurntSushi__ripgrep",
+    "prompt": "Where is the maximum remote database pool size defined?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 39,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 90,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "config-registry",
+    "repo": "BurntSushi__ripgrep",
+    "prompt": "Where is the minimum remote database pool size defined?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 39,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 93,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "config-registry",
+    "repo": "Pixel-CLI__pixel",
+    "prompt": "Where is the maximum remote database pool size defined?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 41,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 392,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "config-registry",
+    "repo": "Pixel-CLI__pixel",
+    "prompt": "Where is the minimum remote database pool size defined?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 126,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 1338,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "config-registry",
+    "repo": "excalidraw__excalidraw",
+    "prompt": "Where is the maximum remote database pool size defined?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 111,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 625,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "config-registry",
+    "repo": "excalidraw__excalidraw",
+    "prompt": "Where is the minimum remote database pool size defined?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 80,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 462,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "config-registry",
+    "repo": "expressjs__express",
+    "prompt": "Where is the maximum remote database pool size defined?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 75,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 150,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "config-registry",
+    "repo": "expressjs__express",
+    "prompt": "Where is the minimum remote database pool size defined?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 76,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 132,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "config-registry",
+    "repo": "pallets__flask",
+    "prompt": "Where is the maximum remote database pool size defined?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 65,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 171,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "config-registry",
+    "repo": "pallets__flask",
+    "prompt": "Where is the minimum remote database pool size defined?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 84,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 124,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "config-registry",
+    "repo": "psf__requests",
+    "prompt": "Where is the maximum remote database pool size defined?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 66,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 138,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "config-registry",
+    "repo": "psf__requests",
+    "prompt": "Where is the minimum remote database pool size defined?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 63,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 132,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "config-registry",
+    "repo": "sharkdp__fd",
+    "prompt": "Where is the maximum remote database pool size defined?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 68,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 124,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "config-registry",
+    "repo": "sharkdp__fd",
+    "prompt": "Where is the minimum remote database pool size defined?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 68,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 128,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "history-fallback",
+    "repo": "BurntSushi__ripgrep",
+    "prompt": "When was the fictional ChronoFlibberton feature introduced?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 2604,
+        "ms": 210,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 2604,
+        "ms": 261,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "history-fallback",
+    "repo": "BurntSushi__ripgrep",
+    "prompt": "Which commit introduced the nonexistent Hyperbolic Paraboloid protocol?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 826,
+        "ms": 241,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 826,
+        "ms": 282,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "history-fallback",
+    "repo": "Pixel-CLI__pixel",
+    "prompt": "When was the fictional ChronoFlibberton feature introduced?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 5587,
+        "ms": 194,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 5587,
+        "ms": 231,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "history-fallback",
+    "repo": "Pixel-CLI__pixel",
+    "prompt": "Which commit introduced the nonexistent Hyperbolic Paraboloid protocol?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 5596,
+        "ms": 170,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 5596,
+        "ms": 203,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "history-fallback",
+    "repo": "excalidraw__excalidraw",
+    "prompt": "When was the fictional ChronoFlibberton feature introduced?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 4692,
+        "ms": 312,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 4692,
+        "ms": 469,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "history-fallback",
+    "repo": "excalidraw__excalidraw",
+    "prompt": "Which commit introduced the nonexistent Hyperbolic Paraboloid protocol?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 4190,
+        "ms": 386,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 4190,
+        "ms": 473,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "history-fallback",
+    "repo": "expressjs__express",
+    "prompt": "When was the fictional ChronoFlibberton feature introduced?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 1340,
+        "ms": 302,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 1340,
+        "ms": 375,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "history-fallback",
+    "repo": "expressjs__express",
+    "prompt": "Which commit introduced the nonexistent Hyperbolic Paraboloid protocol?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 1348,
+        "ms": 285,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 1348,
+        "ms": 398,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "history-fallback",
+    "repo": "pallets__flask",
+    "prompt": "When was the fictional ChronoFlibberton feature introduced?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 2289,
+        "ms": 306,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 2289,
+        "ms": 380,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "history-fallback",
+    "repo": "pallets__flask",
+    "prompt": "Which commit introduced the nonexistent Hyperbolic Paraboloid protocol?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 2297,
+        "ms": 301,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 2297,
+        "ms": 399,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "history-fallback",
+    "repo": "psf__requests",
+    "prompt": "When was the fictional ChronoFlibberton feature introduced?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 1509,
+        "ms": 286,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 1509,
+        "ms": 379,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "history-fallback",
+    "repo": "psf__requests",
+    "prompt": "Which commit introduced the nonexistent Hyperbolic Paraboloid protocol?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 1299,
+        "ms": 273,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 1299,
+        "ms": 384,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "history-fallback",
+    "repo": "sharkdp__fd",
+    "prompt": "When was the fictional ChronoFlibberton feature introduced?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 1501,
+        "ms": 177,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 1501,
+        "ms": 239,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "history-fallback",
+    "repo": "sharkdp__fd",
+    "prompt": "Which commit introduced the nonexistent Hyperbolic Paraboloid protocol?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 3160,
+        "ms": 187,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 3160,
+        "ms": 238,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "cand-k-commit-patch",
+    "repo": "BurntSushi__ripgrep",
+    "prompt": "When was the fictional ChronoFlibberton feature introduced?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 2463,
+        "ms": 129,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 2463,
+        "ms": 184,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "cand-k-commit-patch",
+    "repo": "BurntSushi__ripgrep",
+    "prompt": "Which commit introduced the nonexistent Hyperbolic Paraboloid protocol?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 127,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 185,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "cand-k-commit-patch",
+    "repo": "Pixel-CLI__pixel",
+    "prompt": "When was the fictional ChronoFlibberton feature introduced?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 127,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 192,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "cand-k-commit-patch",
+    "repo": "Pixel-CLI__pixel",
+    "prompt": "Which commit introduced the nonexistent Hyperbolic Paraboloid protocol?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 140,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 192,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "cand-k-commit-patch",
+    "repo": "excalidraw__excalidraw",
+    "prompt": "When was the fictional ChronoFlibberton feature introduced?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 234,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 347,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "cand-k-commit-patch",
+    "repo": "excalidraw__excalidraw",
+    "prompt": "Which commit introduced the nonexistent Hyperbolic Paraboloid protocol?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 258,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 356,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "cand-k-commit-patch",
+    "repo": "expressjs__express",
+    "prompt": "When was the fictional ChronoFlibberton feature introduced?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 241,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 347,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "cand-k-commit-patch",
+    "repo": "expressjs__express",
+    "prompt": "Which commit introduced the nonexistent Hyperbolic Paraboloid protocol?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 297,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 396,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "cand-k-commit-patch",
+    "repo": "pallets__flask",
+    "prompt": "When was the fictional ChronoFlibberton feature introduced?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 302,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 441,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "cand-k-commit-patch",
+    "repo": "pallets__flask",
+    "prompt": "Which commit introduced the nonexistent Hyperbolic Paraboloid protocol?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 260,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 374,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "cand-k-commit-patch",
+    "repo": "psf__requests",
+    "prompt": "When was the fictional ChronoFlibberton feature introduced?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 269,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 383,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "cand-k-commit-patch",
+    "repo": "psf__requests",
+    "prompt": "Which commit introduced the nonexistent Hyperbolic Paraboloid protocol?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 264,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 355,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "cand-k-commit-patch",
+    "repo": "sharkdp__fd",
+    "prompt": "When was the fictional ChronoFlibberton feature introduced?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 143,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 202,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "cand-k-commit-patch",
+    "repo": "sharkdp__fd",
+    "prompt": "Which commit introduced the nonexistent Hyperbolic Paraboloid protocol?",
+    "forced_kind": null,
+    "baseline_admit_closed": true,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 151,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 208,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "test-bodies",
+    "repo": "BurntSushi__ripgrep",
+    "prompt": "How do I test whether a dragon can balance a teacup?",
+    "forced_kind": "tests",
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 80,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 73,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "test-bodies",
+    "repo": "Pixel-CLI__pixel",
+    "prompt": "How do I test whether a dragon can balance a teacup?",
+    "forced_kind": "tests",
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 8483,
+        "ms": 171,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 93,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "test-bodies",
+    "repo": "excalidraw__excalidraw",
+    "prompt": "How do I test whether a dragon can balance a teacup?",
+    "forced_kind": "tests",
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 8782,
+        "ms": 168,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 96,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "test-bodies",
+    "repo": "expressjs__express",
+    "prompt": "How do I test whether a dragon can balance a teacup?",
+    "forced_kind": "tests",
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 1470,
+        "ms": 91,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 81,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "test-bodies",
+    "repo": "pallets__flask",
+    "prompt": "How do I test whether a dragon can balance a teacup?",
+    "forced_kind": "tests",
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 6340,
+        "ms": 94,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 80,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "test-bodies",
+    "repo": "psf__requests",
+    "prompt": "How do I test whether a dragon can balance a teacup?",
+    "forced_kind": "tests",
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 1575,
+        "ms": 114,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 78,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "test-bodies",
+    "repo": "sharkdp__fd",
+    "prompt": "How do I test whether a dragon can balance a teacup?",
+    "forced_kind": "tests",
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 4048,
+        "ms": 92,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 80,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "name-files",
+    "repo": "BurntSushi__ripgrep",
+    "prompt": "Which source file contains the nonexistent ChronoFlibbertonHandler class?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 98,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 113,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "name-files",
+    "repo": "Pixel-CLI__pixel",
+    "prompt": "Which source file contains the nonexistent ChronoFlibbertonHandler class?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 115,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 165,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "name-files",
+    "repo": "excalidraw__excalidraw",
+    "prompt": "Which source file contains the nonexistent ChronoFlibbertonHandler class?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 119,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 175,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "name-files",
+    "repo": "expressjs__express",
+    "prompt": "Which source file contains the nonexistent ChronoFlibbertonHandler class?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 91,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 115,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "name-files",
+    "repo": "pallets__flask",
+    "prompt": "Which source file contains the nonexistent ChronoFlibbertonHandler class?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 100,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 133,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "name-files",
+    "repo": "psf__requests",
+    "prompt": "Which source file contains the nonexistent ChronoFlibbertonHandler class?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 102,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 129,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "name-files",
+    "repo": "sharkdp__fd",
+    "prompt": "Which source file contains the nonexistent ChronoFlibbertonHandler class?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": true,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 105,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 131,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "error-origin",
+    "repo": "BurntSushi__ripgrep",
+    "prompt": "Why does the nonexistent QuuxerError happen?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 357,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 413,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "error-origin",
+    "repo": "Pixel-CLI__pixel",
+    "prompt": "Why does the nonexistent QuuxerError happen?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 1463,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 1258,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "error-origin",
+    "repo": "excalidraw__excalidraw",
+    "prompt": "Why does the nonexistent QuuxerError happen?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 678,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 712,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "error-origin",
+    "repo": "expressjs__express",
+    "prompt": "Why does the nonexistent QuuxerError happen?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 121,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 141,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "error-origin",
+    "repo": "pallets__flask",
+    "prompt": "Why does the nonexistent QuuxerError happen?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 681,
+        "ms": 287,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 681,
+        "ms": 366,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "error-origin",
+    "repo": "psf__requests",
+    "prompt": "Why does the nonexistent QuuxerError happen?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 302,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 361,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  },
+  {
+    "probe": "error-origin",
+    "repo": "sharkdp__fd",
+    "prompt": "Why does the nonexistent QuuxerError happen?",
+    "forced_kind": null,
+    "baseline_admit_closed": false,
+    "candidate_admit_closed": false,
+    "outputs": {
+      "baseline": {
+        "bytes": 0,
+        "ms": 211,
+        "exit": 0,
+        "error": ""
+      },
+      "candidate": {
+        "bytes": 0,
+        "ms": 241,
+        "exit": 0,
+        "error": ""
+      }
+    }
+  }
+]
