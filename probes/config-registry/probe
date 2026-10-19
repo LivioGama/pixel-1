@@ -37,6 +37,7 @@ CONST = re.compile(r"^\s*(?:pub(?:\([a-z]+\))?\s+)?(?:export\s+)?(?:const|static
 PYCONST = re.compile(r"^([A-Z][A-Z0-9_]{2,})\s*(?::[^=]+)?=\s*(.+)$")
 PORT_CFG = re.compile(r"(?:\bport\s*[:=]\s*|--port[= ]|\bPORT=)([^,;}\n]+)", re.I)
 DEFAULT_AFTER = re.compile(r"(?:\|\||\?\?)\s*([^;,)\n]+)|,\s*([\"'0-9][^)]*)\)")
+SETTER_CALL = re.compile(r"\b[\w.]+\.(?:set|setDefault|set_default)\(\s*(['\"])([\w .-]+)\1\s*,\s*((?:'[^'\n]*'|\"[^\"\n]*\")|true|false|null|-?\d+(?:\.\d+)?)\s*\)")
 CODE_EXT = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".py", ".rs", ".go", ".rb", ".vue", ".svelte")
 RG_EXCL = ["!node_modules", "!target", "!dist", "!build", "!vendor", "!*.lock", "!yarn.lock", "!package-lock.json", "!*.min.js", "!*.map", "!*.snap", "!*.svg", "!*.json5"]
 SCAN_MAX_COLUMNS = 300  # ripgrep counts bytes, including for UTF-8 input
@@ -45,7 +46,8 @@ PATTERNS = [r"process\.env|import\.meta\.env", r"(?:VITE|REACT_APP|NEXT_PUBLIC|N
             r"os\.(?:environ|getenv)", r"env::var|\benv\s*=\s*\"|env!\(", r"os\.(?:Getenv|LookupEnv)", r"\bENV(?:\[|\.fetch)",
             r"^\s*[A-Z][A-Z0-9_]{2,}\??\s*:\s*[A-Za-z<>\[\]| ]+;", r"^(?:export\s+)?[A-Z][A-Z0-9_]*=",
             r"^\s*(?:pub(?:\([a-z]+\))?\s+)?(?:export\s+)?(?:const|static)\s+[A-Z][A-Z0-9_]{2,}\b", r"^[A-Z][A-Z0-9_]{2,}\s*(?::[^=]+)?=",
-            r"\bport\s*[:=]|--port|\bPORT="]
+             r"\bport\s*[:=]|--port|\bPORT=",
+             r"\b[\w.]+\.(?:set|setDefault|set_default)\(\s*['\"][\w .-]+['\"]\s*,"]
 
 
 def git(clone, *a): return subprocess.run(["git", "-C", clone, *a], capture_output=True, text=True).stdout
@@ -92,11 +94,11 @@ def scan(clone):
     return rows
 
 
-def registry(clone):
+def registry(clone, rows=None):
     """{key: {kind, defs:[(path,line,text,default)], reads:[(path,line,text)]}}"""
     reg = {}
     def ent(k): return reg.setdefault(k, {"defs": [], "reads": []})
-    for path, n, text in scan(clone):
+    for path, n, text in scan(clone) if rows is None else rows:
         base = os.path.basename(path)
         code = path.endswith(CODE_EXT)
         if base.startswith(".env") or base.endswith(".env"):
@@ -129,6 +131,9 @@ IDS_WORDS = []
 
 def stems(words):
     return {(w[:6] if len(w) >= 6 else w) for w in words}
+
+
+BOUND_WORDS = stems(["max", "maximum", "min", "minimum", "bound", "bounds", "limit", "limited"])
 
 
 def words_of(prompt):
@@ -176,6 +181,34 @@ def rank(clone, reg, prompt):
     return [k for _, _, k in scored[:4]]
 
 
+BOUND_QUERY = re.compile(r"\b(max(?:imum)?|min(?:imum)?|bounds?)\b", re.I)
+EXISTING_CONFIG_INTENT = re.compile(r"\b(config\w*|settings?|env(ironment)?(\s+var\w*)?|variables?|flags?|options?|defaults?|ports?|overrid\w+|where do i set|set (that|this|it))\b", re.I)
+BOUND_VALUE_WORDS = stems(["defined", "definition", "level", "size", "value", "number", "amount"])
+MAX_WORDS = stems(["max", "maximum"])
+MIN_WORDS = stems(["min", "minimum"])
+
+
+def rank_bound(clone, reg, prompt):
+    """Require a bound declaration and a prompt-specific subject for bound-only questions."""
+    prompt_words = stems(words_of(prompt))
+    subject = prompt_words - WEAK - BOUND_WORDS - BOUND_VALUE_WORDS
+    if not subject: return []
+    requested_max = bool(re.search(r"\bmax(?:imum)?\b", prompt, re.I))
+    requested_min = bool(re.search(r"\bmin(?:imum)?\b", prompt, re.I))
+    eligible = {}
+    for key, entry in reg.items():
+        key_words = stems(key_tokens(key))
+        declarations = " ".join(row[2] for row in entry["defs"][:2])
+        declaration_words = stems(re.findall(r"[a-z]+", declarations.lower()))
+        has_bound = bool((key_words | declaration_words) & BOUND_WORDS)
+        has_max = bool((key_words | declaration_words) & MAX_WORDS)
+        has_min = bool((key_words | declaration_words) & MIN_WORDS)
+        has_direction = not (requested_max or requested_min) or (requested_max and has_max) or (requested_min and has_min)
+        if has_bound and has_direction and subject & (key_words | declaration_words):
+            eligible[key] = entry
+    return rank(clone, eligible, prompt)
+
+
 def block(clone, path, n, ctx_before=0, ctx_after=0):
     try: lines = (Path(clone) / path).read_text(errors="replace").splitlines()
     except OSError: return []
@@ -188,6 +221,44 @@ def evidence_block(clone, key, path, n, before=0, after=0):
     lines = block(clone, path, n, before, after)
     return [line if i == 0 or not (SECRETISH.search(key) or SECRETISH.search(line))
             else line.split("|", 1)[0] + "| <masked>" for i, line in enumerate(lines)]
+
+
+def setter_evidence(clone, rows, prompt):
+    """Quote prompt-matched literal setting calls as source; do not infer precedence or effect."""
+    prompt_words = stems(words_of(prompt))
+    if not prompt_words: return ""
+    root = Path(clone).resolve()
+    tracked_paths = set(git(clone, "ls-files", "-z").split("\0"))
+    candidates = []
+    for path, n, text in rows:
+        if path not in tracked_paths or not path.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts")):
+            continue
+        if text.lstrip().startswith(("//", "/*", "*")) or len(text.encode("utf-8")) > SCAN_MAX_COLUMNS:
+            continue
+        full_path = root / path
+        if full_path.is_symlink():
+            continue
+        resolved = full_path.resolve()
+        if not resolved.is_relative_to(root) or not resolved.is_file() or resolved.stat().st_size > SCAN_MAX_FILE_BYTES:
+            continue
+        match = SETTER_CALL.search(text)
+        if not match:
+            continue
+        key = match.group(2).strip()
+        overlap = len(prompt_words & stems(re.findall(r"[a-z]+", key.lower())))
+        if overlap:
+            candidates.append((-overlap, path, n, key))
+    blocks = []
+    for _, path, n, key in sorted(candidates, key=lambda row: row[:3])[:4]:
+        source_block = block(clone, path, n, 3, 3)
+        if source_block:
+            blocks.append(f"{source_block[0]} — literal setting call candidate; inspect surrounding control flow")
+        for line in source_block[1:]:
+            source = line.split("|", 1)[1].lstrip() if "|" in line else line
+            if SECRETISH.search(key) or SECRETISH.search(source):
+                line = line.split("|", 1)[0] + "| <masked>"
+            blocks.append(line)
+    return "\n".join(blocks) + ("\n" if blocks else "")
 
 
 def declaration_candidates(clone, key, defs):
@@ -334,7 +405,7 @@ def loader_evidence(root, prompt):
     return result
 
 
-INTENT = re.compile(r"\b(config\w*|settings?|env(ironment)?(\s+var\w*)?|variables?|flags?|options?|defaults?|ports?|overrid\w+|where do i set|set (that|this|it))\b", re.I)
+INTENT = re.compile(r"\b(config\w*|settings?|env(ironment)?(\s+var\w*)?|variables?|flags?|options?|defaults?|ports?|overrid\w+|where do i set|set (that|this|it)|max(?:imum)?|min(?:imum)?|bounds?)\b", re.I)
 
 
 def emit(clone, prompt, brief):
@@ -342,9 +413,13 @@ def emit(clone, prompt, brief):
     global IDS_WORDS
     IDS_WORDS = words_of(prompt)
     loader = loader_evidence(clone, prompt)
-    reg = registry(clone)
-    keys = rank(clone, reg, prompt)
-    if not keys: return loader
+    rows = scan(clone)
+    reg = registry(clone, rows)
+    bound_only = bool(BOUND_QUERY.search(prompt)) and not EXISTING_CONFIG_INTENT.search(prompt)
+    keys = rank_bound(clone, reg, prompt) if bound_only else rank(clone, reg, prompt)
+    setters = setter_evidence(clone, rows, prompt)
+    prefix = (loader + setters)[:9000]
+    if not keys: return prefix
     envfiles = [f for f in git(clone, "ls-files", "--", ".env*", "*/.env*").split() if os.path.basename(f).startswith(".env")]
     head = [f"### config registry — keys matching {', '.join(IDS_WORDS[:6])} (key | value or fallback | declared | read at)"]
     blocks, seen = [], set()
@@ -380,7 +455,9 @@ def emit(clone, prompt, brief):
             if (r[0], r[1]) not in seen:
                 seen.add((r[0], r[1])); blocks += evidence_block(clone, k, r[0], r[1], 1, 2)
     if envfiles: head.append("env files in the repo (names only; local .env* are never indexed): " + ", ".join(sorted(envfiles)[:6]))
-    return loader + "\n".join(head + blocks)[:9000 - len(loader)] + "\n"
+    remaining = max(0, 9000 - len(prefix))
+    registry_output = ("\n".join(head + blocks) + "\n")[:remaining]
+    return prefix + registry_output
 
 
 def main():
