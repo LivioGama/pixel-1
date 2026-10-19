@@ -53,6 +53,26 @@ def terms(prompt):
     return list(dict.fromkeys(out))
 
 
+def requested_option(prompt):
+    """Return an explicitly named option, including its exact hyphenated spelling."""
+    match = re.search(r"--([a-z][a-z0-9]*(?:-[a-z0-9]+)*)", prompt, re.I)
+    if not match:
+        match = re.search(r"\b([a-z][a-z0-9]*(?:-[a-z0-9]+)*)\s+option\b", prompt, re.I)
+    return match.group(1).lower().replace("-", "_") if match else None
+
+
+def exact_option_case(name, option, body=""):
+    """Prove the exact option from a case title or its exact option flag literal."""
+    if not option:
+        return False
+    normalized = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    normalized = re.sub(r"^(?:test|spec)_", "", normalized)
+    if normalized == option:
+        return True
+    flag = "--" + option.replace("_", "-")
+    return bool(re.search(r"(?<![A-Za-z0-9_-])" + re.escape(flag) + r"(?![A-Za-z0-9_-])", body))
+
+
 def tokens(text):
     """The words of code or prose, split at case changes, underscores and punctuation, lowercased."""
     return {t.lower() for t in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+", text)}
@@ -159,6 +179,7 @@ def main():
         if len(files) == 16:
             break
     have = quoted_ranges(brief)
+    exact_option = requested_option(prompt)
     cands = []
     df = {w: 0 for w in words}
     parsed = {}
@@ -181,15 +202,26 @@ def main():
         for name, a, b in us:
             if any(x <= a and b <= y for x, y in have.get(rel, [])):
                 continue
-            body, title = tokens(" ".join(lines[a - 1:b])), tokens(name)
+            case_text = " ".join(lines[a - 1:b])
+            exact_option_match = exact_option_case(name, exact_option, case_text)
+            body, title = tokens(case_text), tokens(name)
             support = [w for w in words if carries(title, w) or carries(body, w)]
-            if len(support) < min(2, len(words)):
+            if len(support) < min(2, len(words)) and not exact_option_match:
                 continue
             score = sum(idf[w] * (3 * carries(title, w) + carries(body, w)) for w in words)
+            if exact_option_match:
+                score = max(score, 1.0)
             if score <= 0:
                 continue
             cands.append((-score, rank, rel, a, b, name))
     cands.sort()
+    if exact_option is not None:
+        titled = [candidate for candidate in cands if exact_option_case(candidate[5], exact_option)]
+        if titled:
+            cands = titled
+        else:
+            cands = [candidate for candidate in cands if exact_option_case(
+                candidate[5], exact_option, " ".join(parsed[candidate[2]][0][candidate[3]-1:candidate[4]]))]
     if cands:
         best = -cands[0][0]
         cands = [c for c in cands if -c[0] >= 0.5 * best]   # the subject's tests, not every test that says "prompt"
