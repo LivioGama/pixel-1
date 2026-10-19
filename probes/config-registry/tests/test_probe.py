@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: MIT
 """Source identities must survive a shared setting name; never guess a binding."""
 import json
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -81,6 +82,85 @@ class DeclarationIdentity(unittest.TestCase):
         self.assertIn('REQUEST_LIMIT | constant default 37 | only.js:1', out)
         self.assertIn('1| export const REQUEST_LIMIT = 37;', out)
         self.assertNotIn('distinct declaration candidates', out)
+
+    def test_a_maximum_bound_question_matches_a_zoom_constant(self):
+        root = self.repo({'packages/common/src/constants.ts':
+                          'export const MIN_ZOOM = 0.1;\nexport const MAX_ZOOM = 30;\n'})
+        out = self.emit(root, 'where is the maximum zoom level defined and what is its value')
+        self.assertIn('MAX_ZOOM | constant default 30 | packages/common/src/constants.ts:2', out)
+        self.assertNotIn('MIN_ZOOM', out)
+        self.assertIn('2| export const MAX_ZOOM = 30;', out)
+
+    def test_a_maximum_pool_question_matches_the_pool_bound(self):
+        root = self.repo({'packages/common/src/constants.ts':
+                          'export const MAX_POOL_SIZE = 64;\nexport const MAX_IMAGE_SIZE = 8192;\n'})
+        out = self.emit(root, 'where is the maximum pool size defined and what is its value')
+        self.assertIn('MAX_POOL_SIZE | constant default 64 | packages/common/src/constants.ts:1', out)
+        self.assertNotIn('MAX_IMAGE_SIZE', out)
+
+    def test_a_maximum_question_does_not_match_an_unrelated_bound(self):
+        root = self.repo({'packages/common/src/constants.ts':
+                          'export const REMOTE_MODEL = "local";\n'
+                          'export const MAX_IMAGE_SIZE = 8192;\n'
+                          '// database cache tracks used size between measurements\n'
+                          'export const EVICT_STEP = 25;\n'})
+        for prompt in ('where is the maximum remote database pool size defined',
+                       'where is the max remote database pool size defined',
+                       'where is the minimum remote database pool size defined',
+                       'where is the min remote database pool size defined'):
+            with self.subTest(prompt=prompt):
+                out = self.emit(root, prompt)
+                self.assertNotIn('REMOTE_MODEL', out)
+                self.assertNotIn('MAX_IMAGE_SIZE', out)
+                self.assertNotIn('EVICT_STEP', out)
+
+    def test_existing_config_intent_keeps_matching_remote_setting(self):
+        root = self.repo({'packages/common/src/constants.ts': 'export const REMOTE_MODEL = "local";\n'})
+        out = self.emit(root, 'where is the remote model setting configured')
+        self.assertIn('REMOTE_MODEL | constant default "local"', out)
+
+    def test_the_manifest_routes_a_maximum_bound_lookup_without_config_words(self):
+        worktree = PROBE.parents[2]
+        path = worktree / 'scripts/bench/probe-test.py'
+        spec = importlib.util.spec_from_file_location('probe_test', path)
+        probe_test = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(probe_test)
+        probe = probe_test.Probe(PROBE.parent)
+        self.assertTrue(probe.applies('lookup', 'where is the maximum zoom level defined and what is its value'))
+
+    def test_literal_setting_calls_are_selected_by_generic_prompt_key(self):
+        root = self.repo({'src/app.js': "app.set('etag', 'weak');\n",
+                          'src/other.js': "app.set('trust proxy', true);\n"})
+        out = self.emit(root, 'where is the default etag setting defined and what is its value')
+        self.assertIn("app.set('etag', 'weak');", out)
+        self.assertIn('### src/app.js:1-1 — literal setting call candidate', out)
+        self.assertNotIn('trust proxy', out)
+
+    def test_literal_setting_calls_require_tracked_non_symlink_source(self):
+        root = self.repo({'src/app.js': "app.set('etag', 'weak');\n"}, tracked=['src/app.js'])
+        (root / 'src/untracked.js').write_text("app.set('etag', 'untracked-sentinel');\n")
+        external = root.parent / (root.name + '-external-setter')
+        external.write_text("app.set('etag', 'symlink-sentinel');\n")
+        self.addCleanup(external.unlink)
+        (root / 'src/linked.js').symlink_to(external)
+        subprocess.run(['git', 'add', '--', 'src/linked.js'], cwd=root, check=True)
+        out = self.emit(root, 'where is the default etag setting defined and what is its value')
+        self.assertIn("app.set('etag', 'weak');", out)
+        self.assertNotIn('untracked-sentinel', out)
+        self.assertNotIn('symlink-sentinel', out)
+
+    def test_literal_setting_calls_keep_the_source_file_size_bound(self):
+        out = self.emit(self.repo({'src/app.js': "app.set('etag', 'weak');\n",
+                                   'src/large.js': "app.set('etag', 'oversize-sentinel');\n" + 'x' * (400 * 1024)}),
+                        'where is the default etag setting defined and what is its value')
+        self.assertIn("app.set('etag', 'weak');", out)
+        self.assertNotIn('oversize-sentinel', out)
+
+    def test_literal_setting_source_masks_secret_values(self):
+        out = self.emit(self.repo({'src/app.js': 'app.set("API_TOKEN", "setter-secret-sentinel");\n'}),
+                        'where is the API_TOKEN environment setting defined')
+        self.assertIn('literal setting call candidate', out)
+        self.assertNotIn('setter-secret-sentinel', out)
 
     def test_an_unrelated_intent_has_no_registry_output(self):
         root = self.repo({'only.js': 'export const REQUEST_LIMIT = 37;\n'})
@@ -178,6 +258,309 @@ class DeclarationIdentity(unittest.TestCase):
         self.assertIn('Candidate Options.load_env_file @ loader.py:5', out)
         self.assertIn('Candidate OtherOptions.load_env_file', out)
         self.assertEqual(out.count('self[key] = value'), 2)
+
+    def test_cli_setting_follows_option_name_to_its_function_scoped_runtime_value(self):
+        source = '''
+trait Flag {}
+struct WorkerCount;
+impl Flag for WorkerCount {
+    fn name_long(&self) -> &'static str { "workers" }
+    fn doc_short(&self) -> &'static str { "Set worker count." }
+    fn update(&self, args: &mut LowArgs) { args.workers = Some(8); }
+}
+fn resolve(low: LowArgs) -> usize {
+    let workers = if let Some(workers) = low.workers {
+        workers
+    } else {
+        std::thread::available_parallelism().map_or(1, |n| n.get())
+    };
+    workers
+}
+'''
+        out = self.emit(self.repo({'flags.rs': source}), 'how many workers does the program use and where can I override it')
+        self.assertIn('matched setting consumed within one function', out)
+        self.assertIn('available_parallelism()', out)
+        self.assertIn('low.workers', out)
+        self.assertIn('matching CLI setting declaration and override', out)
+        self.assertIn('fn name_long', out)
+        self.assertIn('args.workers', out)
+        self.assertRegex(out, r"### flags\.rs:\d+-\d+ — matching CLI setting declaration and override")
+
+    def test_cli_setting_does_not_join_an_unrelated_parallelism_function(self):
+        source = '''
+trait Flag {}
+struct WorkerCount;
+impl Flag for WorkerCount {
+    fn name_long(&self) -> &'static str { "workers" }
+    fn update(&self, args: &mut LowArgs) { args.workers = Some(8); }
+}
+fn configured(low: LowArgs) -> Option<usize> { low.workers }
+fn unrelated_capacity() -> usize { std::thread::available_parallelism().map_or(1, |n| n.get()) }
+'''
+        out = self.emit(self.repo({'flags.rs': source}), 'how many workers does the program use and where can I override it')
+        self.assertEqual(out, '')
+
+    def test_cli_setting_selector_matches_a_different_option_name(self):
+        source = '''
+trait Flag {}
+struct PoolSize;
+impl Flag for PoolSize {
+    fn name_long(&self) -> &'static str { "database-pool" }
+    fn update(&self, args: &mut LowArgs) { args.pool_size = Some(12); }
+}
+fn resolve(low: LowArgs) -> usize {
+    let pool_size = low.pool_size.unwrap_or(12);
+    pool_size
+}
+'''
+        out = self.emit(self.repo({'flags.rs': source}), 'where can I override the database pool option')
+        self.assertIn('database-pool', out)
+        self.assertIn('args.pool_size', out)
+        self.assertIn('low.pool_size', out)
+        self.assertIn('matched setting consumed within one function', out)
+
+    def test_cli_setting_selector_ignores_test_only_flag_implementations(self):
+        source = '''
+trait Flag {}
+struct WorkerCount;
+#[cfg(test)]
+impl Flag for WorkerCount {
+    fn name_long(&self) -> &'static str { "workers" }
+    fn update(&self, args: &mut LowArgs) { args.workers = Some(8); }
+}
+fn resolve(low: LowArgs) -> usize {
+    low.workers.unwrap_or(8)
+}
+'''
+        out = self.emit(self.repo({'flags.rs': source}), 'how many workers does the program use and where can I override it')
+        self.assertEqual(out, '')
+
+    def test_cli_setting_selector_ignores_flag_implementations_in_test_modules(self):
+        source = '''
+trait Flag {}
+struct WorkerCount;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    impl Flag for WorkerCount {
+        fn name_long(&self) -> &'static str { "workers" }
+        fn update(&self, args: &mut LowArgs) { args.workers = Some(8); }
+    }
+}
+fn resolve(low: LowArgs) -> usize {
+    low.workers.unwrap_or(8)
+}
+'''
+        out = self.emit(self.repo({'flags.rs': source}), 'how many workers does the program use and where can I override it')
+        self.assertEqual(out, '')
+
+    def test_cli_setting_resolves_an_explicit_short_option_to_its_runtime_value(self):
+        source = '''
+trait Flag {}
+struct LineBuffered;
+impl Flag for LineBuffered {
+    fn name_long(&self) -> &'static str { "line-buffered" }
+    fn update(&self, args: &mut LowArgs) { args.buffer = BufferMode::Line; }
+}
+struct Threads;
+impl Flag for Threads {
+    fn name_short(&self) -> Option<u8> { Some(b'j') }
+    fn name_long(&self) -> &'static str { "threads" }
+    fn doc_short(&self) -> &'static str { "Set the approximate number of threads." }
+    fn update(&self, args: &mut LowArgs) { args.threads = Some(8); }
+}
+fn resolve(low: LowArgs) -> usize {
+    if let Some(threads) = low.threads { threads }
+    else { std::thread::available_parallelism().map_or(1, |n| n.get()).min(12) }
+}
+'''
+        out = self.emit(self.repo({'flags.rs': source}),
+                        'When I omit -j, how is the worker count calculated, and what command-line flag lets me set it?')
+        self.assertIn("Some(b'j')", out)
+        self.assertIn('name_long', out)
+        self.assertIn('available_parallelism()', out)
+        self.assertIn('low.threads', out)
+        self.assertNotIn('LineBuffered', out, 'the prose token "command-line" cannot outrank explicit -j')
+
+    def test_cli_setting_short_option_does_not_match_a_different_flag(self):
+        source = '''
+trait Flag {}
+struct Threads;
+impl Flag for Threads {
+    fn name_short(&self) -> Option<u8> { Some(b'k') }
+    fn name_long(&self) -> &'static str { "threads" }
+    fn update(&self, args: &mut LowArgs) { args.threads = Some(8); }
+}
+fn resolve(low: LowArgs) -> usize { low.threads.unwrap_or(8) }
+'''
+        out = self.emit(self.repo({'flags.rs': source}), 'When I omit -j, how is the worker count calculated?')
+        self.assertEqual(out, '')
+
+    def test_cli_setting_short_option_does_not_parse_double_dash_as_single_short(self):
+        source = '''
+trait Flag {}
+struct Threads;
+impl Flag for Threads {
+    fn name_short(&self) -> Option<u8> { Some(b'j') }
+    fn name_long(&self) -> &'static str { "threads" }
+    fn update(&self, args: &mut LowArgs) { args.threads = Some(8); }
+}
+fn resolve(low: LowArgs) -> usize { low.threads.unwrap_or(8) }
+'''
+        out = self.emit(self.repo({'flags.rs': source}),
+                        'When I omit --j, how is the worker count calculated, and what command-line flag lets me set it?')
+        self.assertEqual(out, '')
+
+    def test_compiled_setting_connects_the_named_compiler_and_exact_getter_consumer(self):
+        root = self.repo({
+            'lib/application.js': '''
+var compileTrust = require('./utils').compileTrust;
+app.set('trust proxy', false);
+app.set = function set(setting, val) {
+  this.settings[setting] = val;
+  switch (setting) {
+    case 'trust proxy':
+      this.set('trust proxy fn', compileTrust(val));
+      break;
+  }
+};
+''',
+            'lib/utils.js': '''
+exports.compileTrust = function(val) {
+  const API_TOKEN = "compiler-secret-sentinel";
+  if (typeof val === 'function') return val;
+  if (typeof val === 'number') return function(a, i){ return i < val };
+  return proxyaddr.compile(val || []);
+};
+''',
+            'lib/request.js': '''
+defineGetter(req, 'ip', function ip(){
+  var trust = this.app.get('trust proxy fn');
+  return proxyaddr(this, trust);
+});
+''',
+        })
+        out = self.emit(root, 'Which code compiles the trust proxy setting, and how does req.ip use it?')
+        for evidence in ["case 'trust proxy'", "compileTrust(val)", 'exports.compileTrust',
+                         "defineGetter(req, 'ip'", "get('trust proxy fn')", 'proxyaddr(this, trust)']:
+            self.assertIn(evidence, out)
+        self.assertNotIn('compiler-secret-sentinel', out)
+
+    def test_compiled_setting_does_not_join_a_different_getter_or_comment_decoy(self):
+        root = self.repo({
+            'lib/application.js': '''
+var compileTrust = require('./utils').compileTrust;
+app.set('trust proxy', false);
+app.set = function set(setting, val) {
+  switch (setting) { case 'trust proxy': this.set('trust proxy fn', compileTrust(val)); }
+};
+// case 'trust proxy': this.set('trust proxy fn', fakeCompile(val));
+''',
+            'lib/utils.js': "exports.compileTrust = function(val) { return proxyaddr.compile(val || []); };\n",
+            'lib/request.js': '''
+defineGetter(req, 'ip', function ip(){ return proxyaddr(this, this.app.get('session proxy fn')); });
+defineGetter(req, 'secure', function secure(){ return this.app.get('trust proxy fn'); });
+''',
+        })
+        out = self.emit(root, 'Which code compiles the trust proxy setting, and how does req.ip use it?')
+        self.assertNotIn('named getter reads the matching compiled setting', out)
+        self.assertNotIn('exact imported setting compiler implementation', out)
+        self.assertNotIn('proxyaddr(this, trust)', out)
+
+    def test_compiled_setting_ignores_comment_only_compile_branches(self):
+        root = self.repo({
+            'lib/application.js': '''
+var compileTrust = require('./utils').compileTrust;
+app.set('trust proxy', false);
+app.set = function set(setting, val) {
+  switch (setting) { case 'other proxy': this.set('other proxy fn', compileTrust(val)); }
+};
+// case 'trust proxy': this.set('trust proxy fn', compileTrust(val));
+''',
+            'lib/utils.js': "exports.compileTrust = function(val) { return proxyaddr.compile(val || []); };\n",
+            'lib/request.js': '''
+defineGetter(req, 'ip', function ip(){ return proxyaddr(this, this.app.get('trust proxy fn')); });
+''',
+        })
+        out = self.emit(root, 'Which code compiles the trust proxy setting, and how does req.ip use it?')
+        self.assertNotIn('setting branch installs a compiled function', out)
+        self.assertNotIn('named getter reads the matching compiled setting', out)
+
+    def test_compiled_setting_ignores_multiline_template_decoys(self):
+        root = self.repo({
+            'lib/application.js': '''
+const docs = `
+var compileTrust = require('./utils').compileTrust;
+app.set('trust proxy', false);
+app.set = function set(setting, val) {
+  switch (setting) {
+    case 'trust proxy': this.set('trust proxy fn', compileTrust(val)); break;
+  }
+};
+`;
+''',
+            'lib/utils.js': "exports.compileTrust = function(val) { return proxyaddr.compile(val || []); };\n",
+            'lib/request.js': '''
+const docs = `
+defineGetter(req, 'ip', function ip(){
+  var trust = this.app.get('trust proxy fn');
+  return proxyaddr(this, trust);
+});
+`;
+''',
+        })
+        out = self.emit(root, 'Which code compiles the trust proxy setting, and how does req.ip use it?')
+        self.assertNotIn('setting branch installs a compiled function', out)
+        self.assertNotIn('exact imported setting compiler implementation', out)
+        self.assertNotIn('named getter reads the matching compiled setting', out)
+
+    def test_persistent_browser_preference_pairs_exact_subject_key_and_resolves_import(self):
+        root = self.repo({
+            'src/preferences.ts': '''import { PREFERENCE_KEYS } from "./keys";
+export function useTheme() {
+  const theme = localStorage.getItem(PREFERENCE_KEYS.COLOR_THEME) || "light";
+  localStorage.setItem(PREFERENCE_KEYS.COLOR_THEME, theme);
+  return theme;
+}
+export function useAccount() {
+  const token = localStorage.getItem(PREFERENCE_KEYS.ACCOUNT_TOKEN);
+  localStorage.setItem(PREFERENCE_KEYS.ACCOUNT_TOKEN, token || "");
+  return token;
+}
+''',
+            'src/keys.ts': '''export const PREFERENCE_KEYS = {
+  COLOR_THEME: "draw-color-scheme",
+  ACCOUNT_TOKEN: "account-secret",
+} as const;
+''',
+        })
+        out = self.emit(root, 'how does the color theme setting persist between sessions')
+        self.assertIn('browser preference read/write using the same subject-matched storage key', out)
+        self.assertIn('localStorage.getItem(PREFERENCE_KEYS.COLOR_THEME)', out)
+        self.assertIn('localStorage.setItem(PREFERENCE_KEYS.COLOR_THEME, theme)', out)
+        self.assertIn('COLOR_THEME: "draw-color-scheme"', out)
+        self.assertNotIn('ACCOUNT_TOKEN', out)
+
+    def test_persistent_browser_preference_rejects_unpaired_and_unrelated_storage_keys(self):
+        root = self.repo({
+            'src/preferences.ts': '''import { PREFERENCE_KEYS } from "./keys";
+export function useTheme() {
+  return localStorage.getItem(PREFERENCE_KEYS.COLOR_THEME);
+}
+export function useAccount() {
+  localStorage.setItem(PREFERENCE_KEYS.ACCOUNT_TOKEN, "value");
+}
+''',
+            'src/keys.ts': '''export const PREFERENCE_KEYS = {
+  COLOR_THEME: "draw-color-scheme",
+  ACCOUNT_TOKEN: "account-secret",
+} as const;
+''',
+        })
+        out = self.emit(root, 'how does the color theme setting persist between sessions')
+        self.assertNotIn('browser preference read/write using the same subject-matched storage key', out)
+        self.assertNotIn('localStorage.getItem', out)
+        self.assertNotIn('localStorage.setItem', out)
 
     def test_an_unconnected_read_or_absent_writer_is_not_a_loader_chain(self):
         for source in [LOADER.replace('self.load_file(path,', 'self.load_file(other_path,'),
