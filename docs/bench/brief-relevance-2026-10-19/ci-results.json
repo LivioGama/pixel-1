@@ -1,0 +1,480 @@
+{
+  "repository": "Pixel-CLI/pixel",
+  "recorded_at": "2026-10-19T11:03:17.305834+00:00",
+  "required_contexts": [
+    "Record the green verdict",
+    "Dependency policy (cargo-deny)",
+    "Analyze (actions)",
+    "Analyze (python)",
+    "Analyze (javascript-typescript)"
+  ],
+  "prs": [
+    {
+      "number": 1255,
+      "url": "https://github.com/Pixel-CLI/pixel/pull/1255",
+      "head_sha": "c96bed60b230d21beceb047677b925590f1b8087",
+      "base_sha": "8097639037ad906c2b8440c9868e54fcfc04bf6c",
+      "mergeable": "MERGEABLE",
+      "review_decision": "REVIEW_REQUIRED",
+      "ci_run": {
+        "head_sha": "c96bed60b230d21beceb047677b925590f1b8087",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240315173"
+      },
+      "checks": [
+        {
+          "name": "Record the green verdict",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240315173/job/118021857385"
+        },
+        {
+          "name": "CodeQL",
+          "conclusion": "neutral",
+          "url": "https://github.com/Pixel-CLI/pixel/runs/118019511496"
+        },
+        {
+          "name": "sync",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240324499/job/118019446353"
+        },
+        {
+          "name": "Dependency policy (cargo-deny)",
+          "conclusion": "skipped",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240315173/job/118019340792"
+        },
+        {
+          "name": "install.sh (aarch64-unknown-linux-musl)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240315173/job/118019338350"
+        },
+        {
+          "name": "Ranking gates (NDCG@10)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240315173/job/118019338310"
+        },
+        {
+          "name": "install.sh (x86_64-unknown-linux-musl)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240315173/job/118019338227"
+        },
+        {
+          "name": "MSRV (rust-version in Cargo.toml)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240315173/job/118019338167"
+        },
+        {
+          "name": "Test + Format",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240315173/job/118019338144"
+        },
+        {
+          "name": "Lint (Clippy + feature lanes)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240315173/job/118019338062"
+        },
+        {
+          "name": "Analyze (python)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240315033/job/118019283041"
+        },
+        {
+          "name": "Analyze (javascript-typescript)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240315033/job/118019282869"
+        },
+        {
+          "name": "Analyze (actions)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240315033/job/118019282547"
+        },
+        {
+          "name": "sync",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240314889/job/118019272160"
+        },
+        {
+          "name": "scope / Release-prepare scope",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240315173/job/118019271294"
+        },
+        {
+          "name": "changes",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240315173/job/118019270749"
+        }
+      ]
+    },
+    {
+      "number": 1256,
+      "url": "https://github.com/Pixel-CLI/pixel/pull/1256",
+      "head_sha": "72bd82d7e6f8584f36e4b0caf133c6a23a6ed50e",
+      "base_sha": "8097639037ad906c2b8440c9868e54fcfc04bf6c",
+      "mergeable": "MERGEABLE",
+      "review_decision": "REVIEW_REQUIRED",
+      "ci_run": {
+        "head_sha": "72bd82d7e6f8584f36e4b0caf133c6a23a6ed50e",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240322121"
+      },
+      "checks": [
+        {
+          "name": "Record the green verdict",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240322121/job/118022559216"
+        },
+        {
+          "name": "Ranking gates (NDCG@10)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240322121/job/118019360724"
+        },
+        {
+          "name": "Test + Format",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240322121/job/118019360769"
+        },
+        {
+          "name": "install.sh (x86_64-unknown-linux-musl)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240322121/job/118019360749"
+        },
+        {
+          "name": "CodeQL",
+          "conclusion": "neutral",
+          "url": "https://github.com/Pixel-CLI/pixel/runs/118019524419"
+        },
+        {
+          "name": "sync",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240328422/job/118019464157"
+        },
+        {
+          "name": "MSRV (rust-version in Cargo.toml)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240322121/job/118019360612"
+        },
+        {
+          "name": "Lint (Clippy + feature lanes)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240322121/job/118019360717"
+        },
+        {
+          "name": "install.sh (aarch64-unknown-linux-musl)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240322121/job/118019360739"
+        },
+        {
+          "name": "Dependency policy (cargo-deny)",
+          "conclusion": "skipped",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240322121/job/118019362564"
+        },
+        {
+          "name": "Analyze (javascript-typescript)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240322074/job/118019292409"
+        },
+        {
+          "name": "changes",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240322121/job/118019292449"
+        },
+        {
+          "name": "Analyze (python)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240322074/job/118019291989"
+        },
+        {
+          "name": "Analyze (actions)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240322074/job/118019292341"
+        },
+        {
+          "name": "scope / Release-prepare scope",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240322121/job/118019292526"
+        }
+      ]
+    },
+    {
+      "number": 1257,
+      "url": "https://github.com/Pixel-CLI/pixel/pull/1257",
+      "head_sha": "95bb09d6deb9cf0d78f18af5b49dfbdbefcfeec6",
+      "base_sha": "8097639037ad906c2b8440c9868e54fcfc04bf6c",
+      "mergeable": "MERGEABLE",
+      "review_decision": "REVIEW_REQUIRED",
+      "ci_run": {
+        "head_sha": "95bb09d6deb9cf0d78f18af5b49dfbdbefcfeec6",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240329640"
+      },
+      "checks": [
+        {
+          "name": "Record the green verdict",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240329640/job/118021690772"
+        },
+        {
+          "name": "CodeQL",
+          "conclusion": "neutral",
+          "url": "https://github.com/Pixel-CLI/pixel/runs/118019548520"
+        },
+        {
+          "name": "sync",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240336558/job/118019479750"
+        },
+        {
+          "name": "Dependency policy (cargo-deny)",
+          "conclusion": "skipped",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240329640/job/118019398679"
+        },
+        {
+          "name": "install.sh (x86_64-unknown-linux-musl)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240329640/job/118019397420"
+        },
+        {
+          "name": "install.sh (aarch64-unknown-linux-musl)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240329640/job/118019397231"
+        },
+        {
+          "name": "MSRV (rust-version in Cargo.toml)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240329640/job/118019397191"
+        },
+        {
+          "name": "Lint (Clippy + feature lanes)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240329640/job/118019397186"
+        },
+        {
+          "name": "Ranking gates (NDCG@10)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240329640/job/118019397175"
+        },
+        {
+          "name": "Test + Format",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240329640/job/118019397161"
+        },
+        {
+          "name": "scope / Release-prepare scope",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240329640/job/118019316190"
+        },
+        {
+          "name": "Analyze (actions)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240329480/job/118019316127"
+        },
+        {
+          "name": "Analyze (javascript-typescript)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240329480/job/118019316039"
+        },
+        {
+          "name": "Analyze (python)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240329480/job/118019315806"
+        },
+        {
+          "name": "changes",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240329640/job/118019315490"
+        },
+        {
+          "name": "sync",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240328359/job/118019313515"
+        }
+      ]
+    },
+    {
+      "number": 1258,
+      "url": "https://github.com/Pixel-CLI/pixel/pull/1258",
+      "head_sha": "72680bd49d62d56f736b24bb51b7d60a6d8b77e4",
+      "base_sha": "8097639037ad906c2b8440c9868e54fcfc04bf6c",
+      "mergeable": "MERGEABLE",
+      "review_decision": "REVIEW_REQUIRED",
+      "ci_run": {
+        "head_sha": "72680bd49d62d56f736b24bb51b7d60a6d8b77e4",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240333972"
+      },
+      "checks": [
+        {
+          "name": "Record the green verdict",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240333972/job/118022770805"
+        },
+        {
+          "name": "install.sh (x86_64-unknown-linux-musl)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240333972/job/118019403456"
+        },
+        {
+          "name": "MSRV (rust-version in Cargo.toml)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240333972/job/118019403333"
+        },
+        {
+          "name": "Ranking gates (NDCG@10)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240333972/job/118019403345"
+        },
+        {
+          "name": "Test + Format",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240333972/job/118019403194"
+        },
+        {
+          "name": "Lint (Clippy + feature lanes)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240333972/job/118019403135"
+        },
+        {
+          "name": "install.sh (aarch64-unknown-linux-musl)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240333972/job/118019403373"
+        },
+        {
+          "name": "sync",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240341839/job/118019521810"
+        },
+        {
+          "name": "CodeQL",
+          "conclusion": "neutral",
+          "url": "https://github.com/Pixel-CLI/pixel/runs/118019553655"
+        },
+        {
+          "name": "Dependency policy (cargo-deny)",
+          "conclusion": "skipped",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240333972/job/118019404592"
+        },
+        {
+          "name": "changes",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240333972/job/118019330009"
+        },
+        {
+          "name": "Analyze (python)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240333971/job/118019329329"
+        },
+        {
+          "name": "Analyze (actions)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240333971/job/118019329168"
+        },
+        {
+          "name": "scope / Release-prepare scope",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240333972/job/118019330250"
+        },
+        {
+          "name": "Analyze (javascript-typescript)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240333971/job/118019328999"
+        }
+      ]
+    },
+    {
+      "number": 1259,
+      "url": "https://github.com/Pixel-CLI/pixel/pull/1259",
+      "head_sha": "866aa962e53a8757b512f17849cab9464e39cb59",
+      "base_sha": "8097639037ad906c2b8440c9868e54fcfc04bf6c",
+      "mergeable": "MERGEABLE",
+      "review_decision": "REVIEW_REQUIRED",
+      "ci_run": {
+        "head_sha": "866aa962e53a8757b512f17849cab9464e39cb59",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240338222"
+      },
+      "checks": [
+        {
+          "name": "Record the green verdict",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240338222/job/118021995010"
+        },
+        {
+          "name": "Ranking gates (NDCG@10)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240338222/job/118019619298"
+        },
+        {
+          "name": "MSRV (rust-version in Cargo.toml)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240338222/job/118019619304"
+        },
+        {
+          "name": "install.sh (x86_64-unknown-linux-musl)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240338222/job/118019619261"
+        },
+        {
+          "name": "Test + Format",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240338222/job/118019619163"
+        },
+        {
+          "name": "install.sh (aarch64-unknown-linux-musl)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240338222/job/118019619148"
+        },
+        {
+          "name": "Lint (Clippy + feature lanes)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240338222/job/118019619089"
+        },
+        {
+          "name": "Dependency policy (cargo-deny)",
+          "conclusion": "skipped",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240338222/job/118019621304"
+        },
+        {
+          "name": "Analyze (javascript-typescript)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240338190/job/118019343951"
+        },
+        {
+          "name": "scope / Release-prepare scope",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240338222/job/118019344551"
+        },
+        {
+          "name": "sync",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240345738/job/118019514464"
+        },
+        {
+          "name": "CodeQL",
+          "conclusion": "neutral",
+          "url": "https://github.com/Pixel-CLI/pixel/runs/118019557439"
+        },
+        {
+          "name": "Analyze (python)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240338190/job/118019344078"
+        },
+        {
+          "name": "Analyze (actions)",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240338190/job/118019343996"
+        },
+        {
+          "name": "changes",
+          "conclusion": "success",
+          "url": "https://github.com/Pixel-CLI/pixel/actions/runs/39240338222/job/118019344112"
+        }
+      ]
+    }
+  ],
+  "merge_performed": false,
+  "scope": "Current PR heads validated; benchmark remains tied to combined source 7dc83944. Human review remains required."
+}

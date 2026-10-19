@@ -129,11 +129,26 @@ outputs remain byte-identical to baseline; these are retained limitations, not
 claimed precision wins. The forced-kind Pixel test example drops from 8,483 bytes
 of unrelated tests to zero. Full results and sampled text are archived.
 
-No managed installation, release, or mutation campaign was performed. Current-head
-CI is pending because PR creation was rejected by the local PR gate's repository
-allowlist (`403: repo Pixel-CLI/pixel is not allowed on this server`). No bypass
-was used. Five independently reviewable branches and the combined measured
-snapshot are pushed; these results do not claim the installed binary changed.
+No managed installation, release, or mutation campaign was performed. Five
+independently reviewable PRs are open, and the combined measured snapshot is
+pushed. All five current-head CI runs passed. The `Test + Format` CI job executes the probe
+manifest/harness checks and every `probes/*/tests/test_*.py` file, including all
+five focused suites above. These results do not claim the installed binary changed.
+
+| Concern | Pull request | Tested branch head |
+| --- | --- | --- |
+| Test admission | [#1255](https://github.com/Pixel-CLI/pixel/pull/1255) | `c96bed60b230d21beceb047677b925590f1b8087` |
+| History subjects | [#1256](https://github.com/Pixel-CLI/pixel/pull/1256) | `72bd82d7e6f8584f36e4b0caf133c6a23a6ed50e` |
+| Configuration source | [#1257](https://github.com/Pixel-CLI/pixel/pull/1257) | `95bb09d6deb9cf0d78f18af5b49dfbdbefcfeec6` |
+| Diagnostic emitters | [#1258](https://github.com/Pixel-CLI/pixel/pull/1258) | `72680bd49d62d56f736b24bb51b7d60a6d8b77e4` |
+| Compound modules | [#1259](https://github.com/Pixel-CLI/pixel/pull/1259) | `866aa962e53a8757b512f17849cab9464e39cb59` |
+
+Each PR references the still-open [#906](https://github.com/Pixel-CLI/pixel/issues/906)
+epic; these changes do not claim its broader equal-answer/zero-call acceptance.
+`ci-results.json` records each exact head, workflow run, and check conclusion.
+Required checks have no failures or pending results; dependency policy is
+skipped because these PRs change no dependencies. All five PRs are conflict-free
+and await the repository's required human review. No merge was performed.
 
 ## Earlier runs and discarded hypotheses
 
@@ -166,6 +181,7 @@ was ported into the candidate.
 - `paired-*-briefs.jsonl.gz`: complete emitted public-source text, with IDs/hashes.
 - `brief-archive-manifest.json`: deterministic compressed archive hashes.
 - `candidate-identity.json`, `focused-checks.json`: code and local check identities.
+- `pr-publication.json`, `ci-results.json`: PR identities and current-head CI receipts.
 - `reproducibility.json`, `runners/`: cache/model/config fingerprints and commands.
 - `paired-candidate-repeat.json`, `paired-candidate-repeat-briefs.jsonl.gz`:
   native repeat of all 20 changed briefs.

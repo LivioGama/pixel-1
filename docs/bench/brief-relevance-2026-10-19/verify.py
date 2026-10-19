@@ -59,4 +59,16 @@ repeat_report = json.loads((ROOT / "paired-candidate-repeat.json").read_text())
 assert repeat_report["result"]["exit_code"] == 0
 assert repeat_report["result"]["counts"] == {"ok": len(repeated)}
 print(f"Changed briefs byte-identical on repetition: {len(repeated)}/{len(changed)}")
+ci = json.loads((ROOT / "ci-results.json").read_text())
+published = json.loads((ROOT / "pr-publication.json").read_text())
+published_heads = {row["number"]: row["headRefOid"] for row in published["pull_requests"]}
+assert {row["number"] for row in ci["prs"]} == set(published_heads)
+for row in ci["prs"]:
+    assert row["head_sha"] == row["ci_run"]["head_sha"] == published_heads[row["number"]]
+    assert row["ci_run"]["status"] == "completed"
+    assert row["ci_run"]["conclusion"] == "success"
+    checks = {check["name"]: check["conclusion"] for check in row["checks"]}
+    assert checks["Test + Format"] == "success"
+    assert all(checks[name] in {"success", "skipped"} for name in ci["required_contexts"])
+print(f"Archived successful current-head CI receipts: {len(ci['prs'])}/{len(published_heads)}")
 print("Archived hashes and denominators verified; relevance labels require source review.")

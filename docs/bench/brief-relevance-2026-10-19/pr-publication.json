@@ -1,0 +1,60 @@
+{
+  "pull_requests": [
+    {
+      "baseRefName": "main",
+      "baseRefOid": "8097639037ad906c2b8440c9868e54fcfc04bf6c",
+      "headRefName": "fix/brief-test-probe-admission",
+      "headRefOid": "c96bed60b230d21beceb047677b925590f1b8087",
+      "mergeStateStatus": "BLOCKED",
+      "mergeable": "MERGEABLE",
+      "number": 1255,
+      "state": "OPEN",
+      "url": "https://github.com/Pixel-CLI/pixel/pull/1255"
+    },
+    {
+      "baseRefName": "main",
+      "baseRefOid": "8097639037ad906c2b8440c9868e54fcfc04bf6c",
+      "headRefName": "fix/brief-history-subjects",
+      "headRefOid": "72bd82d7e6f8584f36e4b0caf133c6a23a6ed50e",
+      "mergeStateStatus": "BLOCKED",
+      "mergeable": "MERGEABLE",
+      "number": 1256,
+      "state": "OPEN",
+      "url": "https://github.com/Pixel-CLI/pixel/pull/1256"
+    },
+    {
+      "baseRefName": "main",
+      "baseRefOid": "8097639037ad906c2b8440c9868e54fcfc04bf6c",
+      "headRefName": "fix/brief-config-evidence",
+      "headRefOid": "95bb09d6deb9cf0d78f18af5b49dfbdbefcfeec6",
+      "mergeStateStatus": "BLOCKED",
+      "mergeable": "MERGEABLE",
+      "number": 1257,
+      "state": "OPEN",
+      "url": "https://github.com/Pixel-CLI/pixel/pull/1257"
+    },
+    {
+      "baseRefName": "main",
+      "baseRefOid": "8097639037ad906c2b8440c9868e54fcfc04bf6c",
+      "headRefName": "fix/brief-diagnostic-evidence",
+      "headRefOid": "72680bd49d62d56f736b24bb51b7d60a6d8b77e4",
+      "mergeStateStatus": "BLOCKED",
+      "mergeable": "MERGEABLE",
+      "number": 1258,
+      "state": "OPEN",
+      "url": "https://github.com/Pixel-CLI/pixel/pull/1258"
+    },
+    {
+      "baseRefName": "main",
+      "baseRefOid": "8097639037ad906c2b8440c9868e54fcfc04bf6c",
+      "headRefName": "fix/brief-module-evidence",
+      "headRefOid": "866aa962e53a8757b512f17849cab9464e39cb59",
+      "mergeStateStatus": "BLOCKED",
+      "mergeable": "MERGEABLE",
+      "number": 1259,
+      "state": "OPEN",
+      "url": "https://github.com/Pixel-CLI/pixel/pull/1259"
+    }
+  ],
+  "note": "Publication snapshot; CI outcome recorded separately. No merge requested or performed."
+}
