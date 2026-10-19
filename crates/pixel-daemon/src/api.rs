@@ -786,9 +786,11 @@ impl Service {
             // Ranks from the resident vectors the writable service builds;
             // a replica never builds, embeds a chunk or reads a file. The
             // generation is the one held above, not a second lock.
-            Some(Request::Meaning { query, limit }) => {
-                self.meaning.answer(state.generation, &query, limit)
-            }
+            Some(Request::Meaning {
+                query,
+                limit,
+                stale_ok: _,
+            }) => self.meaning.answer(state.generation, &query, limit),
             Some(req) => self.dispatch(req),
             None => Err(format!("unsupported evidence query kind: {kind}")),
         };
@@ -1546,6 +1548,7 @@ impl Service {
                 scope,
                 globs,
                 types,
+                stale_ok: _,
             } => pixel_index::path_filter::PathFilter::new(&globs, &types).and_then(|filter| {
                 self.op_search(
                     &pattern,
@@ -1565,21 +1568,23 @@ impl Service {
                 relevance_only,
                 stale_ok: _,
             } => self.op_targets_facts(&task, limit, relevance_only),
-            Request::Meaning { query, limit } => self.op_meaning(&query, limit),
+            Request::Meaning { query, limit, stale_ok: _ } => self.op_meaning(&query, limit),
             Request::Symbol { name, stale_ok: _ } => self.op_symbol(&name),
-            Request::Skeleton { file } => self.op_skeleton(&file),
-            Request::Context { uid, budget_tokens } => self.op_context(&uid, budget_tokens),
+            Request::Skeleton { file, .. } => self.op_skeleton(&file),
+            Request::Context { uid, budget_tokens, .. } => self.op_context(&uid, budget_tokens),
             Request::Impact {
                 uid_or_name,
                 direction,
                 depth,
+                ..
             } => self.op_impact(&uid_or_name, &direction, depth),
             Request::Uses {
                 uid_or_name,
                 role,
                 offset,
+                ..
             } => self.op_uses(&uid_or_name, &role, offset),
-            Request::Trace { from, to } => self.op_trace(&from, &to),
+            Request::Trace { from, to, .. } => self.op_trace(&from, &to),
             Request::Processes { offset } => self.op_processes(offset),
             Request::Clusters { offset } => self.op_clusters(offset),
             Request::Changes {
@@ -1591,7 +1596,7 @@ impl Service {
             Request::Graph { if_stale } => self.op_graph(if_stale),
             Request::Status {} => self.op_status(),
             Request::Reindex {} => self.op_reindex(),
-            Request::Resolve { phrase, limit } => self.op_resolve(&phrase, limit),
+            Request::Resolve { phrase, limit, stale_ok: _ } => self.op_resolve(&phrase, limit),
             Request::History { query, facet, limit, read_only } => {
                 self.op_history(&query, facet.as_deref(), limit, read_only)
             }
@@ -1717,6 +1722,7 @@ impl Service {
                 time_budget_ms,
                 scope,
                 at_snapshot,
+                ..
             } => self.op_evaluate(EvaluateRequest {
                 from,
                 to,
@@ -3007,7 +3013,12 @@ impl Service {
         req: EvaluateRequest,
         probe: &mut dyn FnMut(),
     ) -> Result<Value, String> {
-        let args = req.parse()?;
+        let mut args = req.parse()?;
+        // A replica's transaction names the published graph, not today's
+        // working tree. Never run the tree check on this read-only route.
+        if self.read_only {
+            args.at_snapshot = true;
+        }
         let epistemics =
             |caps: Vec<String>| derive_epistemics("evaluate", &json!({ "caps": caps })).0;
 
@@ -3169,6 +3180,15 @@ impl Service {
     /// is `graph_stale`: a full rebuild can take minutes and is never a side
     /// effect of a question.
     fn evaluate_gate(&mut self) -> Result<Result<(), wire::Reason>, String> {
+        if self.read_only {
+            return Ok(
+                if self.graph.as_ref().and_then(published_signature).is_some() {
+                    Ok(())
+                } else {
+                    Err(wire::Reason::GraphStale)
+                },
+            );
+        }
         let db = self.graph_db_path();
         if !db.exists() {
             return Ok(Err(wire::Reason::GraphUnavailable));
@@ -6665,6 +6685,8 @@ mod tests {
             scope: None,
             globs: Vec::new(),
             types: Vec::new(),
+
+            stale_ok: false,
         }
     }
 
@@ -6850,6 +6872,8 @@ mod tests {
         let resolve = Request::Resolve {
             phrase: "login_v2".into(),
             limit: Some(5),
+
+            stale_ok: false,
         };
         let symbol = reader
             .read_answer(&resolve, &|| None)
@@ -6954,6 +6978,131 @@ mod tests {
             );
             (self.root, writer, self.reader)
         }
+    }
+
+    /// Every brief graph read must keep the published rows available during
+    /// a batch, without pretending that those rows describe the edited tree.
+    fn stale_brief_read(op: &str) {
+        let mut held = HeldBatch::start(&format!("stale-brief-{op}"));
+        let mut value = json!({"op": op, "stale_ok": true,
+            "pattern": "login", "phrase": "login", "query": "login", "file": "login.rs", "uid": "login", "uid_or_name": "login",
+            "direction": "upstream", "role": "callers", "depth": 1,
+            "from": "go", "to": "login"});
+        let request: Request = serde_json::from_value(value.clone()).unwrap();
+        let response = held.reader.read_answer(&request, &|| Some(HELD_LAG));
+        let generation = held.generation;
+        let signature = held.signature.clone();
+        let (root, mut writer, mut reader) = held.finish();
+        let response = response.expect("stale_ok graph read must reach the replica");
+        assert!(response.ok, "{op}: {response:?}");
+        assert_eq!(
+            stated_lag(&response),
+            (
+                Some(1500),
+                vec![format!(
+                    "answered from generation {generation}, which predates watcher batches queued 1500 ms ago and not yet published"
+                )]
+            )
+        );
+        let data = response.data();
+        match op {
+            "search" => assert!(
+                data["matches"].as_array().unwrap().iter().any(|r| r["text"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("pub fn login_v2()")),
+                "{data}"
+            ),
+            "resolve" => assert!(data.to_string().contains("login.rs"), "{data}"),
+            "meaning" => assert_eq!(
+                data["status"], "unavailable",
+                "cold replica must not build embeddings"
+            ),
+            "skeleton" => assert_eq!(data["symbols"][0]["name"], "login"),
+            "context" => {
+                assert_eq!(data["text"], "", "changed source must not be quoted");
+                assert_eq!(data["truncated"], true);
+                assert_eq!(
+                    data["caps"],
+                    json!([
+                        "context truncated: source differs from graph snapshot or is unavailable; stale excerpts and Crux omitted"
+                    ])
+                );
+            }
+            "uses" => assert_eq!(data["edges"][0]["symbol"]["name"], "go"),
+            "impact" => assert_eq!(data["d1_will_break"][0]["name"], "go"),
+            "trace" => assert_eq!(data["found"], true),
+            "evaluate" => {
+                assert_eq!(data["status"], "established", "{data}");
+                assert_eq!(data["snapshot"]["signature"], signature);
+            }
+            _ => panic!("unknown test op {op}"),
+        }
+        value["uid"] = json!("login_v2");
+        value["uid_or_name"] = json!("login_v2");
+        value["to"] = json!("login_v2");
+        let request = serde_json::from_value(value.clone()).unwrap();
+        let fresh = reader
+            .read_answer(&request, &|| None)
+            .expect("fresh replica");
+        assert!(fresh.ok, "{fresh:?}");
+        assert_eq!(stated_lag(&fresh), (None, Vec::new()));
+        if op == "skeleton" {
+            assert_eq!(fresh.data()["symbols"][0]["name"], "login_v2");
+        }
+        value["stale_ok"] = json!(false);
+        let ordinary: Request = serde_json::from_value(value).unwrap();
+        assert!(!ordinary.stale_ok());
+        let current = writer.handle(ordinary);
+        assert!(current.ok, "{current:?}");
+        assert_eq!(stated_lag(&current), (None, Vec::new()));
+        assert_eq!(reader.git_state.lookups, 0, "replica must not spawn git");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_brief_skeleton_should_answer_the_published_generation() {
+        stale_brief_read("skeleton");
+    }
+
+    #[test]
+    fn stale_brief_context_should_answer_the_published_generation() {
+        stale_brief_read("context");
+    }
+
+    #[test]
+    fn stale_brief_uses_should_answer_the_published_generation() {
+        stale_brief_read("uses");
+    }
+
+    #[test]
+    fn stale_brief_impact_should_answer_the_published_generation() {
+        stale_brief_read("impact");
+    }
+
+    #[test]
+    fn stale_brief_trace_should_answer_the_published_generation() {
+        stale_brief_read("trace");
+    }
+
+    #[test]
+    fn stale_brief_evaluate_should_answer_the_published_generation() {
+        stale_brief_read("evaluate");
+    }
+
+    #[test]
+    fn stale_brief_search_should_answer_the_published_generation() {
+        stale_brief_read("search");
+    }
+
+    #[test]
+    fn stale_brief_resolve_should_answer_the_published_generation() {
+        stale_brief_read("resolve");
+    }
+
+    #[test]
+    fn stale_brief_meaning_should_answer_the_published_generation() {
+        stale_brief_read("meaning");
     }
 
     fn relevance_request(stale_ok: bool) -> Request {
@@ -7523,6 +7672,8 @@ mod tests {
         let mut svc = Service::open(&root).unwrap();
         let resp = svc.handle(Request::Skeleton {
             file: "mod.rs".into(),
+
+            stale_ok: false,
         });
         assert!(resp.ok, "{resp:?}");
         assert_eq!(resp.validate(), Ok(()));
@@ -7718,6 +7869,8 @@ mod tests {
             uid_or_name: "entry".into(),
             role: "callees".into(),
             offset: None,
+
+            stale_ok: false,
         });
         assert!(outgoing.ok);
         assert_eq!(outgoing.data()["total_edges"], 1);
@@ -7738,6 +7891,8 @@ mod tests {
             uid_or_name: "relay".into(),
             role: "callees".into(),
             offset: None,
+
+            stale_ok: false,
         });
         assert!(relay.ok);
         assert_eq!(relay.data()["total_edges"], 1, "{:?}", relay.data());
@@ -7753,6 +7908,8 @@ mod tests {
                 uid_or_name: symbol.into(),
                 role: role.into(),
                 offset: None,
+
+                stale_ok: false,
             });
             assert!(response.ok);
             assert_eq!(response.data()["total_edges"], count);
@@ -7787,6 +7944,8 @@ mod tests {
             uid_or_name: "no_such_symbol_anywhere".into(),
             role: "callers".into(),
             offset: None,
+
+            stale_ok: false,
         });
         assert!(!miss.ok, "{miss:?}");
         let error = miss.error.as_ref().expect("a miss is an error");
@@ -7803,6 +7962,8 @@ mod tests {
             uid_or_name: "a.ts#ghost#function".into(),
             direction: "upstream".into(),
             depth: Some(2),
+
+            stale_ok: false,
         });
         assert!(!miss.ok, "{miss:?}");
         let error = miss.error.as_ref().unwrap();
@@ -7817,6 +7978,8 @@ mod tests {
             uid_or_name: "alpha".into(),
             direction: "upstream".into(),
             depth: Some(2),
+
+            stale_ok: false,
         });
         assert!(hit.ok, "{hit:?}");
         assert_eq!(hit.data()["target"], "a.ts#alpha#function", "{hit:?}");
@@ -7871,6 +8034,8 @@ mod tests {
                 uid_or_name: name.into(),
                 direction: "upstream".into(),
                 depth: Some(2),
+
+                stale_ok: false,
             });
             assert!(impact.ok, "{name}: {impact:?}");
             assert_eq!(impact.data()["target"], action_log, "{name}");
@@ -7879,6 +8044,8 @@ mod tests {
             uid_or_name: "ActionLog::finish".into(),
             role: "callers".into(),
             offset: None,
+
+            stale_ok: false,
         });
         assert!(uses.ok, "{uses:?}");
         assert_eq!(uses.data()["symbol"]["uid"], action_log, "{uses:?}");
@@ -7922,6 +8089,8 @@ mod tests {
             uid_or_name: "Snapshot::finish".into(),
             direction: "upstream".into(),
             depth: Some(2),
+
+            stale_ok: false,
         });
         assert!(ambiguous.ok, "{ambiguous:?}");
         assert_eq!(
@@ -7937,6 +8106,8 @@ mod tests {
             uid_or_name: "Nothing::finish".into(),
             direction: "upstream".into(),
             depth: Some(2),
+
+            stale_ok: false,
         });
         let error = miss.error.as_ref().expect("a qualified miss is an error");
         assert_eq!(error.code, ErrorCode::NotFound, "{error:?}");
@@ -7970,11 +8141,15 @@ mod tests {
             uid_or_name: "target".into(),
             role: "callers".into(),
             offset: Some(0),
+
+            stale_ok: false,
         });
         let second = svc.handle(Request::Uses {
             uid_or_name: "target".into(),
             role: "callers".into(),
             offset: Some(20),
+
+            stale_ok: false,
         });
         assert!(first.ok && second.ok);
         let edge_uids = |response: &Response| {
@@ -8086,6 +8261,8 @@ mod tests {
         let resp = svc.handle(Request::Context {
             uid: uid.clone(),
             budget_tokens: Some(50),
+
+            stale_ok: false,
         });
         assert!(resp.ok, "context: {resp:?}");
         let serialized = serde_json::to_string(resp.data()).unwrap();
@@ -8145,6 +8322,8 @@ mod tests {
         let zero = svc.handle(Request::Context {
             uid: "sharedName".into(),
             budget_tokens: Some(0),
+
+            stale_ok: false,
         });
         assert!(!zero.ok, "zero budget must not return candidates: {zero:?}");
         // A budget above the minimum response but below the candidate
@@ -8152,6 +8331,8 @@ mod tests {
         let small = svc.handle(Request::Context {
             uid: "sharedName".into(),
             budget_tokens: Some(100),
+
+            stale_ok: false,
         });
         assert!(
             !small.ok,
@@ -8165,6 +8346,8 @@ mod tests {
         let ok = svc.handle(Request::Context {
             uid: "sharedName".into(),
             budget_tokens: Some(100_000),
+
+            stale_ok: false,
         });
         assert!(ok.ok, "generous budget: {ok:?}");
         assert!(
@@ -8178,6 +8361,8 @@ mod tests {
         let default = svc.handle(Request::Context {
             uid: "sharedName".into(),
             budget_tokens: None,
+
+            stale_ok: false,
         });
         assert!(
             default.ok,
@@ -8236,6 +8421,8 @@ mod tests {
         let resp = svc.handle(Request::Context {
             uid: uid.clone(),
             budget_tokens: Some(500),
+
+            stale_ok: false,
         });
         assert!(resp.ok, "context: {resp:?}");
         let serialized = serde_json::to_string(resp.data()).unwrap();
@@ -8279,6 +8466,8 @@ mod tests {
             scope: None,
             globs: Vec::new(),
             types: Vec::new(),
+
+            stale_ok: false,
         });
         assert!(resp.ok, "search: {resp:?}");
         let matches = resp
@@ -8308,6 +8497,8 @@ mod tests {
             scope: None,
             globs: Vec::new(),
             types: Vec::new(),
+
+            stale_ok: false,
         });
         assert!(resp.ok);
         let matches = resp
@@ -8333,6 +8524,8 @@ mod tests {
             scope: None,
             globs: Vec::new(),
             types: Vec::new(),
+
+            stale_ok: false,
         });
         assert!(resp.ok);
         let second_page = resp
@@ -8389,6 +8582,8 @@ mod tests {
             scope: None,
             globs: Vec::new(),
             types: Vec::new(),
+
+            stale_ok: false,
         });
         assert!(unranked.ok, "unranked: {:?}", unranked.error);
         assert_eq!(
@@ -8421,6 +8616,8 @@ mod tests {
             scope: Some("code".into()),
             globs: Vec::new(),
             types: Vec::new(),
+
+            stale_ok: false,
         });
         assert!(ranked.ok, "ranked: {:?}", ranked.error);
         assert_eq!(
@@ -8777,6 +8974,8 @@ mod tests {
             scope: Some("code".into()),
             globs: Vec::new(),
             types: Vec::new(),
+
+            stale_ok: false,
         });
         assert!(resp.ok, "ranked search: {:?}", resp.error);
         let matches = resp
@@ -8834,6 +9033,8 @@ mod tests {
                 scope: Some("code".into()),
                 globs: Vec::new(),
                 types: Vec::new(),
+
+                stale_ok: false,
             });
             assert!(resp.ok, "page at offset {o}: {:?}", resp.error);
             let matches = resp
@@ -8914,6 +9115,8 @@ mod tests {
                 scope: Some("code".into()),
                 globs: Vec::new(),
                 types: Vec::new(),
+
+                stale_ok: false,
             });
             assert!(resp.ok, "search: {:?}", resp.error);
             resp.data()
@@ -8978,6 +9181,8 @@ mod tests {
             scope: Some("banana".into()),
             globs: Vec::new(),
             types: Vec::new(),
+
+            stale_ok: false,
         });
         assert!(!resp.ok, "unknown scope must fail, not silently succeed");
         assert_eq!(
@@ -8994,6 +9199,8 @@ mod tests {
             scope: None,
             globs: Vec::new(),
             types: Vec::new(),
+
+            stale_ok: false,
         });
         assert!(
             unranked.ok,
@@ -9010,6 +9217,8 @@ mod tests {
             scope: Some("CODE".into()),
             globs: Vec::new(),
             types: Vec::new(),
+
+            stale_ok: false,
         });
         assert!(
             upper.ok,
@@ -9698,6 +9907,8 @@ mod tests {
             scope: Some("code".into()),
             globs: Vec::new(),
             types: Vec::new(),
+
+            stale_ok: false,
         });
         assert!(resp.ok, "ranked search: {:?}", resp.error);
         let matches = resp
@@ -9766,6 +9977,8 @@ mod tests {
                     scope: None,
                     globs: Vec::new(),
                     types: Vec::new(),
+
+                    stale_ok: false,
                 },
             ),
             (
@@ -9773,6 +9986,8 @@ mod tests {
                 Request::Resolve {
                     phrase: "alpha".into(),
                     limit: Some(5),
+
+                    stale_ok: false,
                 },
             ),
             (
@@ -9799,6 +10014,8 @@ mod tests {
                 Request::Meaning {
                     query: "alpha beta".into(),
                     limit: Some(5),
+
+                    stale_ok: false,
                 },
             ),
             (
@@ -9807,6 +10024,8 @@ mod tests {
                     uid_or_name: "alpha".into(),
                     direction: "upstream".into(),
                     depth: Some(2),
+
+                    stale_ok: false,
                 },
             ),
             (
@@ -9815,6 +10034,8 @@ mod tests {
                     uid_or_name: "alpha".into(),
                     role: "callers".into(),
                     offset: None,
+
+                    stale_ok: false,
                 },
             ),
             (
@@ -9822,6 +10043,8 @@ mod tests {
                 Request::Trace {
                     from: "beta".into(),
                     to: "alpha".into(),
+
+                    stale_ok: false,
                 },
             ),
             (
@@ -9838,6 +10061,8 @@ mod tests {
                 Request::Context {
                     uid,
                     budget_tokens: Some(2000),
+
+                    stale_ok: false,
                 },
             ),
             (
@@ -10359,6 +10584,8 @@ mod tests {
         let resp = svc.handle(Request::Resolve {
             phrase: "uniqueTargetFn".into(),
             limit: Some(5),
+
+            stale_ok: false,
         });
         assert!(resp.ok, "resolve: {:?}", resp.error);
         let data = resp.data();
@@ -11497,6 +11724,8 @@ mod tests {
                 scope: None,
                 globs: globs.iter().map(ToString::to_string).collect(),
                 types: types.iter().map(ToString::to_string).collect(),
+
+                stale_ok: false,
             })
         };
         let paths = |resp: &Response| -> Vec<String> {
@@ -11548,6 +11777,8 @@ mod tests {
             scope: None,
             globs: Vec::new(),
             types: Vec::new(),
+
+            stale_ok: false,
         });
         assert!(resp.ok, "search: {resp:?}");
         let data = resp.data();
@@ -11580,6 +11811,8 @@ mod tests {
             scope: None,
             globs: Vec::new(),
             types: Vec::new(),
+
+            stale_ok: false,
         });
         assert_eq!(
             resp.data()["cap_hits"],
@@ -11632,6 +11865,8 @@ mod tests {
         let resp = svc.handle(Request::Context {
             uid: uid.to_owned(),
             budget_tokens: Some(budget),
+
+            stale_ok: false,
         });
         assert!(resp.ok, "context: {resp:?}");
         resp.data().clone()
@@ -12008,6 +12243,8 @@ mod context_crux_coordinate_tests {
         let request = || Request::Context {
             uid: "sample.rs#check#function".to_owned(),
             budget_tokens: Some(2000),
+
+            stale_ok: false,
         };
         let mut service = Service::open(&root).unwrap();
         let before = service.handle(request());

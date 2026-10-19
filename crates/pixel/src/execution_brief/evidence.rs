@@ -332,6 +332,8 @@ impl Live {
             time_budget_ms: Some(budget_ms.max(1)),
             scope: None,
             at_snapshot: true,
+
+            stale_ok: false,
         };
         let reason = match self.ask(&request, deadline) {
             Ok(data) => match evaluate_flow(&data) {
@@ -345,6 +347,8 @@ impl Live {
             &Request::Trace {
                 from: from.to_string(),
                 to: to.to_string(),
+
+                stale_ok: false,
             },
             deadline,
         )?;
@@ -410,6 +414,8 @@ impl Evidence for Live {
                     scope: None,
                     globs: Vec::new(),
                     types: Vec::new(),
+
+                    stale_ok: false,
                 };
                 Ok(search_rows(&self.ask(&request, deadline)?))
             }
@@ -427,6 +433,8 @@ impl Evidence for Live {
                 let request = Request::Resolve {
                     phrase: phrase.to_string(),
                     limit: Some(CONCEPT_ROWS),
+
+                    stale_ok: false,
                 };
                 Ok(resolve_rows(&self.ask(&request, deadline)?))
             }
@@ -450,6 +458,8 @@ impl Evidence for Live {
                     &Request::Context {
                         uid: hit.uid.clone(),
                         budget_tokens: Some(budget_tokens),
+
+                        stale_ok: false,
                     },
                     deadline,
                 )?;
@@ -475,6 +485,8 @@ impl Evidence for Live {
                         uid_or_name: uid.to_string(),
                         role: "callers".to_string(),
                         offset: None,
+
+                        stale_ok: false,
                     },
                     deadline,
                 )?;
@@ -510,6 +522,8 @@ impl Evidence for Live {
                 let data = self.ask(
                     &Request::Skeleton {
                         file: file.to_string(),
+
+                        stale_ok: false,
                     },
                     deadline,
                 )?;
@@ -617,6 +631,8 @@ impl Evidence for Live {
                     &Request::Meaning {
                         query: query.to_string(),
                         limit: Some(limit),
+
+                        stale_ok: false,
                     },
                     deadline,
                 )?;
@@ -683,6 +699,8 @@ impl Evidence for Live {
                     uid_or_name: target.to_string(),
                     direction: "upstream".to_string(),
                     depth: Some(1),
+
+                    stale_ok: false,
                 },
                 deadline,
             )?,

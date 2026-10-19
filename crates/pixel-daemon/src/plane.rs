@@ -91,8 +91,8 @@ pub(crate) fn plane(req: &Request) -> Plane {
     }
 }
 
-/// A read replica may answer `req`: a read-plane op, or a `targets_facts`
-/// or `symbol` that sets `stale_ok`. Those stay [`Plane::Write`] for every
+/// A read replica may answer `req`: a read-plane op, or a brief graph
+/// read or `targets_facts` that sets `stale_ok`. Those stay [`Plane::Write`] for every
 /// other purpose (the evidence bridge, the git-state invalidation): only the
 /// caller that accepts the published generation lets a replica serve them.
 pub(crate) fn replica_may_answer(req: &Request) -> bool {
@@ -121,19 +121,27 @@ pub(crate) fn evidence_request(kind: &str, query: &str, limit: usize) -> Option<
             scope: None,
             globs: Vec::new(),
             types: Vec::new(),
+
+            stale_ok: false,
         },
         "resolve" => Request::Resolve {
             phrase: text,
             limit: Some(limit),
+
+            stale_ok: false,
         },
         "impact" => Request::Impact {
             uid_or_name: text,
             direction: "upstream".into(),
             depth: Some(2),
+
+            stale_ok: false,
         },
         "meaning" => Request::Meaning {
             query: text,
             limit: Some(limit),
+
+            stale_ok: false,
         },
         "reindex" => Request::Reindex {},
         _ => return None,
@@ -274,6 +282,8 @@ mod tests {
                 uid_or_name: "login".into(),
                 direction: "upstream".into(),
                 depth: Some(2),
+
+                stale_ok: false,
             })
         );
         // Known to the wire but refused by the plane; unknown altogether.
