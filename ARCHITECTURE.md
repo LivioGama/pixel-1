@@ -789,6 +789,8 @@ envelope talks to the daemon socket directly.
 
 ## Agent integration
 
+`setup --agent` selects one or more `AgentTarget` values by stable name (comma-separated or repeated), with `--yes`. The CLI enables each selected target's existing integrations through `InstallSelection`; unselected targets stay untouched. The CI action forwards `hooks-agent` lists to that interface; `all` preserves automatic setup. Its isolated smoke executes installed Claude and Codex commands separately and together, checking task-bridge receipts and brief output.
+
 Setup and removal edit JSON settings by key, retaining untouched values and their
 formatting. Codex hook writes use the shared atomic settings writer; setup reads
 Codex TOML review state without rewriting it. Gemini and Antigravity use this
@@ -1637,7 +1639,10 @@ The allocation-budget test bounds allocations while reading request frames.
   `--self-test` exercises the orchestration and verdicts with fixture CLIs.
 - The public `.github/actions/setup-pixel` composite action installs a checksum-verified
   release into runner temporary storage and optionally prepares indexes without a
-  daemon. `setup-pixel.yml` smoke-tests real releases on Linux x64/ARM64 and
+  daemon. Opt-in caching retains only text shards/state and the code graph,
+  refreshed before use and validated before saving. Opt-in global setup installs
+  the pinned binary's agent integrations on disposable runners.
+  `setup-pixel.yml` smoke-tests real releases on Linux x64/ARM64 and
   macOS ARM64; `scripts/test-setup-pixel.py` checks installer failure contracts.
 - After publication, `release.yml`'s `virustotal` job submits the three
   release archives to VirusTotal and appends a link to each report (by
