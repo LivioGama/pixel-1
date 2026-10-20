@@ -8,15 +8,17 @@
 //! transport loop and the wire benches (`pixel-bench/benches/wire.rs`)
 //! exercise the same code, instead of a bench-shaped copy that drifts.
 //!
-//! The write side carries two shapes on purpose while it is being
-//! measured: [`write_line_split`] writes the payload and the newline
-//! separately (the error-arm shape), [`write_line_whole`] appends the
-//! newline before the single write. Normal responses already append their
-//! newline before writing; the split lane is not their production baseline.
+//! Production serializes into a reused buffer and writes the complete frame.
+//! [`write_line_split`] remains a benchmark comparison; it is not the normal
+//! response baseline, which already included the newline in one write.
 
 use std::io::{BufRead, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Instant;
+
+/// The envelope sent when a response itself cannot be serialized.
+pub const SERIALIZE_FAILURE: &[u8] =
+    b"{\"ok\":false,\"op\":\"error\",\"protocol\":1,\"error\":{\"code\":\"INVARIANT_VIOLATION\",\"message\":\"serialize failure\"}}\n";
 
 /// How a read of one request line ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,20 +96,37 @@ pub fn read_capped_line_with(
     }
 }
 
-/// Write `payload` as one NDJSON frame: payload, newline, flush. This is
-/// the payload write and the newline write kept apart.
+/// Serialize `value` as one NDJSON frame into `out`: the buffer is
+/// cleared first, the newline padded last, so the caller can hand the whole
+/// slice to one [`write_line_whole`]. Reusing `out` across requests keeps
+/// the frame allocation out of the request path.
+pub fn encode_line(out: &mut Vec<u8>, value: &impl serde::Serialize) -> serde_json::Result<()> {
+    out.clear();
+    serde_json::to_writer(&mut *out, value)?;
+    out.push(b'\n');
+    Ok(())
+}
+
+/// Serialize `response` into `out` and write it as one frame, one write.
+/// This is the production path; `out` is the connection's reused buffer.
+pub fn write_response(
+    writer: &mut impl Write,
+    out: &mut Vec<u8>,
+    response: &impl serde::Serialize,
+) -> std::io::Result<()> {
+    encode_line(out, response).map_err(std::io::Error::other)?;
+    write_line_whole(writer, out)
+}
+
+/// Write `payload` and then the newline, as two writes.
 pub fn write_line_split(writer: &mut impl Write, payload: &[u8]) -> std::io::Result<()> {
     writer.write_all(payload)?;
     writer.write_all(b"\n")?;
     writer.flush()
 }
 
-/// [`write_line_split`] with the newline appended first, so the frame
-/// costs one payload buffer and one write.
-pub fn write_line_whole(writer: &mut impl Write, payload: &[u8]) -> std::io::Result<()> {
-    let mut frame = Vec::with_capacity(payload.len() + 1);
-    frame.extend_from_slice(payload);
-    frame.push(b'\n');
-    writer.write_all(&frame)?;
+/// Write an already-encoded frame (newline included) in one write.
+pub fn write_line_whole(writer: &mut impl Write, frame: &[u8]) -> std::io::Result<()> {
+    writer.write_all(frame)?;
     writer.flush()
 }
