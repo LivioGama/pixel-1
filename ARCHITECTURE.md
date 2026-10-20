@@ -206,7 +206,9 @@ Machine-wide:
   `~/.pi/agent` and `~/.config/opencode` that exists (`SKILL_ROOTS`); a guided
   run writes only the selected agents' roots, and Pi's copy comes from its
   package step. A differing copy is backed up first; `pixel setup --remove`
-  deletes it.
+  deletes it. Its shared instructions cover choosing direct reads, Pixel graph
+  queries or scoped native searches, locating the project before graph work,
+  and changing scope or evidence source when searches stop making progress.
 - `~/.local/share/pixel/pi-classify/`: the optional classify tools'
   Pi package, written and declared like the one above only when the
   classify helpers are accepted; `pixel setup --remove` removes both.
