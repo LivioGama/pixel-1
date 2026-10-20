@@ -788,3 +788,176 @@ impl<'a> Index<'a> {
         })
     }
 }
+
+#[cfg(test)]
+mod audited_contract_tests {
+    use super::*;
+    use crate::ruby::resolve::{fixture::Generation, stubs::Tests};
+
+    #[test]
+    fn model_finders_should_preserve_argument_shape_nil_and_array_contracts() {
+        let generation = Generation::default();
+        let world = generation.world();
+        let index = Index::build(&world, &|_| true, &Tests::Without);
+        for (name, shape, expected) in [
+            ("find", "(1)", Some((false, true))),
+            ("find_by", "(h)", Some((true, false))),
+            ("find_by", "", None),
+            ("find_by!", "(h)", Some((false, false))),
+            ("find_by!", "", None),
+            ("first", "", Some((true, false))),
+            ("first", "(1)", None),
+            ("first!", "", Some((false, false))),
+            ("first!", "(1)", None),
+            ("create!", "", Some((false, false))),
+            ("create!", "(h)", Some((false, false))),
+            ("create!", "(1)", None),
+            ("find_or_create_by", "(h)", Some((false, false))),
+            ("find_or_create_by", "", None),
+            ("where", "", None),
+        ] {
+            let expected = expected.map(|(nil, array)| {
+                Value::Record(Record {
+                    class: "Item",
+                    exact: false,
+                    nil,
+                    array,
+                })
+            });
+            assert_eq!(
+                index.model_value("Item", name, shape),
+                expected,
+                "{name}{shape}"
+            );
+        }
+        assert_eq!(
+            index.model_value("Item", "where", "(h)"),
+            Some(Value::Relation(Relation {
+                model: "Item",
+                extended: false,
+                nil: false
+            }))
+        );
+    }
+
+    #[test]
+    fn nullable_records_should_not_be_typed_as_relations_or_reloaded_with_arguments() {
+        let generation = Generation::default();
+        let world = generation.world();
+        let index = Index::build(&world, &|_| true, &Tests::Without);
+        let plain = Value::Record(Record {
+            class: "Item",
+            exact: true,
+            nil: false,
+            array: false,
+        });
+        let nullable = index.step(plain, (MAYBE_NIL, "")).unwrap();
+        assert_eq!(
+            nullable,
+            Value::Record(Record {
+                class: "Item",
+                exact: true,
+                nil: true,
+                array: false
+            })
+        );
+        assert_eq!(index.step(nullable, ("reload", "(1)")), None);
+        assert_eq!(index.step(nullable, ("to_s", "")), None);
+    }
+
+    #[test]
+    fn exact_records_should_abstain_when_their_own_chain_defines_the_reader_name() {
+        use mvp_model::SymbolKind::{Class, Method};
+        let mut generation = Generation::default();
+        generation
+            .def("item.rb", Class, "Item", 1, 5)
+            .def("item.rb", Method, "Item#saved", 2, 2);
+        let world = generation.world();
+        let index = Index::build(&world, &|_| true, &Tests::Without);
+        let record = Record {
+            class: "Item",
+            exact: true,
+            nil: false,
+            array: false,
+        };
+        assert!(index.record_absent(record, "missing"));
+        assert!(!index.record_absent(record, "saved"));
+        assert_eq!(index.step(Value::Record(record), ("reload", "(1)")), None);
+        assert_eq!(
+            index.step(Value::Record(record), ("reload", "")),
+            Some(Value::Record(record))
+        );
+        let relation = Value::Relation(Relation {
+            model: "Item",
+            extended: false,
+            nil: false,
+        });
+        assert_eq!(
+            index.step(relation, (MAYBE_NIL, "")),
+            Some(Value::Relation(Relation {
+                model: "Item",
+                extended: false,
+                nil: true
+            }))
+        );
+    }
+
+    #[test]
+    fn fixture_reading_should_require_a_real_fixtures_call_not_a_reference_or_suffix_match() {
+        use mvp_model::SymbolKind::Class;
+        for declaration in ["call", "reference", "suffix"] {
+            let mut generation = Generation::default();
+            generation
+                .file("test/fixtures/users.yml")
+                .file("test/check_test.rb")
+                .def("user.rb", Class, "User", 1, 3);
+            generation.mixin(
+                "user.rb",
+                "User",
+                1,
+                "superclass",
+                "ActiveRecord::Base",
+                &[],
+            );
+            match declaration {
+                "call" => {
+                    generation.call(
+                        "test/check_test.rb",
+                        "test/check_test.rb",
+                        1,
+                        "",
+                        "fixtures",
+                        &[],
+                    );
+                }
+                "reference" => {
+                    generation.reference(
+                        "test/check_test.rb",
+                        "test/check_test.rb",
+                        1,
+                        "",
+                        "fixtures",
+                        &[],
+                    );
+                }
+                _ => {
+                    generation.call(
+                        "test/check_test.rb",
+                        "test/check_test.rb",
+                        1,
+                        "",
+                        "not_fixtures",
+                        &[],
+                    );
+                }
+            }
+            let world = generation.world();
+            let index = Index::build(&world, &|_| true, &Tests::Without);
+            assert_eq!(
+                index.rails.fixtures.get("users").and_then(|c| c.as_deref()),
+                (declaration == "call").then_some("User"),
+                "{declaration}"
+            );
+        }
+    }
+}

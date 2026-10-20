@@ -383,10 +383,12 @@ impl Rspec {
         if open {
             let spec = self.files.get(file)?;
             let children = spec.children.as_ref()?;
-            let mut at = 0;
-            while at < found.len() {
-                found.extend(children.get(&found[at]).into_iter().flatten());
-                at += 1;
+            let mut pending = std::collections::VecDeque::from([line]);
+            while let Some(at) = pending.pop_front() {
+                for &child in children.get(&at).into_iter().flatten() {
+                    found.push(child);
+                    pending.push_back(child);
+                }
                 // A group nested in itself: a cycle no file writes.
                 if found.len() > spec.groups.len() {
                     return None;
@@ -553,5 +555,184 @@ impl<'a> Index<'a> {
             return None;
         };
         Some(def)
+    }
+}
+
+#[cfg(test)]
+mod audited_contract_tests {
+    use super::*;
+
+    fn group(parent: u32, nests: bool) -> Option<Group> {
+        Some(Group {
+            parent,
+            described: String::new(),
+            scope: Vec::new(),
+            metadata: false,
+            opaque: false,
+            nests,
+            members: Vec::new(),
+            mixins: Vec::new(),
+        })
+    }
+
+    fn model(children: &[(u32, Vec<u32>)]) -> Rspec {
+        Rspec {
+            files: HashMap::from([(
+                "spec/x_spec.rb".into(),
+                Spec {
+                    groups: HashMap::from([
+                        (1, group(0, false)),
+                        (2, group(1, false)),
+                        (3, group(2, false)),
+                    ]),
+                    children: Some(children.iter().cloned().collect()),
+                },
+            )]),
+            ..Rspec::default()
+        }
+    }
+
+    #[test]
+    fn groups_should_expand_each_nested_group_once_in_breadth_first_order() {
+        let rspec = model(&[(1, vec![2]), (2, vec![3])]);
+        assert_eq!(rspec.groups("spec/x_spec.rb", 1, true), Some(vec![1, 2, 3]));
+        assert_eq!(rspec.groups("spec/x_spec.rb", 1, false), Some(vec![1]));
+        assert_eq!(rspec.groups("spec/missing_spec.rb", 1, true), None);
+        assert_eq!(rspec.groups("spec/x_spec.rb", 99, false), None);
+    }
+
+    #[test]
+    fn groups_should_reject_cycles_and_unknown_nested_groups() {
+        let cyclic = model(&[(1, vec![2]), (2, vec![1])]);
+        assert_eq!(cyclic.groups("spec/x_spec.rb", 1, true), None);
+        let mut ambiguous = model(&[(1, vec![2])]);
+        ambiguous
+            .files
+            .get_mut("spec/x_spec.rb")
+            .unwrap()
+            .groups
+            .insert(2, group(1, true));
+        assert_eq!(ambiguous.groups("spec/x_spec.rb", 1, true), None);
+        assert_eq!(ambiguous.groups("spec/x_spec.rb", 2, false), Some(vec![2]));
+        ambiguous
+            .files
+            .get_mut("spec/x_spec.rb")
+            .unwrap()
+            .groups
+            .insert(2, None);
+        assert_eq!(ambiguous.groups("spec/x_spec.rb", 2, false), None);
+    }
+
+    #[test]
+    fn read_groups_should_preserve_member_lines_parentage_and_agreement_across_nested_examples() {
+        let fact_group = |line, parent, described: &str| Fact::Group {
+            line,
+            parent,
+            described: described.into(),
+            scope: vec![],
+            metadata: false,
+            opaque: false,
+            nests: false,
+        };
+        let facts = Fact::encode_all(&[
+            Fact::Rspec,
+            fact_group(1, 0, "Item"),
+            fact_group(2, 1, ""),
+            Fact::Member {
+                group: 1,
+                name: "helper".into(),
+                line: 7,
+                def: true,
+            },
+        ]);
+        let model = Rspec::read(&[("spec/x_spec.rb".into(), facts)], &|_| true);
+        assert_eq!(model.groups("spec/x_spec.rb", 1, true), Some(vec![1, 2]));
+        assert_eq!(
+            model.described("spec/x_spec.rb", 2).map(|(name, _)| name),
+            Some("Item")
+        );
+        match model.find_in("spec/x_spec.rb", &[1, 2], "helper", &|_, _| true) {
+            Found::Member(member, _) => assert_eq!(
+                (member.name.as_str(), member.line, member.def),
+                ("helper", 7, true)
+            ),
+            _ => panic!("the same inherited member must agree in both groups"),
+        }
+        assert!(matches!(
+            model.find_in("spec/x_spec.rb", &[1, 2], "absent", &|_, _| true),
+            Found::Nowhere
+        ));
+    }
+
+    #[test]
+    fn shared_group_reading_should_keep_the_latest_member_and_propagate_opaque_nested_groups() {
+        let group = |line, parent, nests| Fact::Group {
+            line,
+            parent,
+            described: String::new(),
+            scope: vec![],
+            metadata: false,
+            opaque: false,
+            nests,
+        };
+        let specs = Fact::encode_all(&[
+            Fact::Rspec,
+            group(1, 0, false),
+            Fact::Include {
+                group: 1,
+                name: "shared".into(),
+                line: 4,
+            },
+        ]);
+        let shared = Fact::encode_all(&[
+            Fact::Shared {
+                name: "shared".into(),
+                line: 1,
+                scoped: false,
+                metadata: false,
+            },
+            group(1, SHARED_GROUP, false),
+            Fact::Member {
+                group: 1,
+                name: "helper".into(),
+                line: 2,
+                def: true,
+            },
+            Fact::Member {
+                group: 1,
+                name: "helper".into(),
+                line: 7,
+                def: false,
+            },
+        ]);
+        let model = Rspec::read(
+            &[
+                ("spec/x_spec.rb".into(), specs.clone()),
+                ("spec/shared.rb".into(), shared.clone()),
+            ],
+            &|_| true,
+        );
+        match model.find("spec/x_spec.rb", 1, "helper", &|_, _| true) {
+            Found::Member(member, _) => assert_eq!(
+                (member.line, member.def, member.shared.as_ref().map(|s| s.1)),
+                (4, false, Some(7))
+            ),
+            _ => panic!("shared members must be brought at the include site"),
+        }
+        let mut nested = Fact::decode_all(&shared);
+        for fact in &mut nested {
+            if let Fact::Group { nests, .. } = fact {
+                *nests = true;
+            }
+        }
+        let shared = Fact::encode_all(&nested);
+        let model = Rspec::read(
+            &[
+                ("spec/x_spec.rb".into(), specs),
+                ("spec/shared.rb".into(), shared),
+            ],
+            &|_| true,
+        );
+        assert_eq!(model.groups("spec/x_spec.rb", 1, true), None);
     }
 }
