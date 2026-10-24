@@ -20,8 +20,8 @@ The dependency graph is `verify` → `fuzz` → `assets` → `release`, then
 | --- | --- | --- |
 | `verify` | `check-release $GITHUB_REF` (CLI version, every workspace member in Cargo.lock, released heading and empty Unreleased), `cargo deny check`, then locked workspace tests | nothing built or published |
 | `fuzz` | `fuzz.yml` called with 120 s per target: every cargo-fuzz target on nightly, `cargo deny` on `fuzz/` first | a crash or a target that ran nothing: nothing built; the reproducer is the run's `fuzz-artifacts-*` artifact |
-| `assets` | calls `release-build.yml`: three target builds (musl x86_64/aarch64 with model2vec only, native Apple arm64), checksums and feature-specific CycloneDX SBOMs; packages the Homebrew formula and Linux bottles, signs archives, symbols, bottles, install.sh and SBOMs, and stages the provenance bundle | nothing published |
-| `release` | publishes the staged assets with the tag's changelog section, and publishes the Homebrew formula as a release asset | publication may already be immutable; classify in Recovery |
+| `assets` | calls `release-build.yml`: three target builds (musl x86_64/aarch64 with model2vec only, native Apple arm64), checksums and feature-specific CycloneDX SBOMs; signs archives, symbols, install.sh and SBOMs, and stages the provenance bundle | nothing published |
+| `release` | publishes the staged assets with the tag's changelog section | publication may already be immutable; classify in Recovery |
 | `smoke` (×3, `fail-fast: false`) | verifies provenance, runs the downloaded asset and one-liner in an empty HOME; version and commit must match the tag | already published; distinguish code failure from infrastructure |
 | `virustotal` | submits the three archives and appends report links to the notes when `VT_API_KEY` exists | already published; missing key is a notice, not a scan pass |
 
@@ -308,7 +308,7 @@ passing Release-prepare scope checks in CI, Mutants and Cross-build. A
 recognized prepare change skips code gates because the helper admits only
 release metadata changes; the merged commit's push run is still required
 before tagging. If a scope check fails or is absent, the normal workflow runs.
-No Homebrew tap or formula source-audit workflow is configured.
+No tap publishing workflow is configured.
 
 Immediately before merging, fetch the target and run the candidate guard
 with the recorded SHAs and the selected target. For maintenance, append
@@ -382,7 +382,7 @@ use), not a caveat. A step that printed a `::notice::` (install.sh on a
 tag that is not the latest) or was skipped is a
 caveat to report, not a pass.
 
-`smoke` does not inspect the release body or validate the formula asset.
+`smoke` does not inspect the release body.
 Check those from the published state, never the local checkout, downloading
 into a fresh directory so nothing local vouches for the release. The binary
 lines repeat `smoke` by hand: run them when a `smoke` job failed, was
@@ -393,14 +393,12 @@ V=vx.y.z; D=$(mktemp -d); cd "$D"
 gh release view $V --repo Pixel-CLI/pixel --json isDraft,isPrerelease,isImmutable,body \
   --jq '{isDraft, isPrerelease, isImmutable, body: .body[0:200]}'   # false, false, true, the changelog section (not "See [CHANGELOG.md]")
 gh release download $V --repo Pixel-CLI/pixel
-ls                                                     # 17 assets: 3 archives, 3 checksums, 3 SBOMs, 3 symbols, 2 bottles, formula, installer, bundle
-for f in pixel-v*.tar.gz pixel-v*.cdx.json pixel-*.bottle.tar.gz install.sh; do
+ls                                                     # 14 assets: 3 archives, 3 checksums, 3 SBOMs, 3 symbols, installer, bundle
+for f in pixel-v*.tar.gz pixel-v*.cdx.json pixel-*.symbols.tar.xz install.sh; do
   gh attestation verify "$f" --repo Pixel-CLI/pixel --signer-workflow Pixel-CLI/pixel/.github/workflows/release-build.yml || exit "$?"
   gh attestation verify "$f" --repo Pixel-CLI/pixel --signer-workflow Pixel-CLI/pixel/.github/workflows/release-build.yml --bundle "pixel-$V.intoto.jsonl" || exit "$?"
 done
 shasum -a 256 -c ./*.sha256                            # 3 × OK
-for f in ./*.sha256; do grep -c "$(awk '{print $1}' "$f")" pixel.rb; done   # darwin 2, each musl 1: the formula carries the archive hashes (darwin is also its top-level URL)
-for b in ./*.bottle.tar.gz; do grep -c "$(shasum -a 256 "$b" | awk '{print $1}')" pixel.rb; done   # 1 each: the bottle block names the published bottles
 git -C <repo> show "${V}:scripts/release/install.sh" | diff - install.sh && echo "install.sh == tag's"
 tar xzf pixel-$V-aarch64-apple-darwin.tar.gz
 HOME="$D/home" ./pixel-$V-aarch64-apple-darwin/bin/pixel --version
@@ -408,9 +406,8 @@ git -C <repo> rev-list -n 1 $V                         # must equal the `commit:
 gh run view <run-id> --repo Pixel-CLI/pixel         # inspect any workflow annotations
 ```
 
-Verify the asset names, not only the count: `release-build.yml` stages 17
-files (3 archives + 3 checksums + 3 SBOMs + 3 symbols + 2 bottles + formula
-+ installer + provenance bundle). Read each SBOM's metadata against its target and
+Verify the asset names, not only the count: `release-build.yml` stages 14
+files (3 archives + 3 checksums + 3 SBOMs + 3 symbols + installer + provenance bundle). Read each SBOM's metadata against its target and
 version; a bundle file alone is not a successful provenance verification.
 Read the full published body against the released changelog section, allowing
 the workflow's VirusTotal addition and recorded editorial corrections. Check
@@ -422,7 +419,7 @@ does not. The run in an empty `HOME` proves it starts without this machine's
 config. Read warnings from the run summary's annotations, not from
 `--log | grep '::warning::'`: the log echoes each step's script, so that grep
 matches the workflow's own `echo "::warning::…"` line on every run. The Linux
-tarballs cannot run here; their hashes and the formula are the evidence for
+tarballs cannot run here; their hashes and SBOMs are the evidence for
 them.
 
 Report in this shape, and copy it into the record:
@@ -431,7 +428,7 @@ Report in this shape, and copy it into the record:
 Release vx.y.z: published and verified | NOT verified
 - run <url>: verify ✓, assets (builds + attest) ✓, release ✓, smoke ✓✓✓, virustotal ✓ | notice
 - smoke: asset ✓✓✓, install.sh ✓✓✓ | notice
-- assets: 17, 3 SBOMs, 3 symbol archives, provenance online + bundle verified with release-build.yml, 3 checksums OK, formula and bottle hashes match, install.sh == tag's, immutable
+- assets: 14, 3 SBOMs, 3 symbol archives, provenance online + bundle verified with release-build.yml, 3 checksums OK, install.sh == tag's, immutable
 - body: CHANGELOG ## [x.y.z] section + VirusTotal links when enabled + recorded corrections
 - binary: aarch64-apple-darwin prints pixel x.y.z, commit <sha> == tag
 Caveats: <anything not checked, and why>

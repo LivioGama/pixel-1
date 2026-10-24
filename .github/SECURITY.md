@@ -35,8 +35,8 @@ gh attestation verify pixel-vX.Y.Z-aarch64-apple-darwin.tar.gz --repo Pixel-CLI/
 The same command verifies `install.sh` before you pipe it into `sh`.
 
 Each release also attaches the attestation itself as `pixel-vX.Y.Z.intoto.jsonl`:
-the Sigstore bundle of that one attestation, covering every archive, SBOM, Linux
-bottle and `install.sh` of the release. `--bundle` checks a file against it
+the Sigstore bundle of that one attestation, covering every archive, SBOM
+and `install.sh` of the release. `--bundle` checks a file against it
 instead of fetching the attestation from GitHub, with the same identity flags;
 adding a trusted root saved beforehand with
 `gh attestation trusted-root > trusted_root.jsonl` makes the check fully offline:
@@ -111,8 +111,7 @@ Each release attaches a CycloneDX 1.5 JSON SBOM beside each archive,
 `pixel-vX.Y.Z-<target>.cdx.json`. It lists the crates that target's binary
 compiles, with their versions, licences and package URLs, and their dependency
 graph. Build-time crates (build scripts, procedural macros) are listed;
-dev-dependencies are not. The Linux bottles hold the binary of the matching Linux
-archive, so that archive's SBOM describes them. `release-build.yml` writes it
+dev-dependencies are not. `release-build.yml` writes it
 with cargo-cyclonedx, then keeps only the crates `cargo tree -p pixel` resolves for
 that target: `cargo metadata`, which cargo-cyclonedx reads, also lists optional
 dependencies the build never compiles, and `scripts/release/release-sbom.py`

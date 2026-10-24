@@ -80,7 +80,7 @@ scripts/render.sh PIXELScope AgentDemo   # some of them
 ```
 
 `scripts/render.sh` runs `bun install` first, needs `ffmpeg` and `img2webp`
-(`brew install ffmpeg webp`), and writes three files per composition into `docs/examples/`:
+on `PATH`, and writes three files per composition into `docs/examples/`:
 
 - `<name>.mp4`: 1600×1000 H.264, played by the website;
 - `<name>.jpg`: its last frame, the website's poster;

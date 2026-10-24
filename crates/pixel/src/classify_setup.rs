@@ -1144,7 +1144,6 @@ const UNPACK_INSTALLERS: &[(&[&str], &[&str])] = &[
 /// an os outside the table).
 fn unpack_support_install(env: &UnpackEnvironment) -> Option<Vec<String>> {
     match env.os {
-        "macos" => Some(vec!["brew".into(), "install".into(), "zstd".into()]),
         "linux" => {
             let release = env.os_release.as_deref()?;
             let id = os_release_field(release, "ID");
@@ -2617,7 +2616,7 @@ mod tests {
                 "{release}"
             );
         }
-        assert_eq!(install(&absent(None, "macos")), "brew install zstd");
+        assert_eq!(unpack_support_install(&absent(None, "macos")), None);
     }
 
     #[test]

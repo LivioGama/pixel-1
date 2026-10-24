@@ -9,7 +9,7 @@
 #
 # Set README_WEBP_ONLY=1 to update only the README image; README_RENDER_CRF
 # (default 26) tunes the intermediate video used to extract its frames.
-# Needs ffmpeg and img2webp (brew install ffmpeg webp).
+# Needs ffmpeg and img2webp on PATH.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

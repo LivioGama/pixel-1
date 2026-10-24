@@ -10,8 +10,7 @@ run identity beside them (`.agents/rules/measuring.md`).
 | Setting | Where | Unlocks |
 |---|---|---|
 | GitHub Advanced Security (code scanning) or a public repository | Settings → Code security | `codeql.yml` (the job is skipped while the repository is private) |
-| Homebrew tap | Not configured | `pixel.rb` is attached to each release as an asset |
-| Branch protection on `main`: require `fmt, clippy, test`, `MSRV`, `cargo deny`, `SPDX and action pins`, `website and motion`; squash merge only | Settings → Branches | nothing merges red |
+| Existing branch protection on `main` | Settings → Branches | Check the candidate's CI names against existing required checks before merge; this PR changes no protection settings |
 
 ## 2. Host verification (each host, once per host version)
 
@@ -38,53 +37,23 @@ the new entries before they fire. **pi**: verify the event names and the
 `@earendil-works/pi-coding-agent`. The captures hold the typed prompt: read them
 before sharing.
 
-## 3. Acceptance run (the bar for v0.1.0)
+## 3. Comparative runs
 
-Pixel's arena (read-only source at `e8fd304`) runs PIXEL through a shim called
-`pixel`. Claude Code and Codex, three repetitions each, ripgrep at `3fce3b5`, the
-13 questions of `single` (`docs/bench/2026-10-22-token-ab.md` in the Pixel
-repository). Bar: tool calls and provider-reported tokens no worse than Pixel
-0.9.0 (Claude 59 calls / 4.10M tokens, Codex 32 / 1.50M), blind answer grade no
-worse (2.85 / 2.95).
+For optional future trials, use the restored [Arena skill](../.agents/skills/arena/SKILL.md) and explicitly
+select a binary built from the candidate. It orchestrates isolated Claude Code
+or Codex sessions using the current Pixel commands and hooks; an old-engine
+checkout, command shim and the removed benchmark scripts are not required.
 
-```sh
-cargo build --release -p pixel
-git clone https://github.com/<you>/pixel pixel-src && git -C pixel-src switch --detach e8fd304
-mkdir -p /tmp/pixel-shim && cat > /tmp/pixel-shim/pixel <<'SHIM'
-#!/usr/bin/env bash
-# Maps the commands Pixel's arena calls onto pixel, and the names it greps for.
-pixel=${PIXEL_BIN:-/path/to/pixel/target/release/pixel}
-export PIXEL_BRIEF=${PIXEL_BRIEF:-1}
-case "${1:-}" in
-  run-hook)                      # run-hook task-event --provider P --event prompt-submit [--part K/N]
-    shift 2; provider=""; event=""; part=()
-    while [ $# -gt 0 ]; do case "$1" in
-      --provider) provider=$2; shift 2;; --event) event=$2; shift 2;;
-      --part) part=(--part "$2"); shift 2;; *) shift;; esac; done
-    "$pixel" hook "$event" --host "$provider" "${part[@]}" | sed 's/\[PIXEL:BRIEF\]/[PIXEL:BRIEF]/g' ;;
-  prepare-repo) shift; "$pixel" prepare "$@" ;;
-  build-index)  shift; "$pixel" prepare "$@" ;;       # build-index --history PATH
-  *)            exec "$pixel" "$@" ;;
-esac
-SHIM
-chmod +x /tmp/pixel-shim/pixel
-cd pixel-src
-S=.agents/skills/arena/arena.sh
-for rep in 1 2 3; do
-  $S run-set single --agent claude --pixel-bin /tmp/pixel-shim/pixel
-  $S run-set single                --pixel-bin /tmp/pixel-shim/pixel    # Codex
-done
-scripts/bench/token-ab/tokens.py                                       # provider-reported tokens
-```
-
-The shim renames the brief tag back to `[PIXEL:BRIEF]` because the arena's
-preflight and receipt parsers look for it; the hook output otherwise is PIXEL's.
-Record, per agent: tool calls, provider-reported tokens, the blind grade of the
-answers, the binary's sha256 and `pixel --version`, and the commands above. The
-numbers replace Pixel's on the README and the website (`website/data/results.toml`)
-only when they come from this run. `pixel brief --without <step>` is the control
-for any step the run suggests is not removing calls; a step that does not is
-deleted.
+Record the prompt set, repository revision, binary SHA-256/version, agent/model
+versions and exact commands with tool calls, provider-reported tokens, elapsed
+time and answers. Compare answer quality as well as cost. Historical Pixel
+figures describe their original samples; they are not an automatic pass/fail
+threshold for this engine. Existing comparative evidence stays attached to its
+pinned versions; this PR does not require a new benchmark campaign. Verify the
+transformation and run a bounded case on its exact published head using the
+existing coordinated harness. Release thresholds remain maintainer decisions.
+Do not replace published figures with results from an unrelated sample or an
+unexecuted candidate run.
 
 ## 4. Edit-hooks A/B (decides the default of `edit_hooks`)
 
@@ -116,35 +85,21 @@ result beside the command (`measuring.md`). The tokenizer stack must also build
 for the musl lanes (`cross-build.yml` with `--features semantic`) before the
 release build turns the feature on.
 
-## 5. Decisions
+## 5. Existing site configuration
 
-- **Domain** and `baseURL` of the website; Cloudflare Pages is the alternative to
-  GitHub Pages, which needs a paid plan for a private repository.
-- **Palette and type**: the site ships the indigo-and-orange pair of the launch
-  image as a default (first block of `website/assets/css/main.css`; the token names
-  keep their original spelling). Run the `section-redesign` artifact vote to confirm
-  or replace it.
-- **The site's publisher.** The Privacy Policy and Terms of Use say the site is
-  published by "the maintainers of PIXEL"; a policy needs a named controller, so name
-  one in both files (`website/content/legal/`).
-- **Visit counting.** `cf_beacon` in `website/hugo.toml` is empty (no analytics). A
-  token turns the Cloudflare beacon on; the Privacy Policy then needs its
-  Cloudflare row and paragraph back (see `website/README.md`).
-- **Making the repository public** (turns on CodeQL, the release verification
-  commands and `install.sh`).
+The Pixel site is published at <https://pixel-cli.dev/>. This candidate retains
+its domain, presentation, legal pages and analytics configuration. The
+Cloudflare beacon is configured in `website/hugo.toml`; its existing privacy
+disclosure remains. No new palette, domain or hosting provider is selected by
+the implementation replacement.
 
 ## Publishing the site
 
-`pages.yml` builds the site on every push to `main` that touches it and keeps it as
-the `site` artifact; nothing is deployed. After the decisions above:
-
-1. Set `baseURL` in `website/hugo.toml` and publish the site on a domain chosen
-   by the Pixel maintainers; no public site domain has been configured.
-2. Add a deploy job to `pages.yml` that downloads `site` and publishes it with a
-   pinned `actions/deploy-pages` (or Cloudflare Pages), then set the custom domain
-   and DNS (four `A`, four `AAAA` and a `www` `CNAME`, "DNS only").
-3. Re-render the animations only with the recipe in `.agents/rules/readme-webp.md`
-   once the PIXEL compositions (`docs/motion`) exist.
+The retained `pages.yml` builds `website/`, uploads the `website/public`
+artifact and deploys it through the existing GitHub Pages job on relevant
+pushes to `main`. A branch candidate's local Hugo build is not a deployment.
+The repository's Pages settings and DNS are unchanged. Re-render animations
+only with `.agents/rules/readme-webp.md` when their source content changes.
 
 ## 6. Cutting v0.1.0
 

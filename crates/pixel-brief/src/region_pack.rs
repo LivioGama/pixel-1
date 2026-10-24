@@ -1367,10 +1367,8 @@ fn resolve_targets(input: &Input, evidence: &dyn Evidence, deadline: Instant) ->
 
 /// Keep a definition-only lookup compact when it resolves to one symbol.
 fn trim_to_definition(targets: &mut [Target], input: &Input) {
-    if input.lookup_only && targets.len() == 1 {
-        if targets[0].definition.is_some() {
-            targets[0].sites = 0;
-        }
+    if input.lookup_only && targets.len() == 1 && targets[0].definition.is_some() {
+        targets[0].sites = 0;
     }
 }
 

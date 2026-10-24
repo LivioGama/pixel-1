@@ -5,11 +5,10 @@ every contract live in [`specs/`](specs/); this file says where they live in
 the code and what the tests hold in place. `cargo test -p pixel --test cli
 docs_drift::` fails when the two tables below disagree with the tree.
 
-PIXEL removes model turns: it computes, with no model, the evidence an agent
+Pixel avoids repeated investigation: it computes, with no model, the evidence an agent
 would otherwise fetch with tool calls, and pushes it through hooks
-(`specs/thesis.md`). This file describes what is built; the hook handlers, the
-setup/doctor commands and the `pixel-setup` crate arrive with their
-milestones (`specs/roadmap.md`) and are added here when they land.
+(`specs/thesis.md`). This file describes the candidate implementation, including
+the hook handlers, setup/doctor commands and the `pixel-setup` crate.
 
 ## Command surface
 
@@ -270,8 +269,7 @@ the locked workspace tests), `fuzz` (`fuzz.yml`, 120 s a target), `assets`
 musl through `cross` and `aarch64-apple-darwin` natively, packages
 `pixel-<tag>-<target>.tar.gz` with its `.sha256`, a CycloneDX SBOM narrowed to the
 crates the build compiles (`scripts/release/release-sbom.py`), a symbols archive
-(`split-symbols.sh`), the Homebrew formula and the Linux bottles
-(`homebrew-formula.py`), and attests every archive, SBOM, bottle and `install.sh`
+(`split-symbols.sh`), and attests every archive, SBOM and `install.sh`
 with `actions/attest`, the signer being `release-build.yml`), `release`
 (publishes the assets with the changelog section as the notes), and `smoke`
 (installs the

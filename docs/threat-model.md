@@ -167,8 +167,8 @@ by a reusable workflow that holds no secret and signs the result (SLSA build lev
 checks), the binary is built reproducibly and a job rebuilds it twice and compares
 the bytes (SECURITY.md). Dependabot proposes updates.
 *Residual.* A dependency's release the day it is compromised, before an advisory.
-No Homebrew tap is configured. `release.yml` publishes the formula as a release
-asset and does not write to another repository.
+The release channel publishes verified archives and the installer in this
+repository; it does not generate a package-manager formula or write to a tap.
 
 ### T10. Local resource exhaustion
 

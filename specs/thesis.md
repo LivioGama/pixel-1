@@ -6,7 +6,7 @@ Status: normative. Every other spec answers to this one.
 
 Pixel speeds up coding-agent work by using deterministic mechanisms for steps
 the model should not have to repeat. Its local engine runs inside agent hooks
-and injects the evidence a task needs when it removes a model turn. Retrieval,
+and injects evidence that avoids repeated investigation. Retrieval,
 the graph and the prompt-submit brief form the core; token savings follow from
 less repeated work.
 
@@ -34,8 +34,9 @@ have not yet run.
 
 ## Principles
 
-1. **The unit of value is a removed model turn.** Tokens follow. Retrieval is a
-   means, never the product.
+1. **The value is less repeated agent work.** Measure tool calls, elapsed time,
+   tokens and answer correctness. Removing a model turn is one way to improve
+   that work; retrieval is a means, never the product.
 2. **Push, don't offer.** A capability that matters runs inside a hook at the
    moment it changes the agent's next action, and its *result* is injected. The
    model is never asked whether to call it. A skill exists only as a fallback.
@@ -48,7 +49,7 @@ have not yet run.
    Every error exits 0 with a stderr diagnostic.
 6. **Every claim is metered locally.** Each brief, card and block leaves a
    record; nothing leaves the machine (`metrics.md`).
-7. **Complementary to RTK.** Pixel removes turns. It never filters test, build or
+7. **Complementary to RTK.** Pixel avoids repeated investigation. It never filters test, build or
    diff output.
 8. **Honest about coverage.** An answer states what it could not see
    (`lower_bound`, `Likely` vs `Proved`). "No callers found" never means "none
@@ -64,7 +65,9 @@ have not yet run.
 
 ## Success criteria for v0.1.0
 
-- Arena acceptance (`roadmap.md`): tool calls and tokens no worse than Pixel
-  0.9.0 on Claude Code and Codex, blind grade no worse.
+- Arena evidence (`roadmap.md`): compare pinned Claude Code and Codex trials
+  using tool calls, tokens, elapsed time and answer quality. Historical Pixel
+  results are reference measurements; a release acceptance threshold still
+  needs an explicit maintainer decision.
 - Every host in `hosts.md` installs, relays and uninstalls byte-exact.
 - Edit hooks are shipped off by default and turn on only on a measured gain.

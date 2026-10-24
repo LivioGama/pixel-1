@@ -122,8 +122,8 @@ jobs:
           persist-credentials: false
 
       # The files release-build.yml built and attested: archives, their
-      # .sha256 and SBOMs (.cdx.json), the Linux bottles, pixel.rb,
-      # install.sh, plus the attestation's Sigstore bundle
+      # .sha256 files and SBOMs (.cdx.json), install.sh, and the attestation's
+      # Sigstore bundle
       # (pixel-<tag>.intoto.jsonl).
       - name: Download the release assets
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -155,15 +155,13 @@ jobs:
           # ahead of the latest release, and the documented one-liner reads
           # releases/latest/download/install.sh, so it always runs the
           # script of the release it installs.
-          # assets/pixel-*.tar.gz matches the archives and the Linux
-          # bottles (pixel-*.bottle.tar.gz) alike. pixel-*.intoto.jsonl is
+          # assets/pixel-*.tar.gz matches the archives. pixel-*.intoto.jsonl is
           # the provenance bundle, the file Scorecard's Signed-Releases
           # check looks for. pixel-*.cdx.json is each archive's SBOM, and
           # pixel-*.symbols.tar.xz each binary before stripping.
           files: |
             assets/pixel-*.tar.gz
             assets/pixel-*.tar.gz.sha256
-            assets/pixel.rb
             assets/install.sh
             assets/pixel-*.intoto.jsonl
             assets/pixel-*.cdx.json
@@ -174,7 +172,7 @@ jobs:
   # tagged build. `pixel --version` must print `pixel x.y.z` and `commit:
   # <the tag's commit>` (build.rs embeds it, `-dirty` included) from an empty
   # HOME. Nothing before this job ran the aarch64-apple-darwin binary, and
-  # nothing ran install.sh or the tap formula at all. A failure here comes
+  # nothing ran install.sh. A failure here comes
   # after publication: it cannot unpublish, it says the next patch is due.
   smoke:
     name: Smoke ${{ matrix.target }}

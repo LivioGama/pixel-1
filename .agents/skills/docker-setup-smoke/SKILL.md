@@ -147,14 +147,14 @@ and the residue list, exported before container removal, including on failure.
 Report the tested binary's version and commit separately from the runner checkout
 SHA. Source mode tests fetched upstream code, not uncommitted local changes.
 
-Not covered: macOS (Homebrew on macOS included), shells other than bash,
+Not covered: macOS, shells other than bash,
 interactive setup and agent TUIs, real model inference or a model's compliance.
 
 Prerequisites: a POSIX sh, Git, a running Docker engine with BuildKit (Docker Desktop's
 default) and network access to GitHub, Docker Hub and crates.io, plus Debian or
 Ubuntu mirrors until the smoke image is cached. The image build is not
-time-bounded; bootstrap is bounded to 5 minutes (release, installer), 15 minutes
-(brew) or 30 minutes (source), checks to 5 minutes and agent sessions to 10.
+time-bounded; bootstrap is bounded to 5 minutes (release, installer) or 30 minutes
+(source), checks to 5 minutes and agent sessions to 10.
 `--agents` also needs nodejs.org and the npm registry until its image is cached.
 CPU/memory limits are 4 CPUs/6 GiB.
 On failure inspect the saved evidence and fix the cause before replaying.

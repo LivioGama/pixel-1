@@ -1,9 +1,11 @@
 # Pixel identity and interface inventory
 
-This candidate prepares the RTO rewrite as Pixel. Its source destination is
-<https://github.com/Pixel-CLI/pixel>; the preparation lives in the RTO worktree.
-It does not copy files into the existing Pixel checkout, replace its `.git`,
-publish a release, or change version `0.0.0`.
+The rewrite is now a candidate in
+[Pixel PR #1343](https://github.com/Pixel-CLI/pixel/pull/1343), on
+`codex/pixel-rto-replacement`. Active changes belong to that Pixel branch;
+the RTO preparation is historical provenance, not another required workstream.
+The original Pixel checkout and its Git identity remain intact. This candidate
+does not publish a release or change version `0.0.0`.
 
 Pixel speeds up coding-agent work by having deterministic mechanisms do
 predictable work. Retrieval, the graph and the brief remain the rewrite's core.
@@ -44,9 +46,9 @@ candidate, not an assertion that the previous Pixel engine had the same API.
 | Semantic vector segments | 8-byte `RTOVECS1` magic | 8-byte `PIXVECS1`; header width and offsets stay unchanged |
 | Install/update source | `rto-cli/rto` | `Pixel-CLI/pixel`; release archives/binary paths use Pixel |
 | GitHub Action | `.github/actions/setup-rto` | `.github/actions/setup-pixel`; downloads the Pixel release contract |
-| Homebrew distribution | RTO formula and hardcoded RTO tap publishing | Pixel formula generation; destination publishing must have explicit repository/credential configuration |
+| Distribution | The historical source included formula/tap machinery | Release archives, installer and source builds remain; formula/bottle generation and publication are removed |
 | CI and release machinery | RTO package/path/artifact selectors | Pixel selectors; no release, package publication or merge is performed by this preparation |
-| Website and examples | RTO active copy, commands and links | Pixel active identity; repository URL is canonical until a public site is configured; historical media remains labeled |
+| Website and examples | RTO active copy, commands and links | Existing Pixel site at `https://pixel-cli.dev/` and README retained, with explicit install-channel corrections; historical media remains labeled |
 | Provenance | Pixel source `e8fd304`, RTO contributors, measured historical runs | Preserved; renaming a product does not change authorship, source revision or measured evidence |
 
 ## State and upgrade boundary
@@ -83,9 +85,11 @@ These changes do not bring back the previous engine's architecture, CLI or
 removed workflows. Historical checkpoint timing/memory numbers are not new
 measurements of this candidate.
 
-## Validation evidence (2026-10-24)
+## Historical source-preparation evidence (2026-10-24)
 
-Source preparation is complete; full validation has not been obtained.
+The following records the source preparation before the Pixel import. It is
+not validation of subsequent Pixel PR revisions. Current import and validation
+evidence belongs to `docs/imports/rto-pixel-2026-10-24.md` and Pixel PR #1343.
 
 - `rtk cargo fmt --all -- --check`: exit 0.
 - `rtk cargo metadata --no-deps --locked --format-version 1`: eleven Pixel
@@ -129,10 +133,17 @@ block. The candidate is not approved for release by these checks.
   parity nor a speedup over the previous Pixel engine is established.
 - Historical screenshots/animations do not verify the renamed interface.
 
-The install/update URLs describe future Pixel artifacts. They require a release
-with this generation's layout; existing older Pixel releases do not prove that
-contract. Homebrew tap publishing and project-board automation remain unconfigured
-until the destination resources and permissions are established.
+The install/update URLs require a release with this generation's layout;
+existing older Pixel releases do not prove that contract. This candidate removes
+the package-manager distribution channel. Pixel has an existing project board,
+but the previous board-sync workflow is not restored.
 
-No files in `/Users/livio/Documents/pixel` are part of this change. Final source
-replacement while preserving that checkout's Git identity is a later action.
+Arena is restored as a developer skill and adapted to this engine. Pixel Retro
+remains outside the core: its future diagnostics belong to
+[pixel-recall#2](https://github.com/Pixel-CLI/pixel-recall/issues/2). Conversation
+recall stays in that plugin; semantic search over code stays in the engine.
+Task/task-state and the removed retrieval benchmarks remain absent.
+
+The replacement lives in an isolated Pixel worktree. The original checkout at
+`/Users/livio/Documents/pixel` and its checkpoint commits are unchanged; no main
+push, release or HOME installation is part of this work.

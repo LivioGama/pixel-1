@@ -18,7 +18,7 @@ Publish a reviewable candidate promptly; required gates run in CI.
 - [ ] `cargo nextest run --workspace --profile ci` and `cargo test --workspace --doc` exit 0.
 - [ ] `cargo deny check` exits 0; a new advisory exception carries its reason and is repeated in `osv-scanner.toml` (`python3 scripts/ci/check-advisory-ignores.py`).
 - [ ] New behaviour has a test that fails if the behaviour is removed.
-- [ ] Every new source file (`.rs`, `.py`, `.sh`, `.ts`, `.js`, `Cargo.toml`, a workflow) opens with `SPDX-FileCopyrightText: The RTO contributors` and `SPDX-License-Identifier: MIT`; `python3 scripts/ci/check-spdx.py --fix` adds them.
+- [ ] Every new source file (`.rs`, `.py`, `.sh`, `.ts`, `.js`, `Cargo.toml`, a workflow) opens with `SPDX-FileCopyrightText: The Pixel contributors` and `SPDX-License-Identifier: MIT`; `python3 scripts/ci/check-spdx.py --fix` adds them. Historical files imported from RTO retain their original attribution.
 - [ ] A `.github/changelog.d/<slug>.<section>.md` fragment carries the entry (skip for pure refactors, CI/deps chores and website-only changes), opening on its scope (`**graph:** …`), under 500 bytes.
 - [ ] Conventional Commits; branch from an up-to-date `main`; the PR targets `main`.
 - [ ] The change implements a section of a spec in `specs/` and the PR body cites it. A behaviour change edits the spec in the same PR.

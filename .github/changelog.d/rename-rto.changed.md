@@ -1,1 +1,0 @@
-**all:** renamed from RTG to RTO, Rust Token Obliteration: the `rto` binary and `rto-*` crates, `.rto/`, `~/.rto/`, `RTO_*` variables, `[RTO:*]` hook markers, `rto-plugin.toml`, `.rtopack`. v0.1.0 was never released, so nothing migrates; a graph database written under the old name is not opened (`application_id` "RTGG" is now "RTOG").

@@ -16,40 +16,43 @@ issues (an epic plus one per milestone).
 | M6 | `pixel-setup`: host table, `pixel hook` (prompt, post-tool, relays), Claude/Codex/Devin/Gemini/Antigravity, the pi package, OpenCode plugin, skill deployment, install/uninstall/doctor, receipt-backed ownership |
 | M7 | `EditCheck`/`StopCheck` and edit-input parsers (off by default), `pixel metrics`, the edit-task A/B |
 | M8 | classify (all engines, `pixel config` keys, skill, pi tools), plugin host CLI and plugin skills, workspace and index pack/unpack |
-| M9 | install.sh, release workflows (SLSA, SBOM), Homebrew formula, `setup-pixel` action, README, SECURITY and threat model, website W4, arena acceptance → `v0.1.0` |
+| M9 | install.sh, release workflows (SLSA, SBOM), `setup-pixel` action, README, SECURITY and threat model, website W4, release evidence → `v0.1.0` |
 
 ## Implementation status
 
-M0–M8 are merged. M9's machinery (release workflows, `check-release`, install
-script, Homebrew formula, `setup-pixel` action, README, SECURITY, threat model,
-website, Pages) is merged and exercised in CI; `v0.1.0` waits on the arena
-acceptance below. Deliberate departures from the sequencing table:
+The candidate contains the M0–M8 implementation and M9 machinery (release
+workflows, `check-release`, install script, `setup-pixel` action, README,
+SECURITY, threat model and website). Publication of this Pixel PR is not a
+merge, release or successful CI run. Deliberate departures from the sequencing table:
 
 - M3's `semantic` feature is Model2Vec only and off by default (`specs/semantic.md`).
 - M2's concept extractors became `pixel find-code`, which ranks lines of the text
   index by kind and keeps no concept table (`specs/graph.md`).
 - The edit hooks stay off by default until the edit-task A/B below.
 
-The website track W1–W4 runs alongside (W2 from M1, W3 page by page as specs
-land, W4 with M9). The domain, palette and type are decisions for the
-maintainer, taken in the W2 artifact vote.
+The existing Pixel website, domain, palette and type are retained. This
+candidate updates only installation statements affected by explicit product decisions.
 
-## Acceptance for v0.1.0 (run by the maintainer, nothing committed)
+## Comparative evidence and release acceptance
 
 No comparative run has been completed for this rewrite. Renaming the product
 does not establish performance parity or change the historical baseline.
+An existing comparative run may be cited for the exact versions it measured;
+this transformation does not require another benchmark campaign. Its final
+execution check must identify and exercise the published Pixel head rather
+than substitute an older binary's results.
 
-Pixel's 13-question arena (`.agents/skills/arena` in the Pixel repository) runs
-with a scratchpad `pixel` shim passed as `--pixel-bin`; the shim maps
-`run-hook task-event --provider P --event prompt-submit [--part K/N]` to
-`pixel hook prompt-submit --host P …`, `prepare-repo` to `pixel prepare`, and
-`build-index --history` to `pixel prepare --history`. Claude Code and Codex, three
-repetitions each, on ripgrep at `3fce3b5`.
+The restored `.agents/skills/arena/` orchestrates Claude Code and Codex trials
+against the current Pixel command and hook contracts. Follow that skill's
+bounded cases and explicit binary selection; the previous engine and a legacy
+command shim are not prerequisites.
 
-**Bar:** tool calls and provider-reported tokens no worse than Pixel 0.9.0
-(Claude 59 calls / 4.10M tokens, Codex 32 / 1.50M), blind grade no worse (2.85 /
-2.95). Each number is reported with its run identity and the command beside it
-(`measuring.md`). Edit hooks additionally run an edit-task set (signature change
+Record tool calls, provider-reported tokens, elapsed time and answer quality
+with pinned prompts, repository revision, binary identity and commands
+(`measuring.md`). The historical Pixel 0.9.0 figures remain evidence for their
+original sample, not a release threshold for this candidate. Selecting a
+representative comparison set and release acceptance thresholds remains a
+maintainer decision. Edit hooks additionally run an edit-task set (signature change
 with N callers, remove a parameter, rename a field): arms vanilla, brief, brief +
 edit; they default on only on a correctness or turn gain.
 

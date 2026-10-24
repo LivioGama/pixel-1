@@ -175,14 +175,6 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      # pixel.rb and the two Linux bottles: the musl binary laid out as a keg,
-      # which Homebrew pours where a formula without a bottle would need a C
-      # compiler. The script checks each archive against its .sha256 and is
-      # held by scripts/test-pixel-homebrew-formula.py, which CI runs on every pull
-      # request that touches it, so this step changes without a tag.
-      - name: Generate the Homebrew formula and the Linux bottles
-        run: python3 scripts/release/homebrew-formula.py "${GITHUB_REF#refs/tags/}" artifacts .
-
       # The SBOM glob below would sign an empty set without complaint: a
       # build job that uploaded its archive without its SBOM stops here.
       - name: Check every archive has its SBOM
@@ -195,8 +187,8 @@ jobs:
           done
 
       # SLSA build provenance for what a user downloads and runs: each
-      # archive, each Linux bottle Homebrew pours, and install.sh, which the
-      # README pipes into sh, plus each archive's SBOM, so the SBOM a user
+      # archive, its SBOM, and install.sh, which the README pipes into sh,
+      # so the SBOM a user
       # reads is provably the one this workflow wrote for that tag. The
       # .sha256 files ship beside the archives in the same release, so they
       # prove the download was not corrupted, never who built it; an
@@ -213,7 +205,6 @@ jobs:
             artifacts/pixel-*.tar.gz
             artifacts/pixel-*.cdx.json
             artifacts/pixel-*.symbols.tar.xz
-            pixel-*.bottle.tar.gz
             scripts/release/install.sh
 
       # Everything release.yml publishes, in one artifact: the attested
@@ -232,7 +223,7 @@ jobs:
           mkdir release-assets
           cp artifacts/pixel-*.tar.gz artifacts/pixel-*.tar.gz.sha256 \
             artifacts/pixel-*.cdx.json artifacts/pixel-*.symbols.tar.xz \
-            pixel-*.bottle.tar.gz pixel.rb scripts/release/install.sh \
+            scripts/release/install.sh \
             release-assets/
           if [ ! -s "$BUNDLE" ]; then
             echo "::error::actions/attest left no bundle at '$BUNDLE'; the release would ship without its provenance file"

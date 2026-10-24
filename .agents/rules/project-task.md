@@ -6,9 +6,10 @@ understands.
 
 - **The task comes first.** Before starting any work — a fix, a feature, a
   rule, a docs pass — check this repository's issues for one covering it. When
-  none exists, open one and link the pull request to it. A project board has
-  not been configured for this repository; a task-out-of-band conversation
-  note is not tracking.
+  none exists, open one and link the pull request to it. Pixel has an existing
+  [project board](https://github.com/users/LivioGama/projects/3/views/1); this
+  candidate does not include its previous board-sync workflow. A conversation
+  note is not tracking, and a board status is not proof that a change merged.
 - **The PR body opens with `Closes #<number>`.** That closing keyword (or
   `Fixes` / `Resolves`) links the pull request to the issue: GitHub lists it
   under the issue's Development section and closes the issue when the PR
