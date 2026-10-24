@@ -231,12 +231,26 @@ fn selected_should_keep_only_listed_ids_and_drop_skipped_ones() {
 /// with the same letters.
 #[test]
 fn selected_should_treat_a_group_selector_as_every_check_of_that_group() {
+    let expected_home = [
+        "install.claude-hooks",
+        "install.codex-hooks",
+        "install.codex-hook-review",
+        "install.devin",
+        "install.gemini",
+        "install.antigravity",
+        "install.opencode",
+        "install.pi-package",
+        "install.skill",
+    ];
     let home: Vec<&str> = CHECKS
         .iter()
         .map(|spec| spec.id)
         .filter(|id| id.starts_with("install."))
         .collect();
-    assert_eq!(home.len(), 10, "the install group as catalogued");
+    assert_eq!(
+        home, expected_home,
+        "the exact install group in the catalogue"
+    );
     let skip = ids(&["install.*"]);
     for spec in CHECKS {
         assert_eq!(

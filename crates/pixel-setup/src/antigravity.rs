@@ -1053,13 +1053,20 @@ mod tests {
 
         install_gemini_hooks(home.path(), Path::new("/opt/pixel's tools/pixel"), false).unwrap();
 
-        let installed: Value = serde_json::from_slice(&fs::read(settings).unwrap()).unwrap();
+        let installed: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
         let groups = installed["hooks"]["BeforeAgent"].as_array().unwrap();
         assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0]["matcher"], "*");
+        assert_eq!(groups[0]["hooks"].as_array().unwrap().len(), 2);
         assert_eq!(
             groups[0]["hooks"][0]["command"],
             "/opt/notpixel hook prompt-submit --host gemini"
         );
+        assert_eq!(
+            groups[0]["hooks"][1]["command"],
+            "'/usr/bin/pixel' run-hook task-event --provider gemini --event prompt-submit"
+        );
+        assert_eq!(groups[1]["hooks"].as_array().unwrap().len(), 1);
         assert_eq!(
             groups[1]["hooks"][0]["command"],
             "'/opt/pixel'\\''s tools/pixel' hook prompt-submit --host gemini || true"
@@ -1077,7 +1084,6 @@ mod tests {
             events,
             ["AfterAgent", "AfterTool", "BeforeAgent", "SessionStart"]
         );
-        assert!(!installed.to_string().contains("pixel"));
         assert!(
             installed["hooks"]["SessionStart"][0]
                 .get("matcher")
@@ -1085,6 +1091,13 @@ mod tests {
         );
         assert!(installed["hooks"]["AfterAgent"][0].get("matcher").is_none());
         assert_eq!(installed["hooks"]["AfterTool"][0]["matcher"], "*");
+
+        install_gemini_hooks(home.path(), Path::new("/opt/pixel's tools/pixel"), false).unwrap();
+        let repeated: Value = serde_json::from_slice(&fs::read(settings).unwrap()).unwrap();
+        assert_eq!(
+            repeated, installed,
+            "reinstall preserves foreign and Pixel hooks"
+        );
     }
 
     #[cfg(unix)]

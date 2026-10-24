@@ -232,7 +232,7 @@ fn remove_puts_every_file_back_byte_for_byte_and_leaves_no_trace() {
 }
 
 #[test]
-fn a_pixel_install_is_taken_out_so_both_never_inject() {
+fn setup_should_preserve_legacy_pixel_hooks_and_remain_idempotent() {
     let fixture = project();
     configured_home(&fixture);
     let home = home(&fixture);
@@ -247,19 +247,55 @@ fn a_pixel_install_is_taken_out_so_both_never_inject() {
     );
     let pixel_skill = home.join(".claude/skills/pixel/SKILL.md");
     write(&pixel_skill, "---\nname: pixel\n---\nmine, edited\n");
+    let edited_skill = std::fs::read(&pixel_skill).unwrap();
 
     let output = fixture.run(&["setup", "--agent", "claude"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let claude = read(&home.join(".claude/settings.json"));
-    assert!(!claude.contains("pixel"), "{claude}");
-    assert!(claude.contains("user-check"));
-    assert!(claude.contains("hook prompt-submit --host claude --part 1/3"));
-    assert!(pixel_skill.is_file(), "an edited Pixel skill is the user's");
     assert!(
-        stdout(&output).contains("🟨 migration.skill"),
-        "and is reported: {}",
+        claude.contains(pixel_prompt),
+        "legacy Pixel hook is preserved: {claude}"
+    );
+    assert_eq!(claude.matches("user-check").count(), 1, "{claude}");
+    assert_eq!(
+        claude
+            .matches("hook prompt-submit --host claude --part 1/3")
+            .count(),
+        1,
+        "the current Pixel hook is installed once: {claude}"
+    );
+    assert!(pixel_skill.is_file(), "the installed skill remains present");
+    assert!(
+        !stdout(&output).contains("migration.skill"),
+        "legacy skill migration warning is absent: {}",
         stdout(&output)
     );
+    let backups = || {
+        std::fs::read_dir(pixel_skill.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".pixel-bak."))
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>()
+    };
+    let first_backups = backups();
+    assert_eq!(first_backups.len(), 1, "one edited skill backup");
+    assert_eq!(std::fs::read(&first_backups[0]).unwrap(), edited_skill);
+
+    let first: Value = serde_json::from_str(&claude).unwrap();
+    let repeated = fixture.run(&["setup", "--agent", "claude"]);
+    assert!(repeated.status.success(), "{}", stderr(&repeated));
+    let second: Value = serde_json::from_str(&read(&home.join(".claude/settings.json"))).unwrap();
+    assert_eq!(
+        second, first,
+        "reinstall does not rewrite or duplicate hooks"
+    );
+    assert_eq!(
+        backups(),
+        first_backups,
+        "reinstall does not replace the backup"
+    );
+    assert_eq!(std::fs::read(&first_backups[0]).unwrap(), edited_skill);
 }
 
 #[test]
