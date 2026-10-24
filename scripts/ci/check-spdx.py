@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: The Pixel contributors
+# SPDX-FileCopyrightText: The RTO contributors
 # SPDX-License-Identifier: MIT
 """Fail when a tracked source file lacks its SPDX copyright and license lines.
 
@@ -7,7 +7,7 @@ OpenSSF Best Practices (gold: copyright_per_file, license_per_file) asks for
 a copyright and a license statement in each source file. Every file in scope
 carries, near its top (after a shebang when it has one):
 
-    SPDX-FileCopyrightText: The Pixel contributors
+    SPDX-FileCopyrightText: The RTO contributors
     SPDX-License-Identifier: MIT
 
 in its language's line comment. The scope is the code and build definitions
@@ -25,8 +25,14 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 
-COPYRIGHT = "SPDX-FileCopyrightText: The Pixel contributors"
+COPYRIGHT = "SPDX-FileCopyrightText: The RTO contributors"
 LICENSE = "SPDX-License-Identifier: MIT"
+# These files retain their original Pixel attribution with the preserved site.
+PIXEL_ATTRIBUTION = {
+    ".github/workflows/pages.yml",
+    "website/og/render.sh",
+    "docs/motion/prompt-submit/render-recording.ts",
+}
 
 # The comment leader for each suffix in scope.
 SUFFIXES = {
@@ -117,7 +123,10 @@ def main(argv):
         if not file.is_file() or file.is_symlink():
             continue
         text = file.read_text(encoding="utf-8")
-        if has_header(text):
+        if has_header(text) or (
+            path in PIXEL_ATTRIBUTION
+            and has_header(text.replace("SPDX-FileCopyrightText: The Pixel contributors", COPYRIGHT, 1))
+        ):
             continue
         if fix:
             file.write_text(with_header(text, mark), encoding="utf-8")

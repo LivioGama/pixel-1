@@ -1,6 +1,6 @@
 ---
 name: docker-setup-smoke
-description: Replay Pixel's new-user setup in Docker without an LLM — install through a release archive, install.sh, the Homebrew tap, or sources from main, a PR head or a pinned commit; then personal Claude/Codex/pi settings kept, idempotent reinstall, first pixel audit, doctor and --fix, project install, disabled classify and uninstall; with --agents, Claude Code, Codex and pi sessions against a scripted fake model show whether each receives the Pixel prompt, runs pixel and routes grep. Use for Linux setup smoke checks, not macOS behavior or real model inference.
+description: Replay Pixel's new-user setup in Docker without an LLM — install through a release archive, install.sh, or sources from main, a PR head or a pinned commit; then personal Claude/Codex/pi settings kept, idempotent reinstall, first pixel audit, doctor and --fix, project install, disabled classify and uninstall; with --agents, Claude Code, Codex and pi sessions against a scripted fake model show whether each receives the Pixel prompt, runs pixel and routes grep. Use for Linux setup smoke checks, not macOS behavior or real model inference.
 ---
 
 # Docker setup smoke
@@ -17,8 +17,6 @@ sh .agents/skills/docker-setup-smoke/scripts/run.sh
 sh .agents/skills/docker-setup-smoke/scripts/run.sh v0.6.1
 # The published install.sh, into a dedicated directory:
 sh .agents/skills/docker-setup-smoke/scripts/run.sh --installer
-# The Homebrew tap on Linuxbrew:
-sh .agents/skills/docker-setup-smoke/scripts/run.sh --brew
 # Compile current upstream main:
 sh .agents/skills/docker-setup-smoke/scripts/run.sh --source main
 # Compile a PR's head, including a fork PR (not GitHub's merge ref):
@@ -37,16 +35,6 @@ sh .agents/skills/docker-setup-smoke/scripts/run.sh --agents --source main
   the test user with `PIXEL_INSTALL_DIR=$HOME/opt/pixel/bin`. The installer
   always resolves the latest release, so this mode tests whatever that is on the
   day; `binary-version.txt` and `installer.log` record which one.
-- **`--brew`**: `brew install LivioGama/tap/pixel` in the pinned `homebrew/brew`
-  image, latest formula. Homebrew's prefix is private to its `linuxbrew` user, so
-  that user runs the checks; uninstall must leave the Cellar binary to Homebrew.
-  `brew-deps.txt` lists what the formula pulled in, and `brew-host.txt` whether
-  Homebrew judges the host's glibc or libstdc++ older than its CI's: then it gives
-  every formula, bottled or not, an implicit `gcc` and `glibc`. A control formula
-  with no dependency (`local/smoke/control`) measures what the host adds
-  (`brew-host-deps.txt`); a dependency of pixel beyond it fails the run. The image
-  (Ubuntu 22.04, glibc 2.35) is such a host: its 12 are the control's, and a `NOTE`
-  says so.
 - **Source** (`--source`, `--pr`): fetch from `https://github.com/Pixel-CLI/pixel.git`
   inside the container, check out the fetched commit detached, and build with
   pinned Rust 1.98.1, `--locked --no-default-features --features model2vec`, debug
@@ -77,7 +65,7 @@ sh .agents/skills/docker-setup-smoke/scripts/run.sh --agents --source main
    project uninstall restores `AGENTS.md` byte for byte.
 8. Global uninstall restores the personal JSON files to equal values and the
    text files byte for byte, removes the prompt and a binary pixel owns (not a
-   Homebrew one), and a second uninstall succeeds.
+   and a second uninstall succeeds.
 9. Files left behind that the user did not have before are listed in
    `residue.txt` and counted in a `NOTE` line, not failed. Its `*.pixel-bak.*`
    files must be exactly those the last uninstall's `backups` step names in its

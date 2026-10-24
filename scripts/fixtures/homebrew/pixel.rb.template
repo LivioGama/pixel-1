@@ -1,8 +1,8 @@
 class Pixel < Formula
   desc "Local control layer for coding agents — deterministic retrieval + git engine"
-  homepage "https://pixel-cli.dev/"
-  # Homebrew validates a URL for every simulated OS/arch at tap
-  # time; the per-target URLs in the on_* blocks are the ones
+  homepage "https://github.com/Pixel-CLI/pixel"
+  # Homebrew validates a URL for every simulated OS/arch; the per-target URLs
+  # in the on_* blocks are the ones
   # actually used. This top-level URL satisfies the check.
   url "https://github.com/Pixel-CLI/pixel/releases/download/v9.8.7/pixel-v9.8.7-aarch64-apple-darwin.tar.gz"
   sha256 "{MAC}"
@@ -20,7 +20,7 @@ class Pixel < Formula
   on_macos do
     on_intel do
       # No prebuilt Intel binary; refuse rather than install the
-      # arm64 tarball. Build from source: cargo build --release -p pixel-cli
+      # arm64 tarball. Build from source: cargo build --release -p pixel
       depends_on arch: :arm64
     end
 

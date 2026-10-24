@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: The Pixel contributors
+# SPDX-FileCopyrightText: The RTO contributors
 # SPDX-License-Identifier: MIT
 
 """Write the Homebrew formula of a release and its Linux bottles.
@@ -10,7 +10,7 @@
 as the build job uploads them (`pixel-<tag>-<target>.tar.gz`). The script
 writes into `<out-dir>`:
 
-- `pixel.rb`, the formula `LivioGama/homebrew-tap` serves;
+- `pixel.rb`, a formula that can be installed directly from the release asset;
 - `pixel-<version>.arm64_linux.bottle.tar.gz` and
   `pixel-<version>.x86_64_linux.bottle.tar.gz`, uploaded beside the archives.
 
@@ -111,9 +111,9 @@ def formula(tag: str, base: str, digests: dict, bottles: dict) -> str:
     mac = digests["aarch64-apple-darwin"]
     return f'''class Pixel < Formula
   desc "Local control layer for coding agents — deterministic retrieval + git engine"
-  homepage "https://pixel-cli.dev/"
-  # Homebrew validates a URL for every simulated OS/arch at tap
-  # time; the per-target URLs in the on_* blocks are the ones
+  homepage "https://github.com/Pixel-CLI/pixel"
+  # Homebrew validates a URL for every simulated OS/arch; the per-target URLs
+  # in the on_* blocks are the ones
   # actually used. This top-level URL satisfies the check.
   url "{url}/{archive_name(tag, "aarch64-apple-darwin")}"
   sha256 "{mac}"
@@ -130,7 +130,7 @@ def formula(tag: str, base: str, digests: dict, bottles: dict) -> str:
   on_macos do
     on_intel do
       # No prebuilt Intel binary; refuse rather than install the
-      # arm64 tarball. Build from source: cargo build --release -p pixel-cli
+      # arm64 tarball. Build from source: cargo build --release -p pixel
       depends_on arch: :arm64
     end
 

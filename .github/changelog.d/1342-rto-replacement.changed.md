@@ -1,0 +1,1 @@
+**core:** Replace the previous Pixel engine with the deterministic rewrite developed as RTO, retaining the Pixel name, README and website. Historical CLI/API compatibility is not guaranteed; the candidate has not passed comparative acceptance or full CI.

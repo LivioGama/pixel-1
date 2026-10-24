@@ -1,5 +1,5 @@
 name: Bug report
-description: Something Pixel does is wrong, crashes, or differs from the docs.
+description: Something PIXEL does is wrong, crashes, or differs from the docs.
 labels: ["bug"]
 body:
   - type: markdown
@@ -36,7 +36,7 @@ body:
     id: platform
     attributes:
       label: Platform and install method
-      placeholder: macOS 15 arm64, install.sh / Linux x86_64, Homebrew tap / built from source
+      placeholder: macOS 15 arm64, install.sh / Linux x86_64, Homebrew formula asset / built from source
     validations:
       required: true
   - type: input

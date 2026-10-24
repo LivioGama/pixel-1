@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: The Pixel contributors
+// SPDX-FileCopyrightText: The RTO contributors
 // SPDX-License-Identifier: MIT
 
 //! The digest a trust record binds to: every file of a plugin directory.
@@ -119,7 +119,7 @@ mod tests {
         let first = dir_digest(dir.path()).unwrap();
         assert_eq!(
             first,
-            "2352c280cf9f346e771570051cfe715a9dce4363f1af9376af12068816c4e09d"
+            "a8e80f81d6daae7bded2d9915678c82f17698a0482cae6d8635301b0c3f92a22"
         );
         assert_eq!(first.len(), 64);
         assert!(
