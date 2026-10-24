@@ -1658,13 +1658,6 @@ fn pack_evidence(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, dea
         .map(|hit| hit.path.clone())
         .chain(brief.defined.iter().map(|hit| hit.path.clone()))
         .chain(brief.reads.iter().map(|read| read.path.clone()))
-        .chain(
-            brief
-                .excerpts
-                .iter()
-                .filter(|excerpt| !excerpt.path.is_empty())
-                .map(|excerpt| excerpt.path.clone()),
-        )
         .collect();
     let steps::Outcome {
         lead,

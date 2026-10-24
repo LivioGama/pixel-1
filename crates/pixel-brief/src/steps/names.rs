@@ -343,7 +343,7 @@ fn modules(ctx: &Ctx, files: &[String]) -> Vec<Block> {
 }
 
 /// The first line per source file that imports one of `names`, in path order,
-/// tests and files the brief already points at left out.
+/// tests left out.
 fn module_references(ctx: &Ctx, files: &[String], names: &[&str]) -> Vec<(String, usize, String)> {
     let alternation: Vec<String> = names.iter().map(|name| regex::escape(name)).collect();
     let pattern = alternation.join("|");
@@ -351,7 +351,6 @@ fn module_references(ctx: &Ctx, files: &[String], names: &[&str]) -> Vec<(String
         return Vec::new();
     };
     let tracked: BTreeSet<&str> = files.iter().map(String::as_str).collect();
-    let already_shown: BTreeSet<&str> = ctx.near.iter().map(String::as_str).collect();
     let mut refs: Vec<(String, usize, String)> = Vec::new();
     for row in &rows.hits {
         let Some(text) = row.text.as_deref() else {
@@ -362,7 +361,6 @@ fn module_references(ctx: &Ctx, files: &[String], names: &[&str]) -> Vec<(String
         };
         if is_source(&row.path)
             && tracked.contains(row.path.as_str())
-            && !already_shown.contains(row.path.as_str())
             && !TEST_PATH.is_match(&row.path)
             && MODULE_REFERENCE.is_match(text)
             && refs.iter().all(|(path, ..)| *path != row.path)

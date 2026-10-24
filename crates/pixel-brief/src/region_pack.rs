@@ -1462,7 +1462,8 @@ pub(crate) fn build(
         // own block stays, as every other rule leaves it (#62).
         base.retain(|candidate| {
             candidate.part != Part::Locator
-                || input.exempt.iter().any(|own| own == candidate.block.head())
+                || (input.exempt.iter().any(|own| own == candidate.block.head())
+                    && !candidate.block.head().contains(" — source reference to "))
                 || !overlaps(&taken, &candidate.block)
         });
         if ladder.is_empty() {
@@ -3706,6 +3707,31 @@ mod tests {
         let pack = built(&with, &repo()).unwrap();
         assert!(heads(&pack).iter().any(|h| h == head), "{:?}", heads(&pack));
         assert_eq!(pack.located(), 1);
+    }
+
+    #[test]
+    fn source_references_should_be_removed_only_when_their_ranges_overlap_the_pack() {
+        let overlapping = "src/main.rs:4-4 — source reference to SEARCH_DEFAULT_ROWS";
+        let disjoint = "src/main.rs:7-7 — source reference to SEARCH_DEFAULT_ROWS";
+        let mut repo = repo();
+        repo.sources
+            .iter_mut()
+            .find(|(path, _)| path == "src/main.rs")
+            .expect("the main source exists")
+            .1
+            .push("use api::SEARCH_DEFAULT_ROWS;".to_string());
+        let mut with = input(1);
+        with.locators = vec![
+            located(overlapping, "4|     let rows = SEARCH_DEFAULT_ROWS;"),
+            located(disjoint, "7| use api::SEARCH_DEFAULT_ROWS;"),
+        ];
+        with.exempt = vec![overlapping.to_string(), disjoint.to_string()];
+
+        let pack = built(&with, &repo).unwrap();
+        let shown = heads(&pack);
+
+        assert!(!shown.iter().any(|head| head == overlapping), "{shown:?}");
+        assert!(shown.iter().any(|head| head == disjoint), "{shown:?}");
     }
 
     #[test]

@@ -147,23 +147,6 @@ fn a_question_about_modules_gets_the_module_and_the_lines_that_import_it() {
         shown[1],
         "### src/main.rs:1-1 — source reference to search_worker\n1| use crate::search_worker::Worker;"
     );
-
-    let shown_with_existing_import = ask(
-        &repo,
-        "which files depend on the search worker module",
-        QuestionKind::Config,
-        &["src/main.rs"],
-    );
-    assert_eq!(
-        shown_with_existing_import.len(),
-        1,
-        "{shown_with_existing_import:?}"
-    );
-    assert!(
-        shown_with_existing_import[0]
-            .starts_with("### src/search_worker.rs:1-24 — module named by the prompt"),
-        "{shown_with_existing_import:?}"
-    );
 }
 
 #[test]
