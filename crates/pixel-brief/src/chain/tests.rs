@@ -2155,7 +2155,7 @@ fn a_strong_prompt_should_never_ask_the_relevance_probe_or_the_meaning_search() 
         seen.calls()
     );
     assert_eq!(finished.record.signal, Some("strong"));
-    assert_eq!(finished.record.gate, "open");
+    assert_eq!(finished.record.gate, "unjudged");
     assert!(!finished.record.enforced);
     assert_eq!(finished.record.score, None);
 }
@@ -2697,7 +2697,7 @@ fn a_weak_prompt_with_only_a_meaning_lead_should_show_it_without_a_confidence_li
     );
     assert!(!text.contains("confidence"), "{text}");
     assert!(text.contains("\ncoverage: 1/2 ops answered\n"), "{text}");
-    assert_eq!(finished.record.gate, "unjudged");
+    assert_eq!(finished.record.gate, "open");
     assert_eq!(finished.record.score, None);
 }
 
