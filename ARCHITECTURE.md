@@ -1270,8 +1270,13 @@ skipped unless asked. A code-shaped prompt that resolved `defined:` reads the
 definition's range, then its callers' declarations, then the best chunk of the
 top fused files. Its ZERO step (one unambiguous definition of at most 40 lines shown as the answer, `answer::STRONG_ZERO`) is off: 1 of 2 firings was right on dev. The typed text loses its links (`strip_urls`) before the signal is decided, so a pasted `utm_source` is not a code identifier. Ranges come from lines actually read at HEAD, never from a
 credential-shaped path.
-`scripts/bench/bench-brief-excerpt.py` measures excerpt@1 and `scripts/bench/bench-brief-spans.py` the
-ZERO precision and the share of gold spans inside the `read:` ranges. A packet cut by the budget carries neither receipt nor excerpt; one with only an unresolved note keeps them but never the directive. A rationale question gets no excerpt. Config routing needs an
+`scripts/bench/bench-brief-excerpt.py` measures excerpt@1. `scripts/bench/bench-brief-spans.py` retains
+the legacy ZERO/read-range overlap counts and measures annotated-reference file/line precision,
+recall and F0.5 from numbered source actually delivered, overall and by question shape. Suggested
+reads earn no source credit; the pinned annotations are not exhaustive relevance judgments.
+Before retrieval, the scorer rejects annotations outside tracked source files or their
+line bounds in the clean pinned fixture; results identify both input files by SHA-256.
+A packet cut by the budget carries neither receipt nor excerpt; one with only an unresolved note keeps them but never the directive. A rationale question gets no excerpt. Config routing needs an
 explicit cue (config, setting, env, flag, option, default), not `install` or
 `hook`. That
 block's cap is `PROSE_BRIEF_BYTES` (3584, under OpenCode's 4000-byte plugin
@@ -1310,7 +1315,10 @@ that use it with their call sites and the tests that reach it through them,
 and its tests by name with the first assertion (the first three with their
 bodies). A block is cut at a line, never across parts. The detail of each
 symbol rises (two lines around a site, a neighbourhood, the whole function,
-the neighbours of a constant) while every block still fits. The text may
+the neighbours of a field or value) while every block still fits. Constant
+definitions keep their declaration and attached documentation at every detail
+level; their usage evidence can still expand. Pack and probe budgets reserve
+room for the final skill line appended by the chain. The text may
 exceed one hook's 10 000-character cap: `Pack::text` is the whole of it and
 `split_parts` cuts it at block boundaries into parts of `PART_CHARS` (9 800)
 characters, at most `MAX_PARTS` (8). The count is the `brief_parts`
