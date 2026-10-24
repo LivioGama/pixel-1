@@ -186,8 +186,8 @@ fn configured_classifier_runs_once_for_a_cached_split_prompt_and_journals_its_ve
                         &["prompt-submit", "--host", "claude", "--part", part],
                         payload,
                         &[
-                            ("Pixel_REMOTE_BASE", base),
-                            ("Pixel_BRIEF_TEST_PAD_PARTS", "3"),
+                            ("PIXEL_REMOTE_BASE", base),
+                            ("PIXEL_BRIEF_TEST_PAD_PARTS", "3"),
                         ],
                     )
                 })
@@ -252,7 +252,7 @@ fn classify_kill_switch_skips_the_provider_call() {
             "classifier-off",
             "Explain how the list of posts works",
         ),
-        &[("Pixel_REMOTE_BASE", &base)],
+        &[("PIXEL_REMOTE_BASE", &base)],
     );
     assert!(output.status.success(), "{}", stderr(&output));
     stop.store(true, Ordering::Relaxed);
@@ -286,7 +286,7 @@ fn classifier_skips_nonhuman_envelopes_but_keeps_human_acknowledgements_eligible
             &fixture,
             &["prompt-submit", "--host", "claude"],
             &prompt_payload(&fixture, &format!("envelope-{index}"), prompt),
-            &[("Pixel_REMOTE_BASE", &base)],
+            &[("PIXEL_REMOTE_BASE", &base)],
         );
         assert!(output.status.success(), "{}", stderr(&output));
     }
