@@ -1315,7 +1315,7 @@ mod tests {
     }
 
     #[test]
-    fn a_brief_for_a_prompt_that_asks_nothing_about_code_is_declined_with_a_reason() {
+    fn a_brief_without_intent_fails_open_for_a_non_code_prompt() {
         let (_dir, mut service) = project();
         let response = ask(
             &mut service,
@@ -1323,9 +1323,13 @@ mod tests {
         );
         assert!(response.ok);
         let value = data(&response);
-        assert_eq!(value["text"], Value::Null);
-        assert_eq!(value["declined"], "not_about_code");
-        assert_eq!(value["record"]["gate"], "declined");
+        assert!(
+            value["text"]
+                .as_str()
+                .is_some_and(|text| text.starts_with("[PIXEL:BRIEF]\n"))
+        );
+        assert!(value["declined"].is_null());
+        assert_eq!(value["record"]["gate"], "open");
     }
 
     #[test]

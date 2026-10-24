@@ -404,7 +404,7 @@ fn antigravity_briefs_the_first_invocation_from_its_transcript() {
 }
 
 #[test]
-fn a_prompt_that_asks_nothing_about_code_prints_nothing_and_journals_why() {
+fn a_non_code_acknowledgement_gets_a_brief_without_a_configured_classifier() {
     let fixture = project();
     let output = hook(
         &fixture,
@@ -413,13 +413,17 @@ fn a_prompt_that_asks_nothing_about_code_prints_nothing_and_journals_why() {
         &[],
     );
     assert_eq!(output.status.code(), Some(0));
-    assert_eq!(stdout(&output), "");
     assert_eq!(stderr(&output), "");
+    let out = envelope(&output);
+    let context = out["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(context.starts_with("[PIXEL:BRIEF]\n"), "{context}");
     let lines = journal(&fixture);
     let briefs = lines_of(&lines, "brief");
     assert_eq!(briefs.len(), 1, "{lines:?}");
-    assert_eq!(briefs[0]["gate"], "declined");
-    assert_eq!(lines_of(&lines, "prompt")[0]["bytes"], 0);
+    assert_eq!(briefs[0]["gate"], "open");
+    assert!(lines_of(&lines, "prompt")[0]["bytes"].as_u64().unwrap() > 0);
 }
 
 #[test]

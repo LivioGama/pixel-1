@@ -282,20 +282,19 @@ fn brief_prints_the_block_for_a_prompt_about_code_and_journals_the_decision() {
 }
 
 #[test]
-fn brief_prints_nothing_for_a_prompt_that_asks_nothing_about_code_and_says_why() {
+fn brief_fails_open_for_a_non_code_prompt_without_a_configured_classifier() {
     let fixture = project();
     let output = fixture.run(&["brief", "thanks, that works"]);
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(stdout(&output), "");
     assert!(
-        stderr(&output).contains("no brief: not about code"),
+        stdout(&output).starts_with("[PIXEL:BRIEF]\n"),
         "{}",
-        stderr(&output)
+        stdout(&output)
     );
     let lines = journal(&fixture.root());
     assert_eq!(lines.len(), 1, "{lines:?}");
-    assert_eq!(lines[0]["gate"], "declined");
-    assert_eq!(lines[0]["reason"], "not_about_code");
+    assert_eq!(lines[0]["gate"], "open");
+    assert!(lines[0]["declined"].is_null(), "{lines:?}");
 }
 
 #[test]
