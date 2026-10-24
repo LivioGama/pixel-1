@@ -25,7 +25,7 @@ use crate::warning::Warning;
 /// `pixel_daemon::api::PROTOCOL_VERSION`, which versions the daemon's
 /// Unix-socket NDJSON request/response wire format — the two evolve
 /// independently and must never be conflated.
-pub const ENVELOPE_PROTOCOL_VERSION: u32 = 1;
+pub const ENVELOPE_PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Envelope<T> {
@@ -284,7 +284,7 @@ mod tests {
         let expected = json!({
             "ok": true,
             "op": "ping",
-            "protocol": 1,
+            "protocol": ENVELOPE_PROTOCOL_VERSION,
             "requestId": "req-1",
             "snapshot": {
                 "token": "abcdef012345",
@@ -321,7 +321,7 @@ mod tests {
         let expected = json!({
             "ok": false,
             "op": "push",
-            "protocol": 1,
+            "protocol": ENVELOPE_PROTOCOL_VERSION,
             "requestId": "req-2",
             "result": null,
             "error": {
@@ -530,7 +530,7 @@ mod validate_tests {
 
     #[test]
     fn deserialized_wire_line_is_validated() {
-        let line = r#"{"ok":true,"op":"ping","protocol":1,"result":null,"error":null}"#;
+        let line = r#"{"ok":true,"op":"ping","protocol":2,"result":null,"error":null}"#;
         let e: Envelope<serde_json::Value> = serde_json::from_str(line).unwrap();
         assert!(e.validate().unwrap_err().contains("no result"));
     }

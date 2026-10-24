@@ -9,10 +9,9 @@
 //!
 //! A census of vanilla sessions found these questions answered from the same
 //! few reads (list the tree, open the architecture document; `git show`, then
-//! the functions it touched; grep the handler, then read what it calls) and
-//! the relevance gate closed on all three, because they are not phrased in the
-//! repository's words. `routes::QuestionKind` classifies the prompt without a
-//! model and the gate lets those kinds in; this file turns the evidence into
+//! the functions it touched; grep the handler, then read what it calls). The
+//! task-intent classifier admits these requests even when their wording does
+//! not overlap the repository vocabulary; this file turns the evidence into
 //! the numbered blocks of the region pack. The chain gathers it behind
 //! [`Evidence`] (the graph's files and edges, one bounded git call, file
 //! reads); what decides what is shown is a pure function here: how files are

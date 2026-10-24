@@ -1329,15 +1329,7 @@ fn resolve_targets(input: &Input, evidence: &dyn Evidence, deadline: Instant) ->
     // The regions the chain picked are the lead of last resort.
     if input.regions && targets.is_empty() {
         for (index, region) in input.reads.iter().take(MAX_REGIONS).enumerate() {
-            let symbol = region.symbol.clone().filter(|symbol| {
-                symbol.len() >= 5
-                    && answer::tokens(symbol).iter().any(|word| {
-                        input
-                            .terms
-                            .iter()
-                            .any(|term| answer::tokens(term).contains(word))
-                    })
-            });
+            let symbol = region.symbol.clone().filter(|symbol| symbol.len() >= 5);
             let rows = symbol
                 .as_deref()
                 .filter(|_| alive())
@@ -3458,21 +3450,22 @@ mod tests {
     }
 
     #[test]
-    fn build_should_end_a_pack_of_regions_alone_on_a_lead_not_a_directive() {
+    fn build_should_keep_a_retrieved_region_symbol_without_keyword_overlap() {
         let mut regions = input(1);
         regions.names = Vec::new();
         regions.defined = Vec::new();
         regions.regions = true;
+        regions.terms = lines(&["weather", "tomorrow"]);
         regions.reads = vec![ReadRegion {
             path: "src/api.rs".into(),
             first: 9,
             last: 12,
-            symbol: Some("search".into()),
+            symbol: Some("retrieved_symbol".into()),
         }];
         let pack = built(&regions, &repo()).unwrap();
+        assert!(pack.text().contains("retrieved_symbol"), "{}", pack.text());
         assert!(pack.text().ends_with(LEAD), "{}", pack.text());
         assert!(!pack.text().contains(DIRECTIVE));
-        // A short file is shown whole, the way the best file is.
         assert!(pack.text().contains("1| //! The wire contract."));
         assert_eq!(split_parts(&pack.text(), PART_CHARS).len(), 1);
     }

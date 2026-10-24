@@ -216,7 +216,7 @@ fn only_a_tests_question_runs_and_the_flag_switches_it_off() {
         &repo,
         deadline,
     );
-    assert!(on.rescuing, "the step answers a prompt the gate refused");
+    assert!(on.rescuing, "the step found matching test evidence");
 }
 
 #[test]

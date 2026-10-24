@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 //! How widely the words of a task prompt occur in this repository: the
-//! deterministic inputs the brief's relevance gate scores (`specs/brief.md`,
-//! "Signal and gate").
+//! deterministic keyword evidence used to rank brief retrieval candidates
+//! (`specs/brief.md`, "Signal and admission").
 //!
 //! [`relevance_from`] is the pure core: probe results and symbol files in, a
 //! [`Relevance`] out. [`relevance_on`] gathers those inputs from the text

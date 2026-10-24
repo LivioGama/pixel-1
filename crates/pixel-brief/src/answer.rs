@@ -36,11 +36,6 @@ const TEST_SPAN: usize = 40;
 /// Lines a config excerpt shows.
 const MAX_CONFIG_LINES: usize = 4;
 
-/// A ZERO rule: the best rank of the top chunk among the meaning search's,
-/// the best rank of its file among the lexical co-files, and the fewest
-/// distinct probed keywords inside the chunk.
-pub(crate) type ZeroRule = (usize, usize, usize);
-
 /// The ZERO step of a code-shaped prompt: the one definition that resolved
 /// (`unambiguous_def`) is shown as the answer when it spans at most
 /// [`STRONG_ZERO_LINES`] lines.
@@ -59,22 +54,6 @@ pub(crate) fn body_excerpt(start: u64, lines: &[String]) -> Vec<String> {
         .map(|(index, line)| (start + index as u64, line.as_str()))
         .collect();
     numbered(&rows)
-}
-
-/// The rule the brief applies. `None`: no rule tried on the dev split of
-/// `eval/brief-gate/answer_spans.jsonl` kept the span precision at 0.9 with
-/// two firings (the strict rule `(0, 0, 2)` fired once, right; the loosest
-/// fired 5 times, right twice), so the ZERO step never fires.
-pub(crate) const ZERO_RULE: Option<ZeroRule> = None;
-
-/// The ZERO rule `rule`: the top excerpt is the meaning search's chunk of
-/// rank at most `rule.0`, lies in a lexical co-file of rank at most
-/// `rule.1`, and holds at least `rule.2` distinct probed keywords.
-pub(crate) fn rule_holds(top: &Excerpt, lexical_rank: Option<usize>, rule: ZeroRule) -> bool {
-    top.from_meaning
-        && top.meaning_rank.is_some_and(|rank| rank <= rule.0)
-        && lexical_rank.is_some_and(|rank| rank <= rule.1)
-        && top.density >= rule.2
 }
 
 /// What the search of one brief covered, taken from the probes that answered
@@ -1565,24 +1544,6 @@ mod tests {
             assert_eq!(symbol_of_signature(line).as_deref(), Some(name), "{line}");
         }
         assert_eq!(symbol_of_signature("let x = 1;"), None);
-    }
-
-    #[test]
-    fn a_rule_should_need_the_meaning_rank_the_lexical_rank_and_the_keywords() {
-        let top = |rank: Option<usize>, density: usize, meaning: bool| Excerpt {
-            from_meaning: meaning,
-            meaning_rank: rank,
-            density,
-            ..Excerpt::default()
-        };
-        let rule = (0, 0, 2);
-        assert!(rule_holds(&top(Some(0), 2, true), Some(0), rule));
-        assert!(!rule_holds(&top(Some(1), 2, true), Some(0), rule));
-        assert!(!rule_holds(&top(Some(0), 1, true), Some(0), rule));
-        assert!(!rule_holds(&top(Some(0), 2, true), Some(1), rule));
-        assert!(!rule_holds(&top(Some(0), 2, true), None, rule));
-        assert!(!rule_holds(&top(None, 2, false), Some(0), rule));
-        assert!(rule_holds(&top(Some(1), 1, true), Some(1), (1, 1, 1)));
     }
 
     #[test]

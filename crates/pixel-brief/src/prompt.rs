@@ -3,12 +3,9 @@
 
 //! The prompt side of the brief: the text the user typed, how clearly it asks
 //! about code (`Signal`), and the task a long paste leaves (`specs/brief.md`,
-//! "Signal and gate").
+//! "Signal and admission").
 
 use std::borrow::Cow;
-
-use crate::chain::Anchors;
-use crate::routes;
 
 /// Words that name code or ask a question about it. A prompt with none of
 /// them and no identifier asks for something else (git, a release, a
@@ -213,9 +210,7 @@ pub enum Signal {
     /// Only a code word or a code-question opener matched: close enough to
     /// ask, ambiguous enough that a model verdict can help.
     Weak,
-    /// Plain language with at least [`MIN_PROSE_KEYWORDS`] content words that
-    /// is not a repository operation. Whether it is about this repository is
-    /// not something its shape can say: the evidence decides.
+    /// Plain-language task text. Its words describe the signal, not admission.
     Prose,
 }
 
@@ -268,136 +263,6 @@ const PASTED_HEAD_CHARS: usize = 300;
 /// [`PASTE_TAIL_CHARS`], which [`brief_task`] and the decision log do not cut.
 const PASTED_TAIL_CHARS: usize = 299;
 const _: () = assert!(PASTED_HEAD_CHARS + 1 + PASTED_TAIL_CHARS <= PASTE_TAIL_CHARS);
-/// Content words a plain-language prompt needs before the relevance gate is
-/// asked: one word is a reply, not a task.
-const MIN_PROSE_KEYWORDS: usize = 2;
-
-/// Words that name a repository operation (git, a pull request or an issue,
-/// a release, a deploy, CI) in English and French, folded to ASCII as the
-/// tokenizer folds them; the words that steer the agent's own run rather
-/// than ask about code (`go next`, `stop`, `try again`); and the few function
-/// and address words a short prompt leaves behind when its language is not
-/// detected (`les`, `peux`, `you`). A prompt made only of these asks to
-/// operate the repository or the agent, not to read the code: the #1032
-/// replay briefed "Merge les PRs", "Tu peux les merger en --admin" and
-/// "go next". Deliberately short: anything it misses meets the relevance
-/// gate, which decides on evidence.
-const OPS_WORDS: &[&str] = &[
-    "actuel",
-    "admin",
-    "again",
-    "ahead",
-    "ai",
-    "amend",
-    "avec",
-    "back",
-    "bascule",
-    "basculer",
-    "branch",
-    "branche",
-    "branches",
-    "bump",
-    "can",
-    "checkout",
-    "cherry",
-    "ci",
-    "clone",
-    "clore",
-    "close",
-    "commit",
-    "commite",
-    "commiter",
-    "commits",
-    "create",
-    "creer",
-    "current",
-    "deploie",
-    "deploy",
-    "deployed",
-    "deployer",
-    "deux",
-    "dis",
-    "est",
-    "fais",
-    "ferme",
-    "fermer",
-    "fetch",
-    "fini",
-    "finished",
-    "fusionne",
-    "fusionner",
-    "git",
-    "go",
-    "green",
-    "head",
-    "issue",
-    "issues",
-    "laisse",
-    "les",
-    "main",
-    "master",
-    "merge",
-    "merged",
-    "merger",
-    "moi",
-    "next",
-    "non",
-    "one",
-    "order",
-    "ordre",
-    "origin",
-    "oui",
-    "pause",
-    "peux",
-    "pick",
-    "pousse",
-    "pousser",
-    "pr",
-    "prod",
-    "production",
-    "prs",
-    "publie",
-    "publier",
-    "publish",
-    "pull",
-    "push",
-    "rebase",
-    "relance",
-    "relancer",
-    "release",
-    "releases",
-    "remote",
-    "rerun",
-    "reset",
-    "retry",
-    "revert",
-    "ship",
-    "squash",
-    "staging",
-    "stash",
-    "stop",
-    "suivant",
-    "suivante",
-    "sur",
-    "switch",
-    "tag",
-    "tags",
-    "termine",
-    "tire",
-    "toi",
-    "try",
-    "two",
-    "upstream",
-    "vas",
-    "vers",
-    "version",
-    "versions",
-    "verte",
-    "worktree",
-    "worktrees",
-    "you",
-];
-
 /// Words that acknowledge, greet or judge the last answer. They are content
 /// words to the tokenizer and carry nothing about the repository.
 const CHATTER_WORDS: &[&str] = &[
@@ -549,7 +414,7 @@ pub(crate) fn brief_keywords(task: &str) -> Vec<String> {
 /// more and a final `s`) written in capitals, so the tokenizer keeps it whole.
 /// Split at its case change, `PRs` became the keywords `p` and `rs`, and `rs`
 /// is a short technical keyword (the Rust extension) that a merge request
-/// carried into the relevance gate.
+/// carried into retrieval evidence.
 fn fold_plural_acronyms(task: &str) -> Cow<'_, str> {
     let plural = |word: &str| {
         word.len() >= 3
@@ -582,27 +447,11 @@ fn fold_plural_acronyms(task: &str) -> Cow<'_, str> {
     Cow::Owned(folded)
 }
 
-/// A version number as the tokenizer leaves one: digits, or `v` and digits.
-fn is_version_shaped(word: &str) -> bool {
-    let digits = word.strip_prefix('v').unwrap_or(word);
-    !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit())
-}
-
-/// Every keyword names an operation or a version: git, a release, a deploy.
-fn is_ops_request(keywords: &[String]) -> bool {
-    keywords
-        .iter()
-        .all(|word| OPS_WORDS.contains(&word.as_str()) || is_version_shaped(word))
-}
-
-/// The task of `prompt` and why it may deserve a brief, or `None` when it
-/// cannot: [`code_signal`] first, and failing that [`Signal::Prose`] for
-/// plain language with at least [`MIN_PROSE_KEYWORDS`] content words that is
-/// not a repository operation. Only the typed text counts, and of a long
+/// The task of `prompt` and its text-shape signal. Only the typed text counts, and of a long
 /// text with a paste in front only its last paragraph. A prompt with nothing
 /// typed at all but a pasted block is judged on [`pasted_task`] instead, and
 /// only ever as plain language: the identifiers of someone else's log do not
-/// make it code-shaped, so the relevance gate decides it.
+/// make it code-shaped, so the configured classifier can decide its intent.
 pub fn brief_signal(prompt: &str) -> Option<(String, Signal)> {
     if let Some(found) = code_signal(prompt) {
         return Some(found);
@@ -613,18 +462,18 @@ pub fn brief_signal(prompt: &str) -> Option<(String, Signal)> {
     } else {
         typed
     };
-    let task = brief_task(&typed);
-    // A whole-purpose question (`what is this project for?`) carries too few
-    // content words to clear MIN_PROSE_KEYWORDS, but routing knows what to do
-    // with it; never refuse it before it can be classified.
-    let anchors = Anchors::from_text(task);
-    if routes::asks_overview(task) && anchors.names().next().is_none() && anchors.paths().is_empty()
-    {
-        return Some((task.to_string(), Signal::Prose));
+    let task = brief_task(&typed).trim();
+    (!task.is_empty()).then(|| (task.to_string(), Signal::Prose))
+}
+
+/// The human task text eligible for configured task-intent classification.
+/// Harness envelopes are excluded before the provider boundary; ordinary
+/// human prose and acknowledgements remain eligible.
+pub fn classifier_text(prompt: &str) -> Option<String> {
+    if crate::continuation::is_harness_envelope(prompt) {
+        return None;
     }
-    let keywords = brief_keywords(task);
-    (keywords.len() >= MIN_PROSE_KEYWORDS && !is_ops_request(&keywords))
-        .then(|| (task.to_string(), Signal::Prose))
+    brief_signal(prompt).map(|(typed, _)| typed)
 }
 
 fn explicit_identifier(task: &str) -> Option<String> {
@@ -747,7 +596,14 @@ mod tests {
             "<https://github.com/org/repo/pull/12?utm_source=slack>",
         ] {
             assert_eq!(code_signal(prompt), None, "{prompt}");
-            assert_eq!(brief_signal(prompt), None, "{prompt}");
+            if prompt.starts_with("look at") {
+                assert_eq!(
+                    brief_signal(prompt),
+                    Some(("look at".into(), Signal::Prose))
+                );
+            } else {
+                assert_eq!(brief_signal(prompt), None, "{prompt}");
+            }
         }
     }
 
@@ -932,7 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn brief_signal_should_refuse_operations_acknowledgements_and_one_word_replies() {
+    fn brief_signal_should_keep_operations_acknowledgements_and_one_word_tasks_eligible() {
         for prompt in [
             "commit and push",
             "go to branch main and pull",
@@ -945,22 +801,31 @@ mod tests {
             "merci parfait",
             "daemon",
             "thanks daemon",
-            "",
-            "   ",
         ] {
-            assert_eq!(brief_signal(prompt), None, "{prompt:?}");
+            assert_eq!(
+                brief_signal(prompt),
+                Some((prompt.to_string(), Signal::Prose)),
+                "{prompt:?}"
+            );
         }
+        assert_eq!(brief_signal(""), None);
+        assert_eq!(brief_signal("   "), None);
     }
 
     #[test]
-    fn brief_signal_should_need_two_content_words_and_not_one() {
-        assert_eq!(MIN_PROSE_KEYWORDS, 2);
+    fn brief_signal_should_not_require_content_word_overlap() {
         assert_eq!(
             brief_signal("daemon startup").map(|found| found.1),
             Some(Signal::Prose)
         );
-        assert_eq!(brief_signal("daemon"), None);
-        assert_eq!(brief_signal("the daemon"), None);
+        assert_eq!(
+            brief_signal("daemon"),
+            Some(("daemon".into(), Signal::Prose))
+        );
+        assert_eq!(
+            brief_signal("zephyr quasar"),
+            Some(("zephyr quasar".into(), Signal::Prose))
+        );
         // An operation word beside a content word is a content word's prompt.
         assert_eq!(
             brief_signal("push daemon startup").map(|found| found.1),
@@ -971,14 +836,17 @@ mod tests {
     #[test]
     fn brief_signal_should_ignore_a_pasted_block_and_judge_the_last_paragraph_of_a_paste() {
         let tagged = "<pasted_content id=\"1\">\nthe daemon startup race watch\n</pasted_content id=\"1\">\nthanks";
-        assert_eq!(brief_signal(tagged), None);
+        assert_eq!(brief_signal(tagged), Some(("thanks".into(), Signal::Prose)));
         // An untagged paste of a thread, then "thoughts?": one content word.
         let untagged = format!(
             "{}\n\nthoughts?",
             "slack message about the daemon startup\n".repeat(30)
         );
         assert!(untagged.chars().count() > PASTE_TAIL_CHARS);
-        assert_eq!(brief_signal(&untagged), None);
+        assert_eq!(
+            brief_signal(&untagged),
+            Some(("thoughts?".into(), Signal::Prose))
+        );
         // The same paste with a real question after it.
         let asked = format!(
             "{}\n\nwhy is the daemon slow after startup",
@@ -1145,25 +1013,30 @@ mod tests {
         // An opening tag cut off by the end of the prompt holds nothing to read.
         assert_eq!(brief_signal("<pasted_content"), None);
         assert_eq!(brief_signal("<pasted_content id=\"2\""), None);
-        // Typed words beside the paste keep the paste out of the task.
+        // Typed words beside the paste remain eligible even when they are a
+        // short acknowledgment.
         assert_eq!(
             brief_signal("<pasted_content>the daemon startup race</pasted_content> ok"),
-            None
+            Some(("ok".into(), Signal::Prose))
         );
     }
 
     #[test]
-    fn brief_signal_should_still_decline_a_paste_that_asks_for_no_task() {
+    fn brief_signal_should_only_decline_empty_or_link_only_pastes() {
         for lines in [
             &["git commit and push", "", "release 0.6.2"][..],
             &["daemon"][..],
             &["thanks, that works"][..],
+        ] {
+            let prompt = paste_only(lines);
+            assert!(brief_signal(&prompt).is_some(), "{prompt}");
+        }
+        for lines in [
             &["https://example.com/a?utm_source=newsletter"][..],
             &["   ", ""][..],
             &[][..],
         ] {
-            let prompt = paste_only(lines);
-            assert_eq!(brief_signal(&prompt), None, "{prompt}");
+            assert_eq!(brief_signal(&paste_only(lines)), None);
         }
         assert_eq!(brief_signal("<pasted_content></pasted_content>"), None);
         assert_eq!(brief_signal(""), None);
@@ -1283,28 +1156,6 @@ mod tests {
     }
 
     #[test]
-    fn is_ops_request_should_need_every_keyword_to_be_an_operation_or_a_version() {
-        let words = |text: &[&str]| text.iter().map(ToString::to_string).collect::<Vec<_>>();
-        assert!(is_ops_request(&words(&["commit", "push"])));
-        assert!(is_ops_request(&words(&["release", "2026"])));
-        assert!(is_ops_request(&words(&["deploy", "v12"])));
-        assert!(is_ops_request(&words(&["pousse", "sur", "main"])));
-        assert!(!is_ops_request(&words(&["commit", "parser"])));
-        assert!(!is_ops_request(&words(&["parser", "push"])));
-        assert!(!is_ops_request(&words(&["parser", "daemon"])));
-    }
-
-    #[test]
-    fn is_version_shaped_should_take_digits_with_an_optional_leading_v() {
-        for word in ["2026", "v12", "7", "v7"] {
-            assert!(is_version_shaped(word), "{word}");
-        }
-        for word in ["", "v", "vx", "12a", "release", "v1x"] {
-            assert!(!is_version_shaped(word), "{word}");
-        }
-    }
-
-    #[test]
     fn brief_keywords_should_drop_conversation_and_keep_content_words() {
         assert_eq!(
             brief_keywords("thanks, the daemon startup works"),
@@ -1316,9 +1167,8 @@ mod tests {
 
     /// The briefed prompts of the #1032 replay that asked to operate a pull
     /// request, an issue or the agent itself, in both languages: none of them
-    /// is about the code, and each costs the precision of the brief.
     #[test]
-    fn brief_signal_should_refuse_a_pull_request_an_issue_or_a_steer_of_the_agent() {
+    fn brief_signal_should_keep_repository_operations_eligible_for_classification() {
         for prompt in [
             "Merge the PRs",
             "Merge les PRs",
@@ -1333,12 +1183,10 @@ mod tests {
             "Vas y je te laisse faire fais tout ca dans des worktrees",
             "## My request:\nMerge les PRs en --admin",
         ] {
-            assert_eq!(brief_signal(prompt), None, "{prompt:?}");
+            assert!(brief_signal(prompt).is_some(), "{prompt:?}");
         }
     }
 
-    /// The same words beside one about the code leave the prompt to the
-    /// relevance gate: only a prompt made of nothing else is refused.
     #[test]
     fn brief_signal_should_keep_an_operation_word_beside_a_word_about_the_code() {
         for prompt in [
@@ -1391,6 +1239,30 @@ mod tests {
     fn typed_text_should_drop_the_file_listing_above_a_codex_request() {
         let prompt = "# Files mentioned by the user:\n## shot.png: /tmp/shot.png\n## My request:\nwhere is the parser";
         assert_eq!(typed_text(prompt), "where is the parser");
+    }
+
+    #[test]
+    fn classifier_text_should_exclude_harness_envelopes_and_keep_human_text() {
+        for envelope in [
+            "<task-notification><summary>fix auth</summary></task-notification>",
+            "<realtime_delegation><input>where is fetchUser</input></realtime_delegation>",
+            "<system-reminder>planning mode</system-reminder>",
+        ] {
+            assert_eq!(classifier_text(envelope), None, "{envelope}");
+        }
+        let wrapped = format!(
+            "## Files in context\n{}\n## My request:\nExplain how the post list works",
+            "filler ".repeat(6_000)
+        );
+        assert!(wrapped.len() > 32_768);
+        assert_eq!(
+            classifier_text(&wrapped).as_deref(),
+            Some("Explain how the post list works")
+        );
+        assert_eq!(
+            classifier_text("Thanks, that works").as_deref(),
+            Some("Thanks, that works")
+        );
     }
 
     #[test]

@@ -3,9 +3,9 @@
 
 //! pixel-brief: the prompt brief (`specs/brief.md`).
 //!
-//! `prompt` reads the text the user typed, `relevance` and `gate_model` decide
-//! whether the repository talks about it, `routes` picks the question kind,
-//! `chain` runs the kind's evidence steps over an [`chain::Evidence`] and
+//! `prompt` reads typed text, the configured task-intent verdict decides
+//! admission, `routes` picks the question kind, and `chain` runs bounded
+//! evidence steps over an [`chain::Evidence`] and
 //! renders the `[PIXEL:BRIEF]` block, `region_pack` packs the source it names,
 //! and `sent` keeps a session from being sent the same range twice. Nothing
 //! here reads a store: the daemon implements `Evidence`.

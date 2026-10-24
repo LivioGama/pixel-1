@@ -35,8 +35,7 @@ use pixel_model::{Language, Lexicon, fold, language, prompt_terms, sub_words};
 /// The French → English lexicon.
 const LEXICON: &str = include_str!("../../../data/lexicon/fr-en.tsv");
 
-/// The French question words that open a question, and the English opener
-/// the gate reads for each (`gate_model::QUESTION_WORDS`).
+/// The French question words that open a question, and their English forms.
 const QUESTION_OPENERS: [(&str, &str); 9] = [
     ("comment", "how"),
     ("ou", "where"),

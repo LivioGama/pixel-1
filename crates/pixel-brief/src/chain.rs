@@ -17,20 +17,15 @@
 //! passes, so it never holds the prompt back. The lookups sit behind
 //! [`Evidence`]: the daemon is the live source, tests bring their own.
 //!
-//! A prompt in plain language (no identifier, no code word) starts differently:
-//! the relevance probe and the meaning search run at once on the shared
-//! deadline, and the relevance decision, with no model in it, says whether the
-//! prompt is about this repository at all. Off topic ends the brief at once and
-//! renders nothing; on topic fuses the meaning leads with the files the
-//! prompt's words meet in, and the routed kind goes on from there. A weakly
-//! code-shaped prompt gets the same probes as its retriever; the same decision
-//! silences it when [`ENFORCE_GATE_ON_WEAK`] is set, and a code graph that did
-//! not answer leaves its pre-gate brief in place.
+//! Plain-language and code-shaped prompts use the same configured task-intent
+//! verdict when one is available. Only a confident `none` suppresses the
+//! brief; classifier failures proceed open. Relevance and meaning probes find
+//! and rank evidence, while the question-kind route selects the recipe.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -42,7 +37,9 @@ use crate::kinds::{self, ChangeScope, Changes, FlowNode, KindInput, RepoMap};
 use crate::probes::{self, ProbeSetup};
 use crate::prompt::{SOURCE_EXTENSIONS, Signal, brief_signal, names_code};
 use crate::region_pack;
-use crate::relevance::{self, Basis, GateInput, RelevanceInput, Tier};
+use crate::relevance::RelevanceInput;
+#[cfg(test)]
+use crate::relevance::{self, Basis, GateInput, Tier};
 use crate::routes::QuestionKind;
 use crate::sent::{self, Seen};
 use crate::session_paths::{self, SessionPaths};
@@ -77,7 +74,10 @@ pub fn window_for(ms: Option<u64>, command: bool) -> Duration {
     } else {
         WINDOW_HOOK_DEFAULT_MS
     };
-    let ms = ms.unwrap_or(default).clamp(WINDOW_MIN_MS, WINDOW_MAX_MS);
+    let ms = ms.map_or_else(
+        || default.clamp(WINDOW_MIN_MS, WINDOW_MAX_MS),
+        |remaining| remaining.min(WINDOW_MAX_MS),
+    );
     Duration::from_millis(if command {
         ms.min(WINDOW_COMMAND_MAX_MS)
     } else {
@@ -91,9 +91,8 @@ pub fn window_for(ms: Option<u64>, command: bool) -> Duration {
 pub const MAX_OPS: usize = 6;
 /// Rendered size cap; lists give way before a line is cut.
 pub(crate) const BRIEF_BYTES: usize = 2048;
-/// Size cap of a confident brief that carries a search receipt or answer
-/// excerpts (a plain-language prompt, or a weak one the gate put in the high
-/// tier). OpenCode's extension caps injected context at 4000 bytes: stay under.
+/// Size cap of a brief that carries a search receipt or answer excerpts.
+/// OpenCode's extension caps injected context at 4000 bytes: stay under.
 pub(crate) const PROSE_BRIEF_BYTES: usize = 3584;
 const _: () = assert!(PROSE_BRIEF_BYTES < 4000);
 /// Size cap of a code-shaped brief that names ranges to read.
@@ -105,18 +104,8 @@ pub(crate) const PLAIN_PROSE_BRIEF_BYTES: usize = 2048;
 const ANSWER_FILES: usize = 4;
 /// Files a generic excerpt covers.
 const EXCERPT_FILES: usize = 3;
-/// Whether an off-tier relevance decision silences a weakly code-shaped
-/// prompt's brief, as it does a plain-language one. The decision is computed
-/// and logged either way.
-pub(crate) const ENFORCE_GATE_ON_WEAK: bool = true;
-/// Files a low-tier brief names.
-const LOW_FILES: usize = 3;
-/// Rendered size cap of a low-tier brief: a maybe stays short.
-pub(crate) const LOW_BRIEF_BYTES: usize = 700;
-/// The same when the brief names ranges to read.
-pub(crate) const LOW_READ_BRIEF_BYTES: usize = 1200;
-/// The model that decides the tier of a prompt: [`relevance::judge`] in
-/// production, a fixed answer in a test.
+/// The model argument retained only for chain-test compatibility.
+#[cfg(test)]
 pub(crate) type Model = fn(&GateInput) -> relevance::Verdict;
 /// Leads a meaning search returns: as many files as a brief shows.
 const MEANING_LIMIT: usize = MAX_FILES;
@@ -203,11 +192,6 @@ const CONCEPT_STOPWORDS: &[&str] = &[
 const GENERATED_EXTENSIONS: &[&str] = &["json", "lock"];
 /// Directories that hold build output or vendored code.
 const GENERATED_DIRS: &[&str] = &["output", "dist", "node_modules"];
-/// The confidence line of a confident brief whose evidence did not earn the
-/// ZERO step: the ranges below are the way to confirm it.
-const MEDIUM_CONFIDENCE: &str = "confidence: medium — confirm in the ranges below";
-/// The same for a brief with files and no range to read.
-const MEDIUM_FILES_CONFIDENCE: &str = "confidence: medium — verify the files answer the question";
 /// The footer of a brief with neither a ZERO step nor a range: the
 /// verification rule without the directive.
 const UNCORROBORATED_FOOTER: &str = "0 hits or 0 callers: verify with rg before concluding.";
@@ -215,7 +199,6 @@ const UNCORROBORATED_FOOTER: &str = "0 hits or 0 callers: verify with rg before 
 const ZERO_LINE: &str = "Answer from these lines; open a file only if they don't answer.";
 /// The ONE-READ step: the ranges are the next, single action.
 const READ_LINE: &str = "Read these ranges (in parallel, one turn) before any search. If they don't answer, search as usual.";
-const FOOTER: &str = "Answer from this evidence; open a file only if it contradicts you. 0 hits or 0 callers: verify with rg before concluding.";
 static QUOTED: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"([`'"])([\w./:-]+)(?:\(\))?([`'"])"#)
         .expect("the quoted-anchor pattern is a literal")
@@ -384,7 +367,7 @@ pub struct MeaningHit {
     pub snippet: String,
 }
 
-/// The answer of a relevance probe: the weights the gate scores (the
+/// The answer of a relevance probe: the weights the retrieval score reads (the
 /// daemon's, so the formula has one spelling) and the line each co-file was
 /// found at.
 #[derive(Clone, Debug)]
@@ -580,9 +563,8 @@ pub trait Evidence: Sync {
         "unknown"
     }
     /// How widely the words of `typed` occur in the repository and the files
-    /// they meet in (`facts.relevance`): what the relevance gate scores. An
-    /// `Err` is "cannot tell", which a plain-language prompt treats as off
-    /// topic.
+    /// they meet in (`facts.relevance`): keyword evidence used to rank
+    /// retrieval. An `Err` is "cannot tell" and does not close admission.
     fn relevance(&self, typed: &str, deadline: Instant) -> Result<RelevanceAnswer, String> {
         let _ = (typed, deadline);
         Err("unavailable".to_string())
@@ -767,14 +749,11 @@ impl Plan {
         Self { steps, ..self }
     }
 
-    /// `None` for a prompt that does not ask about code, pasted text aside, and
-    /// for a continuation or a harness envelope, which are not the user's task.
+    /// `None` for a prompt that does not ask about code, pasted text aside.
+    /// Production brief admission is decided by the configured classifier.
     /// Tests plan a chain directly.
     #[cfg(test)]
     pub(crate) fn from_prompt(prompt: &str) -> Option<Self> {
-        if crate::continuation::is_trivial_continuation(prompt) {
-            return None;
-        }
         let (typed, _) = crate::prompt::code_signal(prompt)?;
         Some(Self::from_typed(&typed))
     }
@@ -940,30 +919,14 @@ pub(crate) fn pick_uid<'a>(
     }
 }
 
-/// What the gate decided about the prompt: the relevance probe, for the
-/// journal and for the render.
+/// Whether task-intent admission allowed evidence retrieval.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Admission {
-    /// No gate looked at it: a code-shaped prompt, or a weak one whose
-    /// probes had nothing to say.
+    /// No classifier verdict was available; admission failed open.
     #[default]
     Unjudged,
-    /// The prompt is about this repository.
+    /// The prompt is eligible for evidence retrieval.
     Open,
-    /// The repository does not talk about the prompt, or could not be asked.
-    Closed(String),
-    /// The relevance gate would have closed the prompt, but it asks for a
-    /// tour, a review or a walkthrough, which the repository's words cannot
-    /// say: the kind admits it.
-    Kind(QuestionKind),
-    /// The relevance gate would have closed a short follow-up ("now fix the
-    /// test"), but the session is already working on files: they stand for
-    /// what the words cannot say.
-    Context,
-    /// The relevance gate would have closed the prompt, but a recipe step
-    /// answered it from the manifests (`steps`): the repository's words are
-    /// not what a question about its workspace is about.
-    Steps,
 }
 
 impl Admission {
@@ -972,25 +935,11 @@ impl Admission {
         match self {
             Self::Unjudged => "unjudged",
             Self::Open => "open",
-            Self::Closed(_) => "closed",
-            Self::Kind(_) | Self::Context | Self::Steps => "open",
         }
     }
 
     fn reason(&self) -> Option<&str> {
-        match self {
-            Self::Closed(reason) => Some(reason),
-            Self::Kind(kind) => Some(match kind {
-                QuestionKind::Overview => "kind: overview",
-                QuestionKind::Review => "kind: review",
-                QuestionKind::Flow => "kind: flow",
-                QuestionKind::History => "kind: history",
-                _ => "kind",
-            }),
-            Self::Context => Some("context: a short follow-up on the session's files"),
-            Self::Steps => Some("steps: answered from the manifests"),
-            Self::Unjudged | Self::Open => None,
-        }
+        None
     }
 }
 
@@ -1005,16 +954,8 @@ pub(crate) struct Brief {
     /// Where the evidence came from: `daemon` or `local`.
     route: Option<&'static str>,
     admission: Admission,
-    silenced: bool,
-    /// The relevance decision, when the probe answered.
-    relevance: Option<relevance::Verdict>,
     /// Ranges an earlier pack sent to this session.
     seen: Seen,
-    /// A short follow-up the gate would have closed was let through on the
-    /// session's files: the brief is a maybe, whatever the words scored.
-    lifted: bool,
-    /// The `confidence:` line of a brief built on the relevance decision.
-    confidence: Option<String>,
     anchors: Vec<String>,
     /// The question kind the plan routed to, rendered as `kind:`.
     kind: Option<QuestionKind>,
@@ -1041,10 +982,6 @@ pub(crate) struct Brief {
     /// benchmarks: files of that kind are not demoted.
     wants_tests: bool,
     wants_docs: bool,
-    /// The ZERO rule in force: a confident brief whose top chunk passes it
-    /// tells the agent to answer from the excerpt. `None` when no rule is
-    /// validated or `PIXEL_BRIEF_ZERO` is off.
-    zero_rule: Option<answer::ZeroRule>,
     /// A code-shaped prompt resolved one short definition, shown as the answer.
     strong_zero: bool,
     /// The ranges to read, best first.
@@ -1096,18 +1033,6 @@ pub(crate) struct Brief {
 }
 
 impl Brief {
-    /// The tier the relevance decision put the prompt in; `None` when it was
-    /// not made, or when the model did not apply (no code graph).
-    fn tier(&self) -> Option<Tier> {
-        if self.lifted {
-            return Some(Tier::Low);
-        }
-        self.relevance
-            .as_ref()
-            .filter(|verdict| verdict.basis != Basis::NoGraph)
-            .map(|verdict| verdict.tier)
-    }
-
     /// The packet names its own gaps: cut by the budget, unfinished, or with
     /// an unresolved note, and says so in its footer.
     fn partial(&self) -> bool {
@@ -1123,61 +1048,29 @@ impl Brief {
         self.cut || !self.finished
     }
 
-    /// The receipt is shown: a confident (high-tier) brief of a prompt that
-    /// did not name code, whose packet is complete.
+    /// The receipt is shown for a complete non-code-shaped prompt.
     fn receipt_lines(&self) -> Vec<String> {
-        if self.signal == Some(Signal::Strong) || self.tier() != Some(Tier::High) || self.short() {
+        if self.signal == Some(Signal::Strong) || self.short() {
             return Vec::new();
         }
         self.receipt
             .as_ref()
-            .map(|receipt| receipt.lines(self.confident()))
+            .map(|receipt| receipt.lines(false))
             .unwrap_or_default()
     }
 
-    /// The best chunk's excerpt: the first block cut from a file.
-    fn top_chunk(&self) -> Option<&Excerpt> {
-        self.excerpts
-            .iter()
-            .find(|excerpt| !excerpt.path.is_empty())
-    }
-
-    /// The ZERO step fires: a complete high-tier brief of a plain-language
-    /// or weak prompt whose top chunk passes [`answer::zero_holds`] (the
-    /// meaning search's best chunk, in the lexical probe's best co-file, with
-    /// at least two probed keywords inside it).
+    /// Whether a short, complete definition is shown as the strong prompt's answer.
     fn zero(&self) -> bool {
         if self.signal == Some(Signal::Strong) {
             return self.strong_zero && !self.short() && self.unresolved.is_empty();
         }
-        let Some(rule) = self.zero_rule else {
-            return false;
-        };
-        self.signal != Some(Signal::Strong)
-            && self.tier() == Some(Tier::High)
-            && !self.short()
-            && self.unresolved.is_empty()
-            && self.top_chunk().is_some_and(|top| {
-                let rank = self.lexical.iter().position(|path| *path == top.path);
-                answer::rule_holds(top, rank, rule)
-            })
-    }
-
-    /// Whether the brief may keep `confidence: high`: a strong prompt's brief
-    /// always does; a confident one only when the ZERO step fires.
-    fn confident(&self) -> bool {
-        if self.signal == Some(Signal::Strong) || self.tier() != Some(Tier::High) {
-            return true;
-        }
-        self.zero()
+        false
     }
 
     /// The ranges the ONE-READ step names, best first: `(path, first, last,
-    /// symbol)`. Empty for a cut packet or a brief without a relevance tier
-    /// that resolved no definition.
+    /// symbol)`. Empty for a cut packet or when no source range resolved.
     fn read_ranges(&self) -> Vec<(String, u64, u64, Option<String>)> {
-        let strong = self.signal == Some(Signal::Strong);
-        if self.short() || !(strong || matches!(self.tier(), Some(Tier::High | Tier::Low))) {
+        if self.short() {
             return Vec::new();
         }
         self.reads
@@ -1250,12 +1143,8 @@ impl Brief {
 
     fn excerpt_counts(&self) -> [usize; EXCERPT_FILES] {
         let mut counts = [0; EXCERPT_FILES];
-        // Excerpts are shown only for the ZERO step; otherwise they only
-        // fix the ranges to read.
-        if self.zero() {
-            for (slot, excerpt) in counts.iter_mut().zip(&self.excerpts) {
-                *slot = excerpt.lines.len();
-            }
+        for (slot, excerpt) in counts.iter_mut().zip(&self.excerpts) {
+            *slot = excerpt.lines.len();
         }
         counts
     }
@@ -1346,8 +1235,7 @@ fn work_stages(
     (Some(search), rank)
 }
 
-/// Count one operation, or refuse it: the cap and the deadline both end the
-/// chain, and a refusal marks the brief as cut short.
+/// Count one operation, or mark the brief cut short when a cap or deadline ends it.
 fn spend(state: &Mutex<Brief>, deadline: Instant) -> bool {
     edit(state, |brief| {
         if brief.ops >= MAX_OPS || Instant::now() >= deadline {
@@ -1598,10 +1486,7 @@ fn pack_evidence(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, dea
     }
     // A routed kind that reads no ranges of its own (a rationale whose
     // history is out of reach) still has its best files to read from.
-    if brief.reads.is_empty()
-        && brief.signal != Some(Signal::Strong)
-        && brief.tier() == Some(Tier::High)
-    {
+    if brief.reads.is_empty() && brief.signal != Some(Signal::Strong) {
         let terms: &[String] = brief.receipt.as_ref().map_or(&[], Receipt::terms);
         brief.reads = read_evidence(evidence, &brief, terms, deadline);
     }
@@ -1771,7 +1656,7 @@ fn pack_evidence(plan: &Plan, evidence: &dyn Evidence, state: &Mutex<Brief>, dea
         edit(state, |brief| {
             brief.pack = Some(pack.clone());
             // A pack of the kind's own evidence is an answer even when the
-            // probes behind the gate had none.
+            // retrieval probes had no leads.
             if by_kind && brief.answered == 0 {
                 brief.answered = 1;
             }
@@ -1801,21 +1686,17 @@ fn has_budget(state: &Mutex<Brief>, deadline: Instant) -> bool {
     edit(state, |brief| brief.ops < MAX_OPS) && Instant::now() < deadline
 }
 
-/// Cut the answer-sized evidence of a confident brief: the routed kind's own
-/// excerpt when its data is in, the generic one (signature, first doc line,
-/// the matched region of the best files) otherwise. Nothing for a strong
-/// prompt, a maybe, a partial packet or a rationale question.
+/// Cut bounded answer evidence from the routed kind or best retrieved files.
+/// Nothing is added for strong prompts, partial packets, or rationale questions.
 fn answer_evidence(evidence: &dyn Evidence, state: &Mutex<Brief>, deadline: Instant) {
     let brief = edit(state, |brief| brief.clone());
     if brief.signal == Some(Signal::Strong)
-        || !matches!(brief.tier(), Some(Tier::High | Tier::Low))
         || brief.cut
         || brief.kind == Some(QuestionKind::Rationale)
     {
         return;
     }
-    // A maybe runs no kind route: its chunks only fix the ranges to read.
-    let own = match brief.kind.filter(|_| brief.tier() == Some(Tier::High)) {
+    let own = match brief.kind {
         Some(QuestionKind::Flow) => flow_excerpt(evidence, state, &brief, deadline),
         Some(QuestionKind::Tests) => tests_excerpt(evidence, &brief, deadline),
         Some(QuestionKind::Config) => {
@@ -2006,11 +1887,20 @@ fn read_evidence(
             continue;
         };
         let (first, last) = answer::read_window(&lines, chunks[best], terms);
+        let symbol = answer::chunk_symbol(&lines, (first, last), terms).or_else(|| {
+            brief
+                .leads
+                .iter()
+                .find(|lead| {
+                    lead.path == path && (first..=last).contains(&u64::from(lead.start_line))
+                })
+                .and_then(|lead| lead.symbol.clone())
+        });
         ranges.push(ReadRange {
             path: path.to_string(),
             first,
             last,
-            symbol: answer::chunk_symbol(&lines, (first, last), terms),
+            symbol,
         });
     }
     ranges
@@ -2649,12 +2539,16 @@ pub enum Declined {
     Disabled,
     /// The repository has no published index.
     Unindexed,
-    /// An acknowledgement, a greeting or a harness envelope.
+    /// A harness envelope, which is not the human's task.
     Continuation,
-    /// Neither code-shaped nor plain language about a task.
+    /// The configured classifier confidently labeled the prompt `none`.
+    IntentNone,
+    /// The prompt had no typed task text.
     NotAboutCode,
     /// The operating system gave no thread to run it on.
     NoWorker,
+    /// The shared hook deadline expired before evidence retrieval could start.
+    DeadlineExpired,
 }
 
 impl Declined {
@@ -2664,15 +2558,12 @@ impl Declined {
             Self::Disabled => "disabled",
             Self::Unindexed => "unindexed",
             Self::Continuation => "continuation",
+            Self::IntentNone => "intent_none",
             Self::NotAboutCode => "not_about_code",
             Self::NoWorker => "no_worker",
+            Self::DeadlineExpired => "deadline_expired",
         }
     }
-}
-
-/// The model that decided the tier, as the journal names it.
-fn gate_model_source() -> &'static str {
-    crate::gate_model::SOURCE
 }
 
 /// Whole milliseconds since the Unix epoch.
@@ -2681,20 +2572,27 @@ fn now_ms() -> u64 {
 }
 
 /// The record of a prompt that got no brief.
-pub fn declined_record(declined: Declined, prompt: &str) -> Record {
+pub fn declined_record(
+    declined: Declined,
+    prompt: &str,
+    intent: Option<&serde_json::Value>,
+) -> Record {
     let typed = crate::prompt::typed_text(prompt);
     let typed = typed.trim();
     Record {
         ts_ms: now_ms(),
         signal: None,
         gate: "declined",
-        enforced: false,
+        enforced: declined == Declined::IntentNone,
         reason: Some(declined.as_str().to_string()),
+        intent: intent
+            .and_then(TaskIntent::parse)
+            .map(|intent| intent.journal_value()),
         score: None,
         best_file: None,
         features: None,
         tier: None,
-        model: gate_model_source(),
+        model: None,
         kind: None,
         ops: 0,
         answered: 0,
@@ -2735,6 +2633,8 @@ pub struct Session {
 /// What a brief does around its chain besides running it.
 #[derive(Default)]
 pub(crate) struct Around {
+    /// The configured classifier verdict, if the runtime obtained one.
+    pub(crate) intent: Option<serde_json::Value>,
     /// What the region pack may be; the default leaves the packet as it was.
     pub(crate) pack: region_pack::Limit,
     /// The files the session is working on, when the host's hook has a session.
@@ -2753,6 +2653,82 @@ pub(crate) struct Around {
     pub(crate) probes: Option<ProbeSetup>,
 }
 
+/// A validated classifier winner used for admission and recipe intent.
+#[derive(Clone, Debug)]
+struct TaskIntent {
+    label: String,
+    probability: f64,
+    provider: Option<String>,
+    model: Option<String>,
+    confidence: Option<f64>,
+}
+
+impl TaskIntent {
+    fn parse(document: &serde_json::Value) -> Option<Self> {
+        const LABELS: &[&str] = &[
+            "bugfix",
+            "feature",
+            "refactor",
+            "investigate",
+            "question",
+            "review",
+            "ops",
+            "none",
+        ];
+        let predicted = document.get("predicted")?.as_str()?;
+        if !LABELS.contains(&predicted) {
+            return None;
+        }
+        let probs = document.get("probs")?.as_object()?;
+        let mut predicted_probability = None;
+        let mut maximum = 0.0_f64;
+        for (label, value) in probs {
+            if !LABELS.contains(&label.as_str()) {
+                return None;
+            }
+            let probability = value.as_f64()?;
+            if !(0.0..=1.0).contains(&probability) || !probability.is_finite() {
+                return None;
+            }
+            maximum = maximum.max(probability);
+            if label == predicted {
+                predicted_probability = Some(probability);
+            }
+        }
+        let probability = predicted_probability?;
+        if probability < maximum {
+            return None;
+        }
+        let snapshot = document.get("snapshot");
+        let string = |key| snapshot?.get(key)?.as_str().map(str::to_string);
+        let confidence = snapshot
+            .and_then(|snapshot| snapshot.get("confidence"))
+            .and_then(serde_json::Value::as_f64)
+            .filter(|value| value.is_finite() && (0.0..=1.0).contains(value));
+        Some(Self {
+            label: predicted.to_string(),
+            probability,
+            provider: string("provider"),
+            model: string("model"),
+            confidence,
+        })
+    }
+
+    fn confident_none(&self) -> bool {
+        self.label == "none" && self.probability >= 0.5
+    }
+
+    fn journal_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "label": self.label,
+            "probability": self.probability,
+            "provider": self.provider,
+            "model": self.model,
+            "confidence": self.confidence,
+        })
+    }
+}
+
 /// A brief on its way: the worker is running, the deadline is fixed.
 pub struct Pending {
     state: Arc<Mutex<Brief>>,
@@ -2763,6 +2739,7 @@ pub struct Pending {
     /// excerpt of the paste for a prompt that is only a pasted block.
     task: String,
     signal: Signal,
+    intent: Option<TaskIntent>,
     /// Where the ranges the pack sends are remembered for the session.
     sent: Option<(PathBuf, String)>,
     /// Where the probes are run, when they are.
@@ -2779,17 +2756,6 @@ pub struct Finished {
     pub paths: Vec<String>,
 }
 
-/// Whether the gate's verdict decided if the brief was shown: always for
-/// plain language, for a weak prompt only when [`ENFORCE_GATE_ON_WEAK`] says
-/// so.
-const fn gate_enforced(signal: Signal, silenced: bool, enforce_weak: bool) -> bool {
-    match signal {
-        Signal::Prose => true,
-        Signal::Weak => silenced || enforce_weak,
-        Signal::Strong => false,
-    }
-}
-
 impl Pending {
     /// Wait for the worker until the shared deadline and render what it has.
     /// `None` when no operation answered: a brief of failures says nothing.
@@ -2798,9 +2764,7 @@ impl Pending {
         self.finish_with_record().text
     }
 
-    /// `text` after the brief's probes, and how each ended. A probe that
-    /// opted in (`when_gate_closed`) may answer a prompt the gate closed; none
-    /// runs for a prompt the gate silenced for another reason.
+    /// `text` after the brief's configured probes, and how each ended.
     fn probe_stage(
         &self,
         brief: &Brief,
@@ -2809,23 +2773,14 @@ impl Pending {
         let Some(setup) = &self.probes else {
             return (text, Vec::new());
         };
-        let gate_closed = matches!(brief.admission, Admission::Closed(_));
-        if brief.silenced && !gate_closed {
-            return (text, Vec::new());
-        }
         let kind = brief.kind.map(QuestionKind::as_str);
         let stage = probes::Stage {
             host: &setup.host,
             root: &setup.root,
             prompt: &self.task,
             kind,
-            gate_closed,
-            deadline: probes::probe_deadline(
-                self.started,
-                self.deadline,
-                Instant::now(),
-                setup.floor,
-            ),
+            gate_closed: false,
+            deadline: self.deadline,
             cap: setup.cap,
             max_bytes: setup.max_bytes,
         };
@@ -2853,7 +2808,7 @@ impl Pending {
             brief.searched_at,
             brief.worked_at,
             collected,
-            !brief.silenced,
+            true,
         );
         let render_started = Instant::now();
         let (text, stats) = match fit(&brief) {
@@ -2864,25 +2819,18 @@ impl Pending {
         let probe_started = Instant::now();
         let (text, probe_runs) = self.probe_stage(&brief, text);
         let probe_ms = (!probe_runs.is_empty()).then(|| millis(probe_started.elapsed()));
-        let recovered = matches!(brief.admission, Admission::Closed(_)) && text.is_some();
         let record = Record {
             ts_ms: now_ms(),
             signal: Some(self.signal.as_str()),
             gate: brief.admission.label(),
-            enforced: gate_enforced(self.signal, brief.silenced, ENFORCE_GATE_ON_WEAK)
-                && !recovered,
+            enforced: false,
             reason: brief.admission.reason().map(str::to_string),
-            tier: brief.tier().map(Tier::as_str),
-            model: gate_model_source(),
-            score: brief.relevance.as_ref().and_then(|verdict| verdict.score),
-            best_file: brief
-                .relevance
-                .as_ref()
-                .and_then(|verdict| verdict.best_file.clone()),
-            features: brief
-                .relevance
-                .as_ref()
-                .map(|verdict| verdict.features.clone()),
+            intent: self.intent.as_ref().map(TaskIntent::journal_value),
+            tier: None,
+            model: None,
+            score: None,
+            best_file: None,
+            features: None,
             kind: brief.kind.map(QuestionKind::as_str),
             ops: brief.ops,
             answered: brief.answered,
@@ -2934,6 +2882,8 @@ impl Pending {
 /// What one brief is asked for.
 pub struct Request<'a> {
     pub prompt: &'a str,
+    /// The configured classifier's task-intent document, when available.
+    pub intent: Option<serde_json::Value>,
     /// The repository the evidence is about.
     pub root: &'a Path,
     /// The `brief` command (which OpenCode runs and drops above 4 000 bytes)
@@ -2944,10 +2894,11 @@ pub struct Request<'a> {
     pub parts: u8,
     /// The configured window in milliseconds; `None`: the caller's default.
     pub window_ms: Option<u64>,
+    /// The end-to-end hook deadline as Unix epoch milliseconds, when supplied.
+    pub deadline_unix_ms: Option<u64>,
     /// What the host says of the session. With it the files the session is
     /// already working on (its transcript's recent tool calls, the dirty files
-    /// of the working tree) boost the leads, and let a short follow-up
-    /// through the gate.
+    /// of the working tree) boost matching evidence leads.
     pub session: Option<Session>,
     /// Whether a French prompt is searched on the English words code uses.
     pub french: bool,
@@ -2996,12 +2947,18 @@ where
             pack.chars,
         )
     });
-    try_start_with(
+    let configured_window = window_for(request.window_ms, request.command);
+    let window = request
+        .deadline_unix_ms
+        .map_or(configured_window, |deadline| {
+            Duration::from_millis(deadline.saturating_sub(now_ms())).min(configured_window)
+        });
+    try_start(
         request.prompt,
-        window_for(request.window_ms, request.command),
+        window,
         open,
-        relevance::judge,
         Around {
+            intent: request.intent.clone(),
             pack,
             context,
             seen,
@@ -3013,19 +2970,18 @@ where
     )
 }
 
-/// [`start`] with its window, evidence source and tier model given: the seam
-/// the chain's tests start from.
-pub(crate) fn try_start_with<F>(
+/// Start an admitted prompt with its bounded evidence source.
+fn try_start<F>(
     prompt: &str,
     window: Duration,
     open: F,
-    model: Model,
     around: Around,
 ) -> Result<Pending, Declined>
 where
     F: FnOnce(Instant) -> Box<dyn Evidence> + Send + 'static,
 {
     let Around {
+        intent,
         pack,
         context,
         seen,
@@ -3034,13 +2990,20 @@ where
         steps,
         probes,
     } = around;
-    if crate::continuation::is_trivial_continuation(prompt) {
+    if crate::continuation::is_harness_envelope(prompt) {
         return Err(Declined::Continuation);
+    }
+    let intent = intent.and_then(|document| TaskIntent::parse(&document));
+    if intent.as_ref().is_some_and(TaskIntent::confident_none) {
+        return Err(Declined::IntentNone);
     }
     let Some((typed, signal)) = brief_signal(prompt) else {
         return Err(Declined::NotAboutCode);
     };
     let started = Instant::now();
+    if window.is_zero() {
+        return Err(Declined::DeadlineExpired);
+    }
     let deadline = started + window;
     let state = Arc::new(Mutex::new(Brief {
         signal: Some(signal),
@@ -3053,6 +3016,7 @@ where
     // The journal keeps the text as typed; the searches, the gate and the plan
     // read a French prompt in the English words code uses.
     let task = typed.clone();
+    let record_intent = intent.clone();
     let typed = if french {
         crate::french::english(&typed).unwrap_or(typed)
     } else {
@@ -3079,8 +3043,7 @@ where
                 signal,
                 deadline,
                 state: &worker,
-                finished: &finished,
-                model,
+                intent: intent.as_ref(),
                 context: &context,
                 steps,
             };
@@ -3096,6 +3059,7 @@ where
         started,
         task,
         signal,
+        intent: record_intent,
         sent,
         probes,
     })
@@ -3107,15 +3071,14 @@ struct Job<'a> {
     signal: Signal,
     deadline: Instant,
     state: &'a Mutex<Brief>,
-    finished: &'a Sender<()>,
-    model: Model,
+    intent: Option<&'a TaskIntent>,
     /// The session's files on their way, and when they stop being waited for.
     context: &'a Option<(Receiver<SessionPaths>, Instant)>,
     /// Which recipe steps run.
     steps: Steps,
 }
 
-/// The worker of one brief: plan, ask, run.
+/// The worker of one brief: plan, retrieve, and run the selected recipe.
 fn work<F>(job: &Job, open: F)
 where
     F: FnOnce(Instant) -> Box<dyn Evidence>,
@@ -3125,13 +3088,15 @@ where
         signal,
         deadline,
         state,
-        finished,
-        model,
+        intent,
         context,
         steps,
     } = *job;
     if signal == Signal::Strong {
-        let plan = Plan::from_typed(typed).with_steps(steps);
+        let mut plan = Plan::from_typed(typed).with_steps(steps);
+        plan.change_intent |= intent.is_some_and(|intent| {
+            matches!(intent.label.as_str(), "bugfix" | "refactor" | "review")
+        });
         let evidence = open(deadline);
         edit(state, |brief| {
             brief.route = Some(evidence.route());
@@ -3145,7 +3110,6 @@ where
         brief.route = Some(evidence.route());
         brief.staleness = evidence.staleness();
     });
-    let kind = QuestionKind::heuristic(typed, &Anchors::from_text(typed));
     // The session's files: they boost the leads, and a short follow-up that
     // the words alone cannot place is let through on them.
     let session = context
@@ -3157,95 +3121,18 @@ where
         })
         .unwrap_or_default()
         .ranked();
-    let lift = !session.is_empty() && is_follow_up(typed);
-    // A recipe step may answer what the gate refuses: the question is about
-    // the workspace, not about words the code uses. Asked once, and only when
-    // the gate would close the prompt.
-    let plan = Plan::from_typed(typed).with_steps(steps);
-    let rescue = std::cell::OnceCell::new();
-    let rescued = || {
-        *rescue.get_or_init(|| {
-            steps::blocks(
-                &plan.typed,
-                plan.kind,
-                plan.steps,
-                &[],
-                evidence.as_ref(),
-                deadline,
-            )
-            .rescuing
-        })
-    };
-    let mut settled = |got: &Gathered| match refusal_lifting(
-        signal,
-        got,
-        false,
-        ENFORCE_GATE_ON_WEAK,
-        kind,
-        lift,
-    ) {
-        Some(_) if rescued() => false,
-        Some(admission) => {
-            close(state, got, admission);
-            let _ = finished.send(());
-            true
-        }
-        None => false,
-    };
-    let got = gather(
-        typed,
-        evidence.as_ref(),
-        model,
-        state,
-        deadline,
-        &mut settled,
-    );
+    let mut plan = Plan::from_typed(typed).with_steps(steps);
+    plan.change_intent |= intent
+        .is_some_and(|intent| matches!(intent.label.as_str(), "bugfix" | "refactor" | "review"));
+    let got = gather(typed, evidence.as_ref(), state, deadline);
     edit(state, mark_searched);
-    if edit(state, |brief| brief.silenced) {
-        return;
-    }
-    let refusal = refusal_lifting(signal, &got, true, ENFORCE_GATE_ON_WEAK, kind, lift);
-    if let Some(admission) = refusal.clone()
-        && !rescued()
-    {
-        close(state, &got, admission);
-        return;
-    }
-    fold_with(state, &plan, &got, &session, lift);
-    if refusal.is_some() {
-        // The words were refused, so the files they led to are not the
-        // answer: the steps' blocks are, as a pack of their own.
-        edit(state, |brief| {
-            brief.admission = Admission::Steps;
-            brief.files.clear();
-            brief.leads.clear();
-            brief.lexical.clear();
-            brief.receipt = None;
-            brief.confidence = None;
-            brief.finished = true;
-        });
-        pack_evidence(&plan, evidence.as_ref(), state, deadline);
-        return;
-    }
-    // A maybe is a short list of files and nothing else: no kind route, no
-    // definition read, no fallback search.
-    if edit(state, |brief| brief.tier()) == Some(Tier::Low) {
-        answer_evidence(evidence.as_ref(), state, deadline);
-        edit(state, |brief| {
-            brief.finished = true;
-            // A maybe gets at most one part of regions, as a lead.
-            brief.pack_limit.parts = brief.pack_limit.parts.min(1);
-        });
-        pack_evidence(&plan, evidence.as_ref(), state, deadline);
-        return;
-    }
+    fold_with(state, &plan, &got, &session);
     let plan = seeded(plan, state);
     run(&plan, evidence.as_ref(), state, deadline);
 }
 
-/// A flow or tests question in plain language names no symbol, so the kind's
-/// route has nothing to resolve: the symbol of the meaning search's best
-/// non-test chunk stands in as its anchor, for a confident brief only.
+/// A flow or tests question names no symbol, so the meaning lead's symbol
+/// stands in as an anchor for the kind's bounded evidence recipe.
 fn seeded(mut plan: Plan, state: &Mutex<Brief>) -> Plan {
     if !matches!(plan.kind, QuestionKind::Flow | QuestionKind::Tests)
         || plan.anchors.names().next().is_some()
@@ -3253,15 +3140,11 @@ fn seeded(mut plan: Plan, state: &Mutex<Brief>) -> Plan {
         return plan;
     }
     let seed = edit(state, |brief| {
-        (brief.tier() == Some(Tier::High))
-            .then(|| {
-                brief
-                    .leads
-                    .iter()
-                    .filter(|lead| !answer::is_test_path(&lead.path))
-                    .find_map(|lead| lead.symbol.clone())
-            })
-            .flatten()
+        brief
+            .leads
+            .iter()
+            .filter(|lead| !answer::is_test_path(&lead.path))
+            .find_map(|lead| lead.symbol.clone())
     });
     if let Some(symbol) = seed
         .filter(|name| name.len() >= 3 && name.chars().all(|ch| ch.is_alphanumeric() || ch == '_'))
@@ -3275,8 +3158,6 @@ fn seeded(mut plan: Plan, state: &Mutex<Brief>) -> Plan {
 #[derive(Default)]
 struct Gathered {
     relevance: Option<Result<RelevanceAnswer, String>>,
-    /// The decision scored from an answered relevance probe.
-    scored: Option<relevance::Verdict>,
     meaning: Option<Result<Vec<MeaningHit>, String>>,
     /// The plain-word leads, asked only when the meaning search failed.
     words: Option<Result<Vec<MeaningHit>, String>>,
@@ -3289,17 +3170,12 @@ enum Reply {
     Words(Result<Vec<MeaningHit>, String>),
 }
 
-/// Ask the relevance probe and the meaning search at once, each on the
-/// shared `deadline`; the probes count against the op budget. Stops
-/// collecting as soon as `settled` says the brief is decided, so a refusal
-/// does not wait for the slowest sibling.
+/// Ask the relevance probe and meaning search at once on the shared deadline.
 fn gather(
     typed: &str,
     evidence: &dyn Evidence,
-    model: Model,
     state: &Mutex<Brief>,
     deadline: Instant,
-    settled: &mut dyn FnMut(&Gathered) -> bool,
 ) -> Gathered {
     let ask_relevance = spend(state, deadline);
     let ask_meaning = spend(state, deadline);
@@ -3336,161 +3212,15 @@ fn gather(
                 Reply::Meaning(leads) => got.meaning = Some(leads),
                 Reply::Words(leads) => got.words = Some(leads),
             }
-            score(&mut got, typed, model);
-            if settled(&got) {
-                break;
-            }
         }
     });
     got
 }
 
-/// Put the relevance answer through `model`, once; a no-op until the
-/// relevance probe has answered.
-fn score(got: &mut Gathered, typed: &str, model: Model) {
-    if got.scored.is_some() {
-        return;
-    }
-    let Some(Ok(answer)) = &got.relevance else {
-        return;
-    };
-    let verdict = model(&GateInput {
-        relevance: &answer.input,
-        typed,
-    });
-    got.scored = Some(verdict);
-}
-
-/// Why `signal`'s prompt gets no brief, if it does not. `complete`: no more
-/// answers are coming, so a probe that never answered counts as "cannot tell".
-/// `lift`: a short follow-up of a session that is working on files, which the
-/// relevance gate does not close (see [`is_follow_up`]): not by scoring it off
-/// topic, and not by a probe that failed or never answered, which says nothing
-/// about the prompt.
-/// Plain language must be shown on topic by the repository; a weak prompt is
-/// refused by the relevance decision when `enforce_weak`.
-fn refusal_lifting(
-    signal: Signal,
-    got: &Gathered,
-    complete: bool,
-    enforce_weak: bool,
-    kind: QuestionKind,
-    lift: bool,
-) -> Option<Admission> {
-    match signal {
-        Signal::Strong => None,
-        Signal::Weak => {
-            // Without a code graph the model does not apply: a weak prompt
-            // keeps the behaviour it had before the gate.
-            got.scored
-                .as_ref()
-                .filter(|scored| {
-                    enforce_weak
-                        && scored.tier == Tier::Off
-                        && scored.basis != Basis::NoGraph
-                        && !lift
-                        && !admitted_by_kind(kind, Some(scored))
-                        && !admitted_by_coverage(scored)
-                })
-                .map(|scored| Admission::Closed(off_topic_reason(scored)))
-        }
-        Signal::Prose => match (&got.relevance, &got.scored) {
-            // A tour or a review is about the repository whatever words it
-            // uses, and whether or not the probe could be asked.
-            _ if admitted_by_kind(kind, got.scored.as_ref()) => None,
-            // The session's files place a short follow-up whatever the probe
-            // said or failed to say: `fold_with` lifts it onto them.
-            _ if lift => None,
-            (Some(Err(reason)), _) => Some(Admission::Closed(format!("relevance: {reason}"))),
-            (_, Some(scored)) if scored.tier == Tier::Off && !admitted_by_coverage(scored) => {
-                Some(Admission::Closed(off_topic_reason(scored)))
-            }
-            (None, _) if complete => Some(Admission::Closed(
-                "relevance: no answer before the deadline".to_string(),
-            )),
-            _ => None,
-        },
-    }
-}
-
-/// [`refusal_lifting`] for a prompt of no session: nothing lifts it.
-#[cfg(test)]
-fn refusal(
-    signal: Signal,
-    got: &Gathered,
-    complete: bool,
-    enforce_weak: bool,
-    kind: QuestionKind,
-) -> Option<Admission> {
-    refusal_lifting(signal, got, complete, enforce_weak, kind, false)
-}
-
-/// Keywords one file must hold, at least, for a walkthrough to be about the
-/// repository: the prompt shares two words with a file the graph knows.
-const FLOW_MIN_SHARED: usize = 2;
-
-/// Whether the kind of the prompt lets it through a gate that read it as off
-/// topic. A tour and a review of a change are about the repository by their
-/// phrasing, so they need no vocabulary; a walkthrough asks about a thing,
-/// and must share words with a file the graph knows by its symbols.
-fn admitted_by_kind(kind: QuestionKind, scored: Option<&relevance::Verdict>) -> bool {
-    match kind {
-        QuestionKind::Overview | QuestionKind::Review => true,
-        QuestionKind::Flow | QuestionKind::History => scored.is_some_and(|scored| {
-            scored.features.shared >= FLOW_MIN_SHARED && scored.features.structural_files > 0
-        }),
-        _ => false,
-    }
-}
-
-/// Keywords one file must hold, at least, for the coverage floor to overrule
-/// an off-topic score. Two was the walkthrough's bar, and two words a
-/// repository uses (`replay` and `fini`, `merge` and `PRs`) are what a
-/// status question or a steer of the agent shares with it: on the #1222
-/// replay, three words refused 10 `other` prompts against 1 follow-up on the
-/// reference window and 8 against 2 on a window held out from it.
-const COVERAGE_MIN_SHARED: usize = 3;
-
-/// A prompt the model read as off topic is still about the repository when
-/// one structural co-file holds half or more of its informative keywords,
-/// and at least [`COVERAGE_MIN_SHARED`] of them: the words name something
-/// the codebase knows by name or symbol.
-fn admitted_by_coverage(scored: &relevance::Verdict) -> bool {
-    scored.features.shared >= COVERAGE_MIN_SHARED
-        && scored.features.shared * 2 >= scored.features.informative
-        && scored.features.structural_files > 0
-}
-
-fn off_topic_reason(scored: &relevance::Verdict) -> String {
-    match (scored.basis, scored.score) {
-        (Basis::Model, Some(score)) => format!(
-            "off topic: score {score:.2}, {}/{} key terms in the best file",
-            scored.features.shared, scored.features.informative
-        ),
-        (Basis::NoKeywords, _) => "off topic: no keyword to weigh".to_string(),
-        _ => "no code graph: the model does not apply".to_string(),
-    }
-}
-
-/// Keep the decision the probes reached: the relevance verdict.
-fn note(brief: &mut Brief, got: &Gathered) {
-    brief.relevance.clone_from(&got.scored);
-}
-
-/// End the brief on a refusal that binds: nothing renders.
-fn close(state: &Mutex<Brief>, got: &Gathered, admission: Admission) {
-    edit(state, |brief| {
-        mark_searched(brief);
-        note(brief, got);
-        brief.admission = admission;
-        brief.silenced = true;
-    });
-}
-
 /// Fold what the probes found into the brief: the decision, and the fused
 /// leads as its first files, so the literal and concept searches only run
 /// when they found nothing.
-fn fold_with(state: &Mutex<Brief>, plan: &Plan, got: &Gathered, session: &[String], lift: bool) {
+fn fold_with(state: &Mutex<Brief>, plan: &Plan, got: &Gathered, session: &[String]) {
     let leads: &[MeaningHit] = match &got.meaning {
         Some(Ok(leads)) => leads,
         _ => &[],
@@ -3506,54 +3236,19 @@ fn fold_with(state: &Mutex<Brief>, plan: &Plan, got: &Gathered, session: &[Strin
         (_, Some(Ok(words))) => words,
         _ => leads,
     };
-    // The gate would have closed this prompt and the session's files stand in
-    // for what its words cannot say: they are the brief's files, and the
-    // words' leads (off topic by the gate's own verdict) are left out.
-    let lifted = lift
-        && !session.is_empty()
-        && got
-            .scored
-            .as_ref()
-            .is_none_or(|scored| scored.tier == Tier::Off);
-    let (leads, ranked, lines): (&[MeaningHit], &[MeaningHit], &[RichHit]) = if lifted {
-        (&[], &[], &[])
-    } else {
-        (leads, ranked, lines)
-    };
     let fused = RichFound {
-        hits: fuse_with(ranked, lines, session, lifted),
+        hits: fuse_with(ranked, lines, session),
         capped: false,
     };
     let admit_json = plan.kind == QuestionKind::Config;
     edit(state, |brief| {
-        note(brief, got);
-        brief.lifted = lifted;
-        brief.admission = match &got.scored {
-            _ if lifted => Admission::Context,
-            Some(scored) if scored.basis == Basis::NoGraph => Admission::Unjudged,
-            Some(scored) if scored.tier != Tier::Off => Admission::Open,
-            Some(scored) if admitted_by_coverage(scored) => Admission::Open,
-            scored if admitted_by_kind(plan.kind, scored.as_ref()) => Admission::Kind(plan.kind),
-            Some(scored) => Admission::Closed(off_topic_reason(scored)),
-            None => Admission::Unjudged,
-        };
+        brief.admission = Admission::Open;
         let answers = usize::from(matches!(got.relevance, Some(Ok(_))))
             + usize::from(matches!(got.meaning, Some(Ok(_))));
         if answers > 0 {
             brief.answered += answers;
             brief.searched = true;
-        } else if lifted {
-            // No probe could be asked, but the session's files are the brief:
-            // without this `fit` drops it as a brief of failures.
-            brief.answered = 1;
         }
-        brief.confidence = if lifted {
-            Some(relevance::LOW_CONFIDENCE_LINE.to_string())
-        } else {
-            got.scored
-                .as_ref()
-                .and_then(relevance::Verdict::confidence_line)
-        };
         brief.absorb(fused, admit_json);
         let (wants_tests, wants_docs) = answer::cues(&plan.typed);
         brief.wants_tests = wants_tests || plan.kind == QuestionKind::Tests;
@@ -3564,7 +3259,6 @@ fn fold_with(state: &Mutex<Brief>, plan: &Plan, got: &Gathered, session: &[Strin
         brief
             .files
             .sort_by_key(|hit| answer::demoted(&hit.path, wants_tests, wants_docs));
-        brief.zero_rule = answer::ZERO_RULE;
         brief.leads = leads.to_vec();
         brief.lexical = lines.iter().map(|hit| hit.path.clone()).collect();
         brief.receipt = match &got.relevance {
@@ -3580,12 +3274,6 @@ fn fold_with(state: &Mutex<Brief>, plan: &Plan, got: &Gathered, session: &[Strin
     });
 }
 
-/// [`fold_with`] for a prompt of no session.
-#[cfg(test)]
-fn fold(state: &Mutex<Brief>, plan: &Plan, got: &Gathered) {
-    fold_with(state, plan, got, &[], false);
-}
-
 /// What the entry at zero-based `rank` of one list adds to a file's fused
 /// score: ranks count from one, so the first entry adds `1 / (FUSE_K + 1)`.
 fn reciprocal_rank(rank: usize) -> f64 {
@@ -3598,17 +3286,9 @@ fn reciprocal_rank(rank: usize) -> f64 {
 /// meaning chunk, which is the more precise place to start. A credential-shaped
 /// path never enters a brief.
 ///
-/// `session` is the files the session is already working on, newest first. It
-/// is a third list that only lifts: a file the leads and co-files already name
-/// gains its reciprocal rank, and a file only the session names stays out, so
-/// an unrelated dirty file never displaces a lead. With `only_session` (a short
-/// follow-up the words cannot place) the session's files are the answer.
-fn fuse_with(
-    leads: &[MeaningHit],
-    cofiles: &[RichHit],
-    session: &[String],
-    only_session: bool,
-) -> Vec<RichHit> {
+/// `session` is the files the session is already working on, newest first;
+/// it boosts only files the evidence searches also found.
+fn fuse_with(leads: &[MeaningHit], cofiles: &[RichHit], session: &[String]) -> Vec<RichHit> {
     fn add(ranked: &mut Vec<(RichHit, f64)>, hit: RichHit, rank: usize) {
         let score = reciprocal_rank(rank);
         match ranked.iter_mut().find(|(held, _)| held.path == hit.path) {
@@ -3617,31 +3297,20 @@ fn fuse_with(
         }
     }
     let mut ranked: Vec<(RichHit, f64)> = Vec::new();
-    if only_session {
-        for (rank, path) in session.iter().enumerate() {
-            let hit = RichHit {
-                path: path.clone(),
-                line: 0,
-                text: None,
-            };
-            add(&mut ranked, hit, rank);
-        }
-    } else {
-        for (rank, lead) in leads.iter().enumerate() {
-            let hit = RichHit {
-                path: lead.path.clone(),
-                line: u64::from(lead.start_line),
-                text: (!lead.snippet.is_empty()).then(|| lead.snippet.clone()),
-            };
-            add(&mut ranked, hit, rank);
-        }
-        for (rank, hit) in cofiles.iter().enumerate() {
-            add(&mut ranked, hit.clone(), rank);
-        }
-        for (rank, path) in session.iter().enumerate() {
-            if let Some((_, total)) = ranked.iter_mut().find(|(held, _)| held.path == *path) {
-                *total += reciprocal_rank(rank);
-            }
+    for (rank, lead) in leads.iter().enumerate() {
+        let hit = RichHit {
+            path: lead.path.clone(),
+            line: u64::from(lead.start_line),
+            text: (!lead.snippet.is_empty()).then(|| lead.snippet.clone()),
+        };
+        add(&mut ranked, hit, rank);
+    }
+    for (rank, hit) in cofiles.iter().enumerate() {
+        add(&mut ranked, hit.clone(), rank);
+    }
+    for (rank, path) in session.iter().enumerate() {
+        if let Some((_, total)) = ranked.iter_mut().find(|(held, _)| held.path == *path) {
+            *total += reciprocal_rank(rank);
         }
     }
     ranked.retain(|(hit, _)| !pixel_model::credential_path(Path::new(&hit.path)));
@@ -3656,56 +3325,7 @@ fn fuse_with(
 /// [`fuse_with`] for a prompt of no session.
 #[cfg(test)]
 fn fuse(leads: &[MeaningHit], cofiles: &[RichHit]) -> Vec<RichHit> {
-    fuse_with(leads, cofiles, &[], false)
-}
-
-/// Words a short follow-up leans on what came before.
-const FOLLOW_UP_CUES: &[&str] = &[
-    "now",
-    "then",
-    "also",
-    "again",
-    "same",
-    "that",
-    "this",
-    "it",
-    "them",
-    "those",
-    "there",
-    "too",
-    "next",
-    "instead",
-    "still",
-    "maintenant",
-    "ensuite",
-    "aussi",
-    "encore",
-    "pareil",
-    "ça",
-    "cela",
-];
-/// The most words a follow-up has.
-const FOLLOW_UP_WORDS: usize = 10;
-
-/// Whether `typed` is a short follow-up: a few words that ask for a change or
-/// lean on what came before ("now fix the test"). Such a prompt names nothing
-/// the repository's words can place, which is why the gate closes it; with the
-/// files the session is working on it can be placed.
-pub(crate) fn is_follow_up(typed: &str) -> bool {
-    let words: Vec<String> = typed
-        .split_whitespace()
-        .map(|word| {
-            word.trim_matches(|ch: char| !ch.is_alphanumeric())
-                .to_lowercase()
-        })
-        .filter(|word| !word.is_empty())
-        .collect();
-    !words.is_empty()
-        && words.len() <= FOLLOW_UP_WORDS
-        && (has_change_intent(typed)
-            || words
-                .iter()
-                .any(|word| FOLLOW_UP_CUES.contains(&word.as_str())))
+    fuse_with(leads, cofiles, &[])
 }
 
 /// How many entries of each list a render shows.
@@ -3791,8 +3411,8 @@ impl Shown {
     }
 }
 
-/// The block, at most [`byte_cap`] bytes, or `None` when nothing answered or
-/// the gate refused the prompt. A list that does not fit loses entries and
+/// The block, at most [`byte_cap`] bytes, or `None` when no evidence answered.
+/// A list that does not fit loses entries and
 /// says how many.
 #[cfg(test)]
 pub(crate) fn render(brief: &Brief) -> Option<String> {
@@ -3822,12 +3442,8 @@ pub(crate) struct AnswerStats {
 
 /// [`render`], with the answer evidence it kept.
 pub(crate) fn fit(brief: &Brief) -> Option<(String, AnswerStats)> {
-    if brief.silenced || brief.answered == 0 {
+    if brief.answered == 0 {
         return None;
-    }
-    let low = brief.tier() == Some(Tier::Low);
-    if low && !brief.pack_limit.on() {
-        return render_low(brief).map(|text| (text, AnswerStats::default()));
     }
     if let Some(pack) = brief
         .pack
@@ -3838,9 +3454,9 @@ pub(crate) fn fit(brief: &Brief) -> Option<(String, AnswerStats)> {
         let text = match brief.staleness.line() {
             Some(line) => match pack.text_with_notice(line, brief.pack_limit) {
                 Some(text) => text,
-                None => return render_low(brief).map(|text| (text, AnswerStats::default())),
+                None => return render_unpacked(brief),
             },
-            None => pack.text_hedged(brief.cut || low),
+            None => pack.text_hedged(brief.cut),
         };
         let stats = AnswerStats {
             answer: true,
@@ -3860,25 +3476,6 @@ pub(crate) fn fit(brief: &Brief) -> Option<(String, AnswerStats)> {
             ..AnswerStats::default()
         };
         return Some((text, stats));
-    }
-    if low {
-        return render_low(brief).map(|text| (text, AnswerStats::default()));
-    }
-    // Admitted for its kind, not for the evidence of the packet: without the
-    // kind's own pack there is nothing to say, unless the window ended first.
-    // Then the question was judged about this repository and the pack was
-    // simply not ready: the best files it had found are a lead, which is
-    // better than the agent hearing nothing.
-    if matches!(brief.admission, Admission::Kind(_)) {
-        return if brief.cut {
-            // Whatever the relevance probe had to say, this is a lead and says so.
-            let mut lead = brief.clone();
-            lead.confidence
-                .get_or_insert_with(|| relevance::LOW_CONFIDENCE_LINE.to_string());
-            render_low(&lead).map(|text| (text, AnswerStats::default()))
-        } else {
-            None
-        };
     }
     let receipt = !brief.receipt_lines().is_empty();
     let cap = byte_cap(
@@ -3906,65 +3503,25 @@ pub(crate) fn fit(brief: &Brief) -> Option<(String, AnswerStats)> {
     Some((text, stats))
 }
 
-/// One entry of a `files:` line: `path:line`, and the matched text after a
-/// dash when the source carried it (cut to `text_chars`). A hit with no line
-/// of its own is a bare path.
-fn file_entry(hit: &RichHit, text_chars: usize) -> String {
-    let site = if hit.line == 0 {
-        clean(&hit.path)
-    } else {
-        format!("{}:{}", clean(&hit.path), hit.line)
-    };
-    match &hit.text {
-        Some(text) if text_chars > 0 => format!("{site} — {}", clean_n(text, text_chars)),
-        _ => site,
+fn render_unpacked(brief: &Brief) -> Option<(String, AnswerStats)> {
+    let receipt = !brief.receipt_lines().is_empty();
+    let cap = byte_cap(
+        brief.signal,
+        receipt || brief.has_excerpts() || !brief.read_ranges().is_empty(),
+    );
+    let mut shown = Shown::of(brief);
+    let mut text = render_with(brief, shown);
+    while text.len() > cap && shown.shrink() {
+        text = render_with(brief, shown);
     }
-}
-
-/// The compact block of a low-tier prompt: at most [`LOW_FILES`] files and
-/// the line that says it is a maybe, within [`LOW_BRIEF_BYTES`]. Texts give
-/// way first, from the full width to half and then to none, and files only
-/// when paths alone are too long; `None` when there is no file to name.
-fn render_low(brief: &Brief) -> Option<String> {
-    let shown = brief.files.len().min(LOW_FILES);
-    if shown == 0 {
-        return None;
-    }
-    let confidence = brief.confidence.as_deref().unwrap_or_default();
-    let reads = brief.read_lines();
-    let block = |files: usize, text_chars: usize| {
-        let entries: Vec<String> = brief
-            .files
-            .iter()
-            .take(files)
-            .map(|hit| file_entry(hit, text_chars))
-            .collect();
-        let mut text = format!("{BRIEF_TAG}\nfiles: {}\n{confidence}", entries.join("; "));
-        if let Some(line) = brief.staleness.line() {
-            text.push('\n');
-            text.push_str(line);
-        }
-        for line in &reads {
-            text.push('\n');
-            text.push_str(line);
-        }
-        text
+    let excerpt = brief.excerpt_block(shown);
+    let stats = AnswerStats {
+        receipt,
+        answer: !excerpt.is_empty(),
+        excerpt_bytes: excerpt.iter().map(|line| line.len() + 1).sum(),
+        ..AnswerStats::default()
     };
-    let cap = if reads.is_empty() {
-        LOW_BRIEF_BYTES
-    } else {
-        LOW_READ_BRIEF_BYTES
-    };
-    let mut text = block(1, 0);
-    for files in (1..=shown).rev() {
-        for text_chars in [MAX_ITEM_CHARS, MAX_ITEM_CHARS / 2, 0] {
-            text = block(files, text_chars);
-            if text.len() <= cap {
-                return Some(text);
-            }
-        }
-    }
-    Some(text)
+    Some((text, stats))
 }
 
 /// The size cap of a brief started by `signal`; `answer`: it carries a
@@ -4065,16 +3622,6 @@ fn render_with(brief: &Brief, shown: Shown) -> String {
     ) {
         lines.push(line);
     }
-    if let Some(confidence) = &brief.confidence {
-        // Evidence that did not earn the ZERO step is a medium confidence.
-        lines.push(if brief.confident() {
-            confidence.clone()
-        } else if brief.read_ranges().is_empty() {
-            MEDIUM_FILES_CONFIDENCE.to_string()
-        } else {
-            MEDIUM_CONFIDENCE.to_string()
-        });
-    }
     lines.extend(brief.excerpt_block(shown));
     if let Some(line) = list_line(
         "callers (impact d1)",
@@ -4166,14 +3713,7 @@ fn render_with(brief: &Brief, shown: Shown) -> String {
     } else if !reads.is_empty() {
         lines.extend(reads);
     } else if !brief.partial() {
-        lines.push(
-            if brief.confident() {
-                FOOTER
-            } else {
-                UNCORROBORATED_FOOTER
-            }
-            .to_string(),
-        );
+        lines.push(UNCORROBORATED_FOOTER.to_string());
     }
     lines.join("\n")
 }

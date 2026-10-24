@@ -1,12 +1,73 @@
 // SPDX-FileCopyrightText: The RTO contributors
 // SPDX-License-Identifier: MIT
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::support::{action_log, project, stderr, stdout};
 
 fn json(output: &std::process::Output) -> Value {
     serde_json::from_slice(&output.stdout).expect("json on stdout")
+}
+
+#[cfg(unix)]
+#[test]
+fn brief_returns_at_its_deadline_when_a_current_daemon_delays_its_response() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    use std::time::{Duration, Instant};
+
+    let fixture = project();
+    let canonical_root = fixture.root().canonicalize().unwrap();
+    let hash = xxhash_rust::xxh3::xxh3_64(canonical_root.to_string_lossy().as_bytes());
+    let socket = fixture
+        .dir
+        .path()
+        .join("run")
+        .join(format!("pixel-{hash:016x}.sock"));
+    let listener = UnixListener::bind(socket).unwrap();
+    let daemon = std::thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            let request: Value = serde_json::from_str(&request).unwrap();
+            if request["op"] == "ping" {
+                let response = json!({
+                    "ok": true,
+                    "op": "ping",
+                    "protocol": 2,
+                    "result": {"protocol": 2, "version": env!("CARGO_PKG_VERSION")},
+                    "error": null
+                });
+                writeln!(stream, "{response}").unwrap();
+            } else {
+                assert_eq!(request["op"], "brief");
+                std::thread::sleep(Duration::from_secs(2));
+                let response = json!({
+                    "ok": true,
+                    "op": "brief",
+                    "protocol": 2,
+                    "result": {"text": null, "record": null},
+                    "error": null
+                });
+                let _ = writeln!(stream, "{response}");
+            }
+        }
+    });
+
+    let began = Instant::now();
+    let output = fixture.run(&["brief", "Explain how the post list works", "--json"]);
+    let elapsed = began.elapsed();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(
+        elapsed < Duration::from_millis(1200),
+        "brief waited {elapsed:?}"
+    );
+    let result = json(&output);
+    assert_eq!(result["declined"], "deadline");
+    daemon.join().unwrap();
 }
 
 #[test]

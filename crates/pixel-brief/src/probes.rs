@@ -47,41 +47,17 @@ pub struct ProbeRun {
     pub outcome: &'static str,
 }
 
-/// What the probes are given at least after the chain: a hook gives them this
-/// much when the chain used its window up; the `brief` command gives nothing
-/// (OpenCode kills it at 1.2 s).
-pub(crate) const PROBE_FLOOR: Duration = Duration::from_millis(1_200);
-/// No probe outlives this after the prompt arrived: under Pi's six-second hook
-/// decision limit, with room to print, and under what the parts after the first
-/// wait for part 1.
-const PROBE_CEILING: Duration = Duration::from_millis(5_000);
 /// Bytes a merged brief may hold when it is the `brief` command's single part:
 /// OpenCode's extension drops a longer output.
 pub(crate) const COMMAND_MAX_BYTES: usize = 3_990;
-
-/// When the probes of a brief that started at `started`, whose window ends at
-/// `window_end`, must be done: the end of the window, or `floor` from `now`
-/// when the chain used it up, and never past the ceiling.
-pub(crate) fn probe_deadline(
-    started: Instant,
-    window_end: Instant,
-    now: Instant,
-    floor: Duration,
-) -> Instant {
-    window_end.max(now + floor).min(started + PROBE_CEILING)
-}
 
 /// The repository whose brief is probed and the plugin host that offers the
 /// probes (the user's own plus the repository's trusted ones).
 pub(crate) struct ProbeSetup {
     pub(crate) host: Host,
     pub(crate) root: PathBuf,
-    /// Characters the merged brief may hold: the hook parts the host takes,
-    /// whatever the tier shrank the region pack to (a maybe's pack is one
-    /// part, but a probe that answers it may fill all of them).
+    /// Characters the merged brief may hold: the hook parts the host takes.
     pub(crate) cap: usize,
-    /// What the probes are given at least after the chain.
-    pub(crate) floor: Duration,
     /// Bytes the merged brief may hold when the host drops a longer one.
     pub(crate) max_bytes: Option<usize>,
 }
@@ -100,7 +76,6 @@ impl ProbeSetup {
             host,
             root,
             cap: parts.max(1) * chars,
-            floor: if command { Duration::ZERO } else { PROBE_FLOOR },
             max_bytes: (command && parts <= 1).then_some(COMMAND_MAX_BYTES),
         }
     }
@@ -197,7 +172,7 @@ pub(crate) fn apply(stage: &Stage, brief: &str) -> (Option<String>, Vec<ProbeRun
     (Some(merged), runs)
 }
 
-/// Run one probe inside `min(budget, what is left of the window)`.
+/// Run one probe inside `min(budget, what is left of the shared deadline)`.
 fn run_one(
     probe: &Probe,
     request: &str,
@@ -234,6 +209,11 @@ fn run_one(
         command.env("HOME", home);
     }
     in_own_group(&mut command);
+    // Building the command environment can consume the last part of the
+    // shared budget. Check again immediately before spawning the child.
+    if Instant::now() >= limit {
+        return (None, run("skipped", 0));
+    }
     let Ok(mut child) = command.spawn() else {
         return (None, run("failed", 0));
     };
@@ -267,7 +247,7 @@ fn run_one(
     let read = receiver.recv_timeout(limit.saturating_duration_since(Instant::now()));
     kill_group(group);
     let _ = child.kill();
-    let status = reap(child, limit.max(Instant::now()) + REAP_GRACE);
+    let status = reap(child, limit);
     let Ok(raw) = read else {
         return (None, run("timeout", 0));
     };
@@ -281,12 +261,6 @@ fn run_one(
     let bytes = text.len();
     (Some(text), run("ok", bytes))
 }
-
-/// How long past its limit a probe's leader, once killed, is waited on for
-/// its status: a kill ends a process at once unless it sleeps in the kernel
-/// (a hung network or FUSE read), and that one is reaped later off the
-/// brief's path.
-const REAP_GRACE: Duration = Duration::from_millis(50);
 
 /// Starts the command in a new process group, its own pid the group's id.
 fn in_own_group(command: &mut Command) {

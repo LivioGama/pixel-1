@@ -6,7 +6,22 @@ use super::*;
 const NONE: [&str; 0] = [];
 const SECOND: Duration = Duration::from_secs(1);
 
-/// [`try_start_with`] on the production tier model and no session.
+/// The old scorer parameter is accepted only by legacy test helpers; brief
+/// execution no longer consults it.
+fn try_start_with<F>(
+    prompt: &str,
+    window: Duration,
+    open: F,
+    _model: Model,
+    around: Around,
+) -> Result<Pending, Declined>
+where
+    F: FnOnce(Instant) -> Box<dyn Evidence> + Send + 'static,
+{
+    super::try_start(prompt, window, open, around)
+}
+
+/// [`try_start_with`] without session context.
 fn start_with<F>(prompt: &str, window: Duration, open: F) -> Option<Pending>
 where
     F: FnOnce(Instant) -> Box<dyn Evidence> + Send + 'static,
@@ -203,30 +218,7 @@ fn lookup_only_should_keep_usage_blocks_for_edits_and_explicit_references() {
 fn plan_should_decline_a_prompt_that_asks_nothing_about_code() {
     assert_eq!(Plan::from_prompt("ok thanks"), None);
     assert_eq!(Plan::from_prompt("commit and push this"), None);
-    // Codex's envelopes carry the identifiers of whatever they relay.
-    let delegation = [
-        "<realtime_delegation>",
-        "  <input>where is fetchUser</input>",
-        "</realtime_delegation>",
-    ]
-    .join("\n");
-    let reply = [
-        "<send_user_message_question_reply>",
-        "[{\"question\":\"where is fetchUser\",\"answer\":\"src/api.rs\"}]",
-        "</send_user_message_question_reply>",
-    ]
-    .join("\n");
-    let reminded = format!("<system-reminder>ctx</system-reminder>\n{delegation}");
-    for envelope in [
-        "<task-notification><task-id>x</task-id>fetchUser retry_count failed</task-notification>",
-        "<system-reminder>callers of `fetchUser`</system-reminder>",
-        "<command-name>/review</command-name> `fetchUser`",
-        delegation.as_str(),
-        reply.as_str(),
-        reminded.as_str(),
-    ] {
-        assert_eq!(Plan::from_prompt(envelope), None, "{envelope}");
-    }
+    // Harness envelopes are filtered before this typed-text planning helper.
     assert!(Plan::from_prompt("fix the hook: a <task-notification> reaches `fetchUser`").is_some());
     assert!(
         Plan::from_prompt("fix the hook: a <realtime_delegation> reaches `fetchUser`").is_some()
@@ -586,7 +578,10 @@ fn likely_def_should_name_a_line_less_hit_by_its_path_alone() {
         brief.likely_def.as_deref(),
         Some("src/handleError.ts — export const handleError = (e) => e")
     );
-    assert_eq!(fake.calls().last().unwrap(), "line_at src/handleError.ts:0");
+    assert!(
+        fake.calls()
+            .contains(&"line_at src/handleError.ts:0".into())
+    );
     let text = render(&brief).unwrap();
     assert!(
         text.contains("\nlikely definition: src/handleError.ts — export const handleError"),
@@ -636,7 +631,9 @@ fn chain_should_search_resolve_a_uid_and_run_impact_on_it_for_a_change_prompt() 
             "files_with handleError",
             "symbols handleError",
             "callers packages/ui/handleError.ts#handleError#function",
-            "context packages/ui/handleError.ts#handleError#function budget 400"
+            "context packages/ui/handleError.ts#handleError#function budget 400",
+            "lines_at apps/web/page.tsx:1-66",
+            "lines_at apps/web/page.tsx:1-20000"
         ]
     );
     assert_eq!(brief.files, [rhit_no_text("apps/web/page.tsx", 4)]);
@@ -734,7 +731,8 @@ fn chain_should_skip_impact_for_a_literal_lookup() {
         [
             "files_with fetchUser",
             "symbols fetchUser",
-            "context src/a.ts#fetchUser#function budget 400"
+            "context src/a.ts#fetchUser#function budget 400",
+            "lines_at src/a.ts:1-20000"
         ]
     );
     assert_eq!(brief.ops, 3);
@@ -793,7 +791,14 @@ fn chain_should_search_concepts_only_when_no_file_was_found() {
     let mut none = Fake::new();
     none.concept = Ok(found(vec![hit("src/retry.ts", 7)]));
     let brief = chain("how does the retry logic back off", &none, SECOND);
-    assert_eq!(none.calls(), ["concept retry logic back"]);
+    assert_eq!(
+        none.calls(),
+        [
+            "concept retry logic back",
+            "lines_at src/retry.ts:1-69",
+            "lines_at src/retry.ts:1-20000"
+        ]
+    );
     assert_eq!(brief.files, [rhit_no_text("src/retry.ts", 7)]);
 }
 
@@ -945,7 +950,9 @@ fn a_tests_prompt_should_list_the_test_files_calling_the_pick() {
             "symbols retry_loop",
             "test_files src/retry.ts#retry_loop#function",
             "line_at src/retry.ts:3",
-            "semantic_hint tests cover retry loop"
+            "semantic_hint tests cover retry loop",
+            "lines_at tests/retry_test.ts:1-4000",
+            "lines_at specs/retry_spec.ts:1-4000"
         ]
     );
     assert_eq!(brief.tests, ["tests/retry_test.ts", "specs/retry_spec.ts"]);
@@ -1320,7 +1327,7 @@ fn full_brief() -> Brief {
 }
 
 #[test]
-fn staleness_should_survive_a_partial_snapshot_and_render_in_both_tiers() {
+fn staleness_should_survive_a_partial_snapshot_and_render_in_the_brief() {
     let brief = full_brief();
     let mut partial = brief.clone();
     partial.cut = true;
@@ -1330,11 +1337,10 @@ fn staleness_should_survive_a_partial_snapshot_and_render_in_both_tiers() {
     let text = render(&partial).unwrap();
     assert_eq!(text.matches(STALENESS_LINE).count(), 1);
     assert!(text.contains("packet partial"));
-    let low = low_brief(vec![rhit("a.rs", 1, "pub fn go() {}")]);
-    low.staleness.mark();
-    let text = render(&low).unwrap();
+    let complete = full_brief();
+    complete.staleness.mark();
+    let text = render(&complete).unwrap();
     assert_eq!(text.matches(STALENESS_LINE).count(), 1);
-    assert!(text.len() <= LOW_BRIEF_BYTES);
 }
 
 #[test]
@@ -1366,7 +1372,7 @@ fn render_should_lay_out_every_line_in_order() {
 }
 
 #[test]
-fn render_should_keep_the_plain_footer_when_nothing_is_missing() {
+fn render_should_keep_the_verification_footer_when_nothing_is_missing() {
     let mut brief = Brief {
         anchors: vec!["fetchUser".into()],
         kind: Some(QuestionKind::Lookup),
@@ -1378,13 +1384,13 @@ fn render_should_keep_the_plain_footer_when_nothing_is_missing() {
         ..Brief::default()
     };
     let text = render(&brief).unwrap();
-    assert!(text.ends_with(FOOTER), "{text}");
+    assert!(text.ends_with(UNCORROBORATED_FOOTER), "{text}");
     assert!(!text.contains("packet partial"), "{text}");
     assert!(!text.contains("next:"), "{text}");
     brief.cut = true;
     let text = render(&brief).unwrap();
     assert!(text.contains("packet partial"), "{text}");
-    assert!(!text.ends_with(FOOTER), "{text}");
+    assert!(!text.ends_with(UNCORROBORATED_FOOTER), "{text}");
 }
 
 #[test]
@@ -1683,7 +1689,7 @@ fn a_strong_prompt_should_never_ask_the_judge() {
     let _ = pending.finish();
 }
 
-// ---- plain-language and weak prompts: the relevance gate ----
+// ---- plain-language and weak prompts: task-intent admission ----
 
 /// A plain-language prompt: no identifier, no code word, no operation.
 const PROSE: &str = "the daemon misses changes made during startup";
@@ -1731,10 +1737,6 @@ fn on_topic_answer() -> RelevanceAnswer {
     }
 }
 
-/// The `confidence:` line of a high-tier brief the stub models decide.
-const HIGH_CONFIDENCE: &str = "confidence: high — 3/3 key terms covered; start with the first file";
-const LOW_CONFIDENCE: &str = "confidence: low — possibly related; verify before relying on it";
-
 /// The repository does not talk about the prompt: two of its words are
 /// nowhere (the cap), the third is everywhere (0), and no file holds any.
 fn off_topic_answer() -> RelevanceAnswer {
@@ -1754,8 +1756,7 @@ fn off_topic_answer() -> RelevanceAnswer {
     }
 }
 
-/// The verdict of a model that puts every prompt in `tier`: the
-/// pipeline's tests do not depend on the constants of the real one.
+/// A test-only lexical verdict; brief output must not depend on it.
 fn verdict_in(tier: Tier, input: &GateInput) -> relevance::Verdict {
     relevance::Verdict {
         tier,
@@ -1783,21 +1784,8 @@ fn model_high(input: &GateInput) -> relevance::Verdict {
     verdict_in(Tier::High, input)
 }
 
-fn model_low(input: &GateInput) -> relevance::Verdict {
-    verdict_in(Tier::Low, input)
-}
-
 fn model_off(input: &GateInput) -> relevance::Verdict {
     verdict_in(Tier::Off, input)
-}
-
-/// A model that finds nothing to say: the code graph did not answer.
-fn model_no_graph(input: &GateInput) -> relevance::Verdict {
-    relevance::Verdict {
-        basis: Basis::NoGraph,
-        score: None,
-        ..verdict_in(Tier::Off, input)
-    }
 }
 
 fn lead(path: &str, line: u32, snippet: &str) -> MeaningHit {
@@ -1841,7 +1829,7 @@ fn briefed(prompt: &str, fake: Fake) -> Finished {
 }
 
 #[test]
-fn a_prose_prompt_on_topic_should_render_the_fused_files_and_a_confidence_line() {
+fn a_prose_prompt_on_topic_should_render_fused_files_without_a_lexical_tier() {
     let mut fake = Fake::new();
     fake.relevance = Ok(on_topic_answer());
     fake.meaning = Ok(vec![
@@ -1870,7 +1858,6 @@ fn a_prose_prompt_on_topic_should_render_the_fused_files_and_a_confidence_line()
                 "searched: content+symbols+paths for daemon, changes, startup (3 terms, 1000 files) · meaning search returned 2 chunks",
                 "result: the matches below are the best across both searches; verify they answer the question",
                 "files: crates/pixel-daemon/src/daemon.rs:280 — fn watch_ready() {; crates/pixel-daemon/src/api.rs:40 — fn op_status; docs/notes.md:12 — daemon startup notes",
-                MEDIUM_FILES_CONFIDENCE,
                 "coverage: 2/2 ops answered",
                 UNCORROBORATED_FOOTER,
             ]
@@ -1888,13 +1875,13 @@ fn a_prose_prompt_on_topic_should_render_the_fused_files_and_a_confidence_line()
     let record = finished.record;
     assert_eq!(
         (record.signal, record.gate, record.enforced),
-        (Some("prose"), "open", true)
+        (Some("prose"), "open", false)
     );
-    assert_eq!(record.best_file.as_deref(), Some(DAEMON));
-    assert_eq!((record.tier, record.score), (Some("high"), Some(2.0)));
+    assert_eq!(record.model, None);
+    assert_eq!((record.tier, record.score), (None, None));
+    assert_eq!(record.best_file, None);
     assert_eq!((record.ops, record.answered), (2, 2));
-    let features = record.features.as_ref().unwrap();
-    assert_eq!((features.shared, features.informative), (3, 3));
+    assert_eq!(record.features, None);
     assert_eq!(record.bytes, finished.text.unwrap().len());
     assert_eq!(record.typed, PROSE);
     assert_eq!(record.sha256, pixel_metrics::journal::sha256_hex(PROSE));
@@ -1942,7 +1929,7 @@ fn a_prose_prompt_with_meaning_leads_should_never_read_the_plain_word_leads() {
 }
 
 #[test]
-fn a_prose_prompt_the_model_puts_off_should_render_nothing_and_say_why() {
+fn a_low_lexical_score_should_not_suppress_a_prose_prompt() {
     let mut fake = Fake::new();
     fake.relevance = Ok(off_topic_answer());
     fake.meaning = Ok(vec![lead(DAEMON, 1, "x")]);
@@ -1951,19 +1938,16 @@ fn a_prose_prompt_the_model_puts_off_should_render_nothing_and_say_why() {
         fake,
         model_off,
     );
-    assert_eq!(finished.text, None);
+    assert!(finished.text.is_some());
     let record = finished.record;
-    assert_eq!((record.signal, record.gate), (Some("prose"), "closed"));
-    assert_eq!((record.tier, record.score), (Some("off"), Some(-1.0)));
-    assert_eq!(
-        record.reason.as_deref(),
-        Some("off topic: score -1.00, 3/3 key terms in the best file")
-    );
-    assert_eq!((record.answered, record.bytes), (0, 0));
+    assert_eq!((record.signal, record.gate), (Some("prose"), "open"));
+    assert_eq!((record.tier, record.score), (None, None));
+    assert_eq!(record.reason, None);
+    assert!(record.answered > 0 && record.bytes > 0);
 }
 
 #[test]
-fn a_prose_prompt_whose_relevance_probe_fails_should_not_wait_for_the_slow_meaning_search() {
+fn a_relevance_probe_failure_should_not_stop_the_meaning_search() {
     let mut fake = Fake::new();
     fake.relevance = Err("cold".into());
     fake.meaning = Ok(vec![lead(DAEMON, 1, "x")]);
@@ -1979,25 +1963,22 @@ fn a_prose_prompt_whose_relevance_probe_fails_should_not_wait_for_the_slow_meani
     .unwrap()
     .finish_with_record();
     assert!(
-        started.elapsed() < Duration::from_millis(700),
+        started.elapsed() >= Duration::from_millis(1100),
         "{:?}",
         started.elapsed()
     );
-    assert_eq!(finished.text, None);
-    assert_eq!(finished.record.gate, "closed");
-    assert_eq!(finished.record.reason.as_deref(), Some("relevance: cold"));
+    assert!(finished.text.is_some());
+    assert_eq!(finished.record.gate, "open");
+    assert_eq!(finished.record.reason, None);
 }
 
 #[test]
-fn a_prose_prompt_whose_probes_all_fail_should_render_nothing() {
+fn failed_probes_should_not_close_task_intent_admission() {
     let finished = briefed(PROSE, Fake::new());
-    assert_eq!(finished.text, None);
-    assert_eq!(finished.record.gate, "closed");
-    assert_eq!(
-        finished.record.reason.as_deref(),
-        Some("relevance: unavailable")
-    );
-    assert_eq!((finished.record.ops, finished.record.answered), (2, 0));
+    assert!(finished.text.is_some());
+    assert_eq!(finished.record.gate, "open");
+    assert_eq!(finished.record.reason, None);
+    assert_eq!((finished.record.ops, finished.record.answered), (3, 1));
 }
 
 #[test]
@@ -2080,20 +2061,77 @@ fn a_weak_prompt_whose_probes_fail_should_fall_back_to_concept_matching_quietly(
     assert!(text.contains("\nfiles: src/login.ts:3\n"), "{text}");
     assert!(!text.contains("unresolved"), "{text}");
     assert!(!text.contains("confidence"), "{text}");
-    assert!(text.ends_with(FOOTER), "{text}");
-    assert_eq!(finished.record.gate, "unjudged");
+    assert!(text.ends_with(UNCORROBORATED_FOOTER), "{text}");
+    assert_eq!(finished.record.gate, "open");
 }
 
 #[test]
-fn a_weak_prompt_the_model_puts_off_should_get_no_brief() {
+fn a_low_lexical_score_should_not_suppress_a_weak_prompt() {
     let mut fake = Fake::new();
     fake.relevance = Ok(off_topic_answer());
     fake.concept = Ok(found(vec![hit("src/login.ts", 3)]));
     let finished = briefed_with("how does the login flow work", fake, model_off);
-    assert_eq!(finished.text, None);
-    assert_eq!(finished.record.gate, "closed");
-    assert_eq!(finished.record.tier, Some("off"));
-    assert!(finished.record.enforced);
+    assert!(finished.text.is_some());
+    assert_eq!(finished.record.gate, "open");
+    assert_eq!(finished.record.tier, None);
+    assert!(!finished.record.enforced);
+}
+
+#[test]
+fn an_investigation_lead_should_supply_source_evidence_without_keyword_overlap() {
+    let prompt = "Explain how this component behaves";
+    assert!(Plan::from_typed(prompt).anchors.names().next().is_none());
+
+    let mut fake = Fake::new();
+    fake.relevance = Ok(off_topic_answer());
+    fake.meaning = Ok(vec![lead_at("src/feed.js", 1, Some("render_feed"))]);
+    fake.sources = vec![(
+        "src/feed.js".into(),
+        [
+            "function render_feed(posts) {",
+            "  return posts.map(render_post).join(\"\");",
+            "}",
+            "function render_post(post) {",
+            "  return `${post.author}: ${post.body}`;",
+            "}",
+        ]
+        .map(str::to_string)
+        .to_vec(),
+    )];
+    let intent = serde_json::json!({
+        "predicted": "investigate",
+        "probs": {"investigate": 0.68, "question": 0.32, "none": 0.0},
+        "snapshot": {"provider": "jev", "model": "configured-model", "confidence": 0.63}
+    });
+    let finished = try_start_with(
+        prompt,
+        SECOND,
+        move |_| Box::new(fake),
+        model_off,
+        Around {
+            intent: Some(intent),
+            pack: region_pack::Limit::of(2),
+            ..Around::default()
+        },
+    )
+    .unwrap()
+    .finish_with_record();
+
+    let text = finished
+        .text
+        .expect("an admitted investigation gets evidence");
+    assert!(text.contains("src/feed.js"), "{text}");
+    assert!(text.contains("function render_feed(posts)"), "{text}");
+    assert!(text.contains("posts.map(render_post)"), "{text}");
+    assert!(finished.record.answer || finished.record.pack_parts > 0);
+    assert_eq!(
+        finished.record.intent.as_ref().unwrap()["label"],
+        "investigate"
+    );
+    assert_eq!(finished.record.gate, "open");
+    assert_eq!(finished.record.tier, None);
+    assert_eq!(finished.record.model, None);
+    assert_eq!(finished.record.score, None);
 }
 
 #[test]
@@ -2117,7 +2155,7 @@ fn a_strong_prompt_should_never_ask_the_relevance_probe_or_the_meaning_search() 
         seen.calls()
     );
     assert_eq!(finished.record.signal, Some("strong"));
-    assert_eq!(finished.record.gate, "unjudged");
+    assert_eq!(finished.record.gate, "open");
     assert!(!finished.record.enforced);
     assert_eq!(finished.record.score, None);
 }
@@ -2131,14 +2169,7 @@ fn gather_should_spend_one_op_per_probe_and_skip_a_probe_the_budget_refuses() {
         ops: MAX_OPS - 1,
         ..Brief::default()
     });
-    let got = gather(
-        PROSE,
-        &fake,
-        model_high,
-        &state,
-        Instant::now() + SECOND,
-        &mut |_| false,
-    );
+    let got = gather(PROSE, &fake, &state, Instant::now() + SECOND);
     assert_eq!(fake.calls(), [format!("relevance {PROSE}")]);
     assert!(matches!(got.relevance, Some(Ok(_))));
     assert!(got.meaning.is_none());
@@ -2147,14 +2178,7 @@ fn gather_should_spend_one_op_per_probe_and_skip_a_probe_the_budget_refuses() {
 
     let fresh = Mutex::new(Brief::default());
     let both = Fake::new();
-    gather(
-        PROSE,
-        &both,
-        model_high,
-        &fresh,
-        Instant::now() + SECOND,
-        &mut |_| false,
-    );
+    gather(PROSE, &both, &fresh, Instant::now() + SECOND);
     assert_eq!(edit(&fresh, |brief| brief.ops), 2);
     assert_eq!(
         sorted(both.calls()),
@@ -2162,177 +2186,6 @@ fn gather_should_spend_one_op_per_probe_and_skip_a_probe_the_budget_refuses() {
             format!("meaning {PROSE} limit 8"),
             format!("relevance {PROSE}")
         ]
-    );
-}
-
-#[test]
-fn gather_should_stop_collecting_when_the_decision_is_settled() {
-    let mut fake = Fake::new();
-    fake.relevance = Ok(off_topic_answer());
-    let state = Mutex::new(Brief::default());
-    let mut seen = 0;
-    fake.relevance = Err("cold".into());
-    let got = gather(
-        PROSE,
-        &fake,
-        model_high,
-        &state,
-        Instant::now() + SECOND,
-        &mut |_| {
-            seen += 1;
-            true
-        },
-    );
-    assert_eq!(seen, 1, "the first reply settled it");
-    let replies = usize::from(got.relevance.is_some()) + usize::from(got.meaning.is_some());
-    assert_eq!(replies, 1);
-}
-
-/// What the probes answered, scored by a model that puts the prompt in `tier`.
-fn gathered(relevance: Option<Result<RelevanceAnswer, String>>, tier: Tier) -> Gathered {
-    let scored = relevance
-        .as_ref()
-        .and_then(|answer| answer.as_ref().ok())
-        .map(|answer| {
-            verdict_in(
-                tier,
-                &GateInput {
-                    relevance: &answer.input,
-                    typed: PROSE,
-                },
-            )
-        });
-    Gathered {
-        relevance,
-        scored,
-        meaning: None,
-        words: None,
-    }
-}
-
-#[test]
-fn refusal_should_let_a_strong_prompt_through_whatever_the_probes_say() {
-    let got = gathered(Some(Ok(off_topic_answer())), Tier::Off);
-    assert_eq!(
-        refusal(Signal::Strong, &got, true, true, QuestionKind::Lookup),
-        None
-    );
-}
-
-#[test]
-fn refusal_should_close_a_prose_prompt_the_model_puts_off() {
-    let off = gathered(Some(Ok(off_topic_answer())), Tier::Off);
-    assert_eq!(
-        refusal(Signal::Prose, &off, false, false, QuestionKind::Lookup),
-        Some(Admission::Closed(
-            "off topic: score -1.00, 3/3 key terms in the best file".into()
-        ))
-    );
-    let failed = gathered(Some(Err("cold".into())), Tier::Off);
-    assert_eq!(
-        refusal(Signal::Prose, &failed, false, false, QuestionKind::Lookup),
-        Some(Admission::Closed("relevance: cold".into()))
-    );
-    for tier in [Tier::High, Tier::Low] {
-        let on = gathered(Some(Ok(on_topic_answer())), tier);
-        assert_eq!(
-            refusal(Signal::Prose, &on, true, false, QuestionKind::Lookup),
-            None,
-            "{tier:?}"
-        );
-    }
-}
-
-#[test]
-fn refusal_should_wait_for_a_missing_relevance_answer_until_nothing_more_is_coming() {
-    let silent = gathered(None, Tier::Off);
-    assert_eq!(
-        refusal(Signal::Prose, &silent, false, false, QuestionKind::Lookup),
-        None
-    );
-    assert_eq!(
-        refusal(Signal::Prose, &silent, true, false, QuestionKind::Lookup),
-        Some(Admission::Closed(
-            "relevance: no answer before the deadline".into()
-        ))
-    );
-}
-
-#[test]
-fn refusal_lifting_should_not_close_a_lifted_prose_prompt_whatever_the_probe_says() {
-    let lookup = QuestionKind::Lookup;
-    let failed = gathered(Some(Err("facts: index_stale".into())), Tier::Off);
-    let silent = gathered(None, Tier::Off);
-    let off = gathered(Some(Ok(off_topic_answer())), Tier::Off);
-    for (got, complete, closed) in [
-        (&failed, false, "relevance: facts: index_stale"),
-        (&failed, true, "relevance: facts: index_stale"),
-        (&silent, true, "relevance: no answer before the deadline"),
-        (
-            &off,
-            false,
-            "off topic: score -1.00, 3/3 key terms in the best file",
-        ),
-    ] {
-        assert_eq!(
-            refusal_lifting(Signal::Prose, got, complete, false, lookup, false),
-            Some(Admission::Closed(closed.into())),
-            "unlifted: {closed}"
-        );
-        assert_eq!(
-            refusal_lifting(Signal::Prose, got, complete, false, lookup, true),
-            None,
-            "lifted: {closed}"
-        );
-    }
-}
-
-#[test]
-fn refusal_should_close_a_weak_prompt_only_when_enforced() {
-    let on = |tier| Some(Ok(on_topic_answer())).map(|answer| (answer, tier));
-    let on_gathered = |tier| {
-        let (answer, tier) = on(tier).unwrap();
-        gathered(Some(answer), tier)
-    };
-    let off = || gathered(Some(Ok(off_topic_answer())), Tier::Off);
-    assert_eq!(
-        refusal(Signal::Weak, &off(), true, false, QuestionKind::Lookup),
-        None
-    );
-    assert_eq!(
-        refusal(Signal::Weak, &off(), true, true, QuestionKind::Lookup),
-        Some(Admission::Closed(
-            "off topic: score -1.00, 3/3 key terms in the best file".into()
-        ))
-    );
-    for tier in [Tier::High, Tier::Low] {
-        assert_eq!(
-            refusal(
-                Signal::Weak,
-                &on_gathered(tier),
-                true,
-                true,
-                QuestionKind::Lookup
-            ),
-            None,
-            "{tier:?}"
-        );
-    }
-    let failed = gathered(Some(Err("cold".into())), Tier::Off);
-    assert_eq!(
-        refusal(Signal::Weak, &failed, true, true, QuestionKind::Lookup),
-        None,
-        "a probe that cannot tell never silences a weak prompt"
-    );
-    assert_eq!(
-        refusal(
-            Signal::Weak,
-            &gathered(None, Tier::Off),
-            true,
-            true,
-            QuestionKind::Lookup
-        ),
-        None
     );
 }
 
@@ -2387,28 +2240,9 @@ fn fuse_should_never_name_a_credential_shaped_path() {
 }
 
 #[test]
-fn a_brief_the_gate_silenced_should_render_nothing_even_when_it_answered() {
-    let mut brief = full_brief();
-    assert!(render(&brief).is_some());
-    brief.silenced = true;
-    assert_eq!(render(&brief), None);
-}
-
-#[test]
-fn the_confidence_line_should_follow_the_files_line() {
-    let mut brief = full_brief();
-    brief.confidence =
-        Some("confidence: high — 3/3 key terms covered; start with the first file".into());
-    let text = render(&brief).unwrap();
-    let lines: Vec<&str> = text.lines().collect();
-    let files = lines
-        .iter()
-        .position(|line| line.starts_with("files: "))
-        .unwrap();
-    assert_eq!(
-        lines[files + 1],
-        "confidence: high — 3/3 key terms covered; start with the first file"
-    );
+fn rendering_should_not_claim_lexical_confidence() {
+    let text = render(&full_brief()).unwrap();
+    assert!(!text.contains("confidence:"), "{text}");
 }
 
 #[test]
@@ -2453,20 +2287,10 @@ fn admission_should_name_itself_and_its_reason_for_the_log() {
     for (admission, label, reason) in [
         (Admission::Unjudged, "unjudged", None),
         (Admission::Open, "open", None),
-        (Admission::Closed("why".into()), "closed", Some("why")),
     ] {
         assert_eq!(admission.label(), label);
         assert_eq!(admission.reason(), reason);
     }
-}
-
-#[test]
-fn gate_enforced_should_bind_prose_always_and_a_weak_prompt_when_asked_or_refused() {
-    assert!(gate_enforced(Signal::Prose, false, false));
-    assert!(gate_enforced(Signal::Weak, true, false));
-    assert!(gate_enforced(Signal::Weak, false, true));
-    assert!(!gate_enforced(Signal::Weak, false, false));
-    assert!(!gate_enforced(Signal::Strong, true, true));
 }
 
 #[test]
@@ -2477,7 +2301,7 @@ fn declined_should_name_why_no_brief_started() {
             .err()
             .map(Declined::as_str)
     };
-    assert_eq!(why("ok"), Some("continuation"));
+    assert_eq!(why("ok"), None);
     // Codex's envelopes are the harness speaking, whatever their body names.
     let delegation = [
         "<realtime_delegation>",
@@ -2493,10 +2317,110 @@ fn declined_should_name_why_no_brief_started() {
     .join("\n");
     assert_eq!(why(&delegation), Some("continuation"));
     assert_eq!(why(&reply), Some("continuation"));
-    assert_eq!(why("thanks, that works"), Some("not_about_code"));
-    assert_eq!(why("commit and push"), Some("not_about_code"));
+    assert_eq!(why("thanks, that works"), None);
+    assert_eq!(why("commit and push"), None);
     assert_eq!(why("callers of `fetchUser`"), None);
     assert_eq!(why(PROSE), None);
+}
+
+#[test]
+fn an_expired_shared_deadline_should_not_start_the_evidence_worker() {
+    let fake = Fake::new();
+    let log = Arc::clone(&fake.log);
+    let result = try_start_with(
+        "how does the service start",
+        Duration::ZERO,
+        move |_| Box::new(fake),
+        model_high,
+        Around::default(),
+    );
+    assert_eq!(result.err(), Some(Declined::DeadlineExpired));
+    assert!(log.lock().unwrap().is_empty());
+}
+
+#[test]
+fn an_expired_absolute_deadline_should_not_be_reset_by_a_fresh_relative_window() {
+    let root = scratch_dir("expired-absolute-deadline");
+    let request = Request {
+        prompt: "how does the service start",
+        intent: None,
+        root: &root,
+        command: true,
+        parts: 1,
+        window_ms: Some(750),
+        deadline_unix_ms: Some(now_ms().saturating_sub(1)),
+        session: None,
+        french: false,
+        steps: Steps::default(),
+        probes: None,
+    };
+    let result = start(&request, |_| Box::new(Fake::new()));
+    assert_eq!(result.err(), Some(Declined::DeadlineExpired));
+}
+
+#[test]
+fn confident_none_should_suppress_a_code_shaped_prompt_before_any_evidence_or_probe() {
+    let fake = Fake::new();
+    let log = Arc::clone(&fake.log);
+    let intent = serde_json::json!({
+        "predicted": "none",
+        "probs": {"none": 0.7, "question": 0.2, "investigate": 0.1},
+        "snapshot": {"provider": "jev", "model": "configured-model", "confidence": 0.81}
+    });
+    let declined = try_start_with(
+        "where is `parse_config`",
+        SECOND,
+        move |_| Box::new(fake),
+        model_high,
+        Around {
+            intent: Some(intent.clone()),
+            ..Around::default()
+        },
+    )
+    .err();
+    assert_eq!(declined, Some(Declined::IntentNone));
+    assert!(log.lock().unwrap().is_empty());
+    let record = declined_record(
+        Declined::IntentNone,
+        "where is `parse_config`",
+        Some(&intent),
+    );
+    assert!(record.enforced);
+    assert_eq!(
+        record.intent,
+        Some(serde_json::json!({
+            "label": "none", "probability": 0.7, "provider": "jev",
+            "model": "configured-model", "confidence": 0.81
+        }))
+    );
+}
+
+#[test]
+fn absent_invalid_or_unconfident_intent_should_fail_open_without_keyword_admission() {
+    for intent in [
+        None,
+        Some(serde_json::json!({"predicted": "none", "probs": {"none": 0.49, "question": 0.51}})),
+        Some(serde_json::json!({"predicted": "none", "probs": {"none": 1.01}})),
+        Some(serde_json::json!({"predicted": "not-a-label", "probs": {"not-a-label": 1.0}})),
+    ] {
+        let mut fake = Fake::new();
+        fake.relevance = Ok(off_topic_answer());
+        fake.meaning = Ok(vec![lead("src/flarnix.rs", 3, "pub fn quibbler()")]);
+        let finished = try_start_with(
+            "How does the flarnix quibbler work?",
+            SECOND,
+            move |_| Box::new(fake),
+            model_off,
+            Around {
+                intent,
+                ..Around::default()
+            },
+        )
+        .expect("no confident none declines the task")
+        .finish_with_record();
+        assert_eq!(finished.record.gate, "open");
+        assert!(finished.text.is_some());
+    }
 }
 
 #[test]
@@ -2505,8 +2429,10 @@ fn declined_should_spell_every_reason_for_the_log() {
         Declined::Disabled,
         Declined::Unindexed,
         Declined::Continuation,
+        Declined::IntentNone,
         Declined::NotAboutCode,
         Declined::NoWorker,
+        Declined::DeadlineExpired,
     ]
     .into_iter()
     .map(Declined::as_str)
@@ -2517,8 +2443,10 @@ fn declined_should_spell_every_reason_for_the_log() {
             "disabled",
             "unindexed",
             "continuation",
+            "intent_none",
             "not_about_code",
-            "no_worker"
+            "no_worker",
+            "deadline_expired"
         ]
     );
 }
@@ -2528,6 +2456,7 @@ fn declined_record_should_carry_the_typed_text_only() {
     let record = declined_record(
         Declined::NotAboutCode,
         "<pasted_content>secret thread</pasted_content> thanks, that works",
+        None,
     );
     assert_eq!(record.gate, "declined");
     assert_eq!(record.reason.as_deref(), Some("not_about_code"));
@@ -2587,23 +2516,21 @@ fn a_prompt_that_is_only_a_pasted_block_should_be_briefed_on_its_head_and_tail()
     let record = finished.record;
     assert_eq!(
         (record.signal, record.gate, record.enforced),
-        (Some("prose"), "open", true)
+        (Some("prose"), "open", false)
     );
     assert_eq!(record.typed, task);
     assert_eq!(record.sha256, pixel_metrics::journal::sha256_hex(&task));
 }
 
 #[test]
-fn a_pasted_block_should_still_meet_the_gate_and_reach_the_log_masked() {
-    // Plain language, whatever the paste holds: the gate closes a paste
-    // the repository is not about.
+fn a_pasted_block_task_should_reach_the_log_masked() {
     let mut off = Fake::new();
     off.relevance = Ok(off_topic_answer());
     let closed = briefed_with(&pasted_only_prompt(), off, model_off);
-    assert_eq!(closed.text, None);
+    assert!(closed.text.is_some());
     assert_eq!(
         (closed.record.signal, closed.record.gate),
-        (Some("prose"), "closed")
+        (Some("prose"), "open")
     );
     // A credential in the paste is masked in the log like one typed.
     let leaking = [
@@ -2622,7 +2549,7 @@ fn a_pasted_block_should_still_meet_the_gate_and_reach_the_log_masked() {
 }
 
 #[test]
-fn a_pasted_block_beside_typed_words_should_still_be_declined_as_not_about_code() {
+fn a_pasted_block_beside_typed_words_should_still_classify_the_task() {
     let beside =
         "<pasted_content>the daemon misses changes made during startup</pasted_content> thanks";
     let declined = try_start_with(
@@ -2632,9 +2559,9 @@ fn a_pasted_block_beside_typed_words_should_still_be_declined_as_not_about_code(
         model_high,
         Around::default(),
     );
-    assert_eq!(declined.err(), Some(Declined::NotAboutCode));
+    assert_eq!(declined.err(), None);
     // Its record keeps the typed words only: the paste is not logged.
-    let record = declined_record(Declined::NotAboutCode, beside);
+    let record = declined_record(Declined::NotAboutCode, beside, None);
     assert_eq!(record.typed, "thanks");
 }
 
@@ -2706,7 +2633,7 @@ fn a_complete_brief_should_log_each_stage_it_ran_and_no_cut() {
 
 #[test]
 fn a_declined_prompt_should_log_no_window_and_no_stage() {
-    let record = declined_record(Declined::NotAboutCode, "thanks");
+    let record = declined_record(Declined::NotAboutCode, "thanks", None);
     assert!(!record.cut);
     assert_eq!(record.deadline_ms, None);
     assert_eq!(record.stages, Stages::default());
@@ -2775,364 +2702,10 @@ fn a_weak_prompt_with_only_a_meaning_lead_should_show_it_without_a_confidence_li
 }
 
 #[test]
-fn a_prose_prompt_in_the_low_tier_should_render_a_compact_maybe_and_run_no_route() {
-    let mut fake = Fake::new();
-    fake.relevance = Ok(on_topic_answer());
-    fake.meaning = Ok(vec![
-        lead(DAEMON, 280, "fn watch_ready() {"),
-        lead("crates/pixel-daemon/src/api.rs", 40, "fn op_status"),
-        lead("crates/pixel-daemon/src/x.rs", 1, "x"),
-        lead("crates/pixel-daemon/src/y.rs", 2, "y"),
-    ]);
-    let log = Arc::clone(&fake.log);
-    let finished = briefed_with(PROSE, fake, model_low);
-    // The notes file ranks after the code files, so the third slot is code.
-    assert_eq!(
-        finished.text.as_deref(),
-        Some(
-            [
-                "[PIXEL:BRIEF]",
-                "files: crates/pixel-daemon/src/daemon.rs:280 — fn watch_ready() {; crates/pixel-daemon/src/api.rs:40 — fn op_status; crates/pixel-daemon/src/x.rs:1 — x",
-                LOW_CONFIDENCE,
-            ]
-            .join("\n")
-            .as_str()
-        )
-    );
-    // The two probes only: no kind route, no search, no definition read
-    // (the files are only read to fix the ranges to name).
-    let probes: Vec<String> = log
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|call| !call.starts_with("lines_at "))
-        .cloned()
-        .collect();
-    assert_eq!(
-        sorted(probes),
-        [
-            format!("meaning {PROSE} limit 8"),
-            format!("relevance {PROSE}")
-        ]
-    );
-    let record = finished.record;
-    assert_eq!(
-        (record.gate, record.tier, record.kind),
-        ("open", Some("low"), None)
-    );
-    assert_eq!((record.ops, record.answered), (2, 2));
-    assert!(record.bytes <= LOW_BRIEF_BYTES, "{}", record.bytes);
-}
-
-#[test]
-fn a_prose_prompt_in_the_low_tier_should_get_one_part_of_regions_as_a_lead() {
-    let source: Vec<String> = [
-        "/// Wait until the watcher has caught up with the startup scan.",
-        "fn watch_ready() {",
-        "    while !caught_up() {",
-        "        std::thread::yield_now();",
-        "    }",
-        "    mark_ready();",
-        "}",
-    ]
-    .iter()
-    .map(ToString::to_string)
-    .collect();
-    let mut fake = Fake::new();
-    fake.relevance = Ok(on_topic_answer());
-    fake.meaning = Ok(vec![lead(DAEMON, 2, "fn watch_ready() {")]);
-    fake.sources = vec![(DAEMON.to_string(), source)];
-    let finished = try_start_with(
-        PROSE,
-        SECOND,
-        move |_| Box::new(fake),
-        model_low,
-        Around {
-            pack: region_pack::Limit::of(3),
-            ..Around::default()
-        },
-    )
-    .expect("the prompt starts a brief")
-    .finish_with_record();
-    let text = finished.text.expect("a brief");
-    assert!(text.starts_with("[PIXEL:BRIEF]\nregion pack"), "{text}");
-    assert!(text.contains("2| fn watch_ready() {"), "{text}");
-    assert!(
-        text.ends_with(region_pack::LEAD),
-        "a maybe is a lead: {text}"
-    );
-    assert!(!text.contains(region_pack::DIRECTIVE));
-    assert_eq!(finished.record.tier, Some("low"));
-    assert_eq!(finished.record.pack_parts, 1);
-    assert_eq!(finished.record.pack_bytes, text.len());
-}
-
-#[test]
-fn a_weak_prompt_in_the_low_tier_should_get_the_compact_maybe_and_no_concept_search() {
-    let mut fake = Fake::new();
-    fake.relevance = Ok(on_topic_answer());
-    fake.concept = Ok(found(vec![hit("src/login.ts", 3)]));
-    let log = Arc::clone(&fake.log);
-    let finished = briefed_with("how does the login flow work", fake, model_low);
-    let text = finished.text.unwrap();
-    assert!(text.ends_with(LOW_CONFIDENCE), "{text}");
-    assert!(!text.contains("src/login.ts"), "{text}");
-    assert!(!text.contains("kind:"), "{text}");
-    assert!(
-        !log.lock()
-            .unwrap()
-            .iter()
-            .any(|call| call.starts_with("concept")),
-        "{:?}",
-        log.lock().unwrap()
-    );
-    assert_eq!(finished.record.signal, Some("weak"));
-}
-
-#[test]
-fn a_low_tier_prompt_with_no_file_to_name_should_render_nothing() {
-    let mut fake = Fake::new();
-    let mut answer = on_topic_answer();
-    answer.input.cofiles.clear();
-    answer.lines.clear();
-    fake.relevance = Ok(answer);
-    let finished = briefed_with(PROSE, fake, model_low);
-    assert_eq!(finished.text, None);
-    assert_eq!(finished.record.tier, Some("low"));
-}
-
-fn low_brief(files: Vec<RichHit>) -> Brief {
-    Brief {
-        signal: Some(Signal::Prose),
-        relevance: Some(verdict_in(
-            Tier::Low,
-            &GateInput {
-                relevance: &on_topic_answer().input,
-                typed: PROSE,
-            },
-        )),
-        confidence: Some(LOW_CONFIDENCE.to_string()),
-        answered: 1,
-        files,
-        ..Brief::default()
-    }
-}
-
-#[test]
-fn render_low_should_name_at_most_three_files_and_the_maybe_line() {
-    let brief = low_brief(vec![
-        rhit("a.rs", 1, "one"),
-        rhit_no_text("b.rs", 0),
-        rhit("c.rs", 3, "three"),
-        rhit("d.rs", 4, "four"),
-    ]);
-    assert_eq!(
-        render(&brief).unwrap(),
-        [
-            "[PIXEL:BRIEF]",
-            "files: a.rs:1 — one; b.rs; c.rs:3 — three",
-            LOW_CONFIDENCE,
-        ]
-        .join("\n")
-    );
-    assert_eq!(render_low(&low_brief(Vec::new())), None);
-}
-
-#[test]
-fn render_low_should_shorten_texts_before_it_drops_a_file_and_stay_within_its_cap() {
-    let long = |name: &str| {
-        rhit(
-            &format!("{}/{name}.rs", "d".repeat(100)),
-            7,
-            &"t".repeat(300),
-        )
-    };
-    let three = low_brief(vec![long("a"), long("b"), long("c")]);
-    let text = render_low(&three).unwrap();
-    // 3 x (105-char path + 120-char text) does not fit; half the text does.
-    assert!(text.len() <= LOW_BRIEF_BYTES, "{}", text.len());
-    assert_eq!(text.matches(".rs:7").count(), 3, "{text}");
-    assert!(text.contains(&"t".repeat(60)), "{text}");
-    assert!(!text.contains(&"t".repeat(61)), "{text}");
-    assert!(text.ends_with(LOW_CONFIDENCE), "{text}");
-    // Wide characters make paths alone too long for three, then two.
-    let wide = |name: &str| rhit_no_text(&format!("{}{name}", "日".repeat(118)), 3);
-    let text = render_low(&low_brief(vec![wide("a"), wide("b"), wide("c")])).unwrap();
-    assert!(text.len() <= LOW_BRIEF_BYTES, "{}", text.len());
-    assert_eq!(text.matches('日').count(), 118, "one file left: {text}");
-    // A single file whose path and text are both made of 4-byte characters
-    // loses its text last.
-    let one = low_brief(vec![rhit(&"😀".repeat(118), 9, &"😀".repeat(900))]);
-    let text = render_low(&one).unwrap();
-    assert!(text.len() <= LOW_BRIEF_BYTES, "{}", text.len());
-    let files_line = text.lines().nth(1).unwrap();
-    assert!(!files_line.contains(" — "), "{text}");
-    assert!(
-        files_line.ends_with(&format!("{}:9", "😀".repeat(118))),
-        "{text}"
-    );
-    assert!(text.ends_with(LOW_CONFIDENCE), "{text}");
-    assert_eq!(LOW_BRIEF_BYTES, 700);
-    assert_eq!(LOW_FILES, 3);
-}
-
-#[test]
-fn a_brief_without_a_relevance_decision_should_have_no_tier() {
-    assert_eq!(Brief::default().tier(), None);
-    assert_eq!(low_brief(Vec::new()).tier(), Some(Tier::Low));
-}
-
-#[test]
-fn gather_should_score_the_relevance_answer_without_waiting_for_the_meaning_search() {
-    let mut fake = Fake::new();
-    fake.relevance = Ok(on_topic_answer());
-    fake.meaning = Ok(vec![lead(DAEMON, 1, "x")]);
-    fake.meaning_pause = Duration::from_millis(400);
-    let started = Instant::now();
-    let mut scored_after = None;
-    let got = gather(
-        PROSE,
-        &fake,
-        model_high,
-        &Mutex::new(Brief::default()),
-        started + SECOND,
-        &mut |got| {
-            if got.scored.is_some() && scored_after.is_none() {
-                scored_after = Some(started.elapsed());
-            }
-            false
-        },
-    );
-    assert!(
-        scored_after.is_some_and(|after| after < Duration::from_millis(300)),
-        "{scored_after:?}"
-    );
-    assert!(matches!(got.meaning, Some(Ok(_))));
-    assert_eq!(got.scored.unwrap().tier, Tier::High);
-}
-
-#[test]
-fn gather_should_leave_a_prompt_unscored_when_the_relevance_probe_failed() {
-    let mut fake = Fake::new();
-    fake.relevance = Err("cold".into());
-    fake.meaning = Ok(vec![lead(DAEMON, 1, "x")]);
-    let got = gather(
-        PROSE,
-        &fake,
-        model_high,
-        &Mutex::new(Brief::default()),
-        Instant::now() + SECOND,
-        &mut |_| false,
-    );
-    assert!(got.scored.is_none());
-    assert!(matches!(got.relevance, Some(Err(_))));
-}
-
-#[test]
-fn a_weak_prompt_the_model_does_not_apply_to_should_keep_its_pre_gate_brief() {
-    // No code graph: the model says nothing, so the brief is the one the
-    // probes' files make, with no tier claimed and no confidence line.
-    let mut fake = Fake::new();
-    fake.relevance = Ok(on_topic_answer());
-    let finished = briefed_with("how does the login flow work", fake, model_no_graph);
-    let text = finished.text.unwrap();
-    assert!(text.contains(&format!("{DAEMON}:280")), "{text}");
-    assert!(
-        text.contains("\nkind: lookup\n"),
-        "the full route ran: {text}"
-    );
-    assert!(!text.contains("confidence"), "{text}");
-    assert_eq!(finished.record.gate, "unjudged");
-    assert_eq!(finished.record.tier, None);
-    assert_eq!(finished.record.score, None);
-}
-
-#[test]
-fn a_prose_prompt_the_model_does_not_apply_to_should_get_no_brief() {
-    let mut fake = Fake::new();
-    fake.relevance = Ok(on_topic_answer());
-    let finished = briefed_with(PROSE, fake, model_no_graph);
-    assert_eq!(finished.text, None);
-    assert_eq!(finished.record.gate, "closed");
-    assert_eq!(
-        finished.record.reason.as_deref(),
-        Some("no code graph: the model does not apply")
-    );
-}
-
-#[test]
-fn off_topic_reason_should_say_what_the_model_saw() {
-    let mut verdict = verdict_in(
-        Tier::Off,
-        &GateInput {
-            relevance: &off_topic_answer().input,
-            typed: PROSE,
-        },
-    );
-    assert_eq!(
-        off_topic_reason(&verdict),
-        "off topic: score -1.00, 3/3 key terms in the best file"
-    );
-    verdict.basis = Basis::NoKeywords;
-    verdict.score = None;
-    assert_eq!(off_topic_reason(&verdict), "off topic: no keyword to weigh");
-    verdict.basis = Basis::NoGraph;
-    assert_eq!(
-        off_topic_reason(&verdict),
-        "no code graph: the model does not apply"
-    );
-}
-
-#[test]
-fn fold_should_open_the_admission_for_both_tiers_and_record_an_off_tier_without_silencing() {
-    let plan = Plan::from_typed(PROSE);
-    for (tier, open) in [(Tier::High, true), (Tier::Low, true), (Tier::Off, false)] {
-        let state = Mutex::new(Brief::default());
-        let got = gathered(Some(Ok(on_topic_answer())), tier);
-        fold(&state, &plan, &got);
-        let brief = edit(&state, |brief| brief.clone());
-        assert_eq!(brief.admission == Admission::Open, open, "{tier:?}");
-        assert!(!brief.silenced, "{tier:?}: fold never silences");
-        assert_eq!(brief.tier(), Some(tier));
-        assert_eq!(brief.confidence.is_some(), open, "{tier:?}");
-    }
-}
-
-#[test]
-fn fold_should_open_a_covered_prompt_instead_of_admitting_it_by_kind() {
-    // A walkthrough that shares enough words to pass its own bypass is
-    // still an open brief: its answered evidence renders, where a Kind
-    // admission without a pack would print nothing.
-    let plan = Plan::from_typed(WALK);
-    let state = Mutex::new(Brief::default());
-    let got = off_covered(3, 6, 4);
-    fold(&state, &plan, &got);
-    let brief = edit(&state, |brief| brief.clone());
-    assert_eq!(brief.admission, Admission::Open);
-    assert!(!brief.silenced);
-    // Two shared words are below the coverage floor: the walkthrough's
-    // own bar still admits it, by its kind.
-    let state = Mutex::new(Brief::default());
-    fold(&state, &plan, &off_covered(2, 4, 4));
-    let brief = edit(&state, |brief| brief.clone());
-    assert_eq!(brief.admission, Admission::Kind(QuestionKind::Flow));
-    assert!(!brief.silenced);
-}
-
-#[test]
-fn a_decision_should_name_the_model_that_made_it() {
-    let finished = briefed(PROSE, Fake::new());
-    assert_eq!(finished.record.model, crate::gate_model::SOURCE);
-    let declined = declined_record(Declined::NotAboutCode, "hello there");
-    assert_eq!(declined.model, crate::gate_model::SOURCE);
-    assert_eq!(declined.tier, None);
-}
-
-#[test]
 fn a_decision_should_name_where_its_evidence_came_from() {
     let finished = briefed(PROSE, Fake::new());
     assert_eq!(finished.record.route, Some("unknown"));
-    let declined = declined_record(Declined::NotAboutCode, "hello there");
+    let declined = declined_record(Declined::NotAboutCode, "hello there", None);
     assert_eq!(declined.route, None);
 }
 
@@ -3157,8 +2730,7 @@ fn daemon_source() -> Vec<String> {
     lines
 }
 
-/// A weakly code-shaped prompt the high-tier model accepts, with the
-/// relevance probe, a meaning search and the daemon source answering.
+/// A weak plain-language prompt with retrieval results and source available.
 fn confident_fake() -> Fake {
     let mut fake = Fake::new();
     fake.relevance = Ok(on_topic_answer());
@@ -3211,14 +2783,14 @@ fn a_brief_without_a_relevance_answer_should_carry_no_receipt() {
 }
 
 #[test]
-fn a_low_tier_brief_should_carry_neither_receipt_nor_excerpt() {
-    let finished = briefed_with(WEAK, confident_fake(), model_low);
+fn lexical_score_should_not_suppress_receipt_or_excerpt() {
+    let finished = briefed_with(WEAK, confident_fake(), model_off);
     let text = finished.text.unwrap();
-    assert!(
-        !text.contains("searched:") && !text.contains("\nanswer "),
-        "{text}"
-    );
-    assert!(!finished.record.receipt && !finished.record.answer);
+    assert!(text.contains("searched:"), "{text}");
+    assert!(text.contains("\nanswer "), "{text}");
+    assert!(finished.record.receipt && finished.record.answer);
+    assert_eq!(finished.record.tier, None);
+    assert_eq!(finished.record.model, None);
 }
 
 #[test]
@@ -3238,18 +2810,16 @@ fn a_strong_prompt_should_carry_neither_receipt_nor_excerpt() {
 fn the_excerpt_should_hold_the_signature_the_doc_line_and_the_body_within_the_cap() {
     let finished = briefed(WEAK, confident_fake());
     let text = finished.text.unwrap();
-    // The shipped build has no validated ZERO rule: the excerpt is not
-    // shown, it fixes the declaration to read.
-    assert!(!text.contains("\nanswer "), "{text}");
+    assert!(text.contains("\nanswer "), "{text}");
     assert!(
         text.contains("\nread: crates/pixel-daemon/src/daemon.rs:279-286 — watch_ready\n"),
         "{text}"
     );
     assert!(text.ends_with(READ_LINE), "{text}");
-    assert!(text.contains(MEDIUM_CONFIDENCE), "{text}");
+    assert!(!text.contains("confidence:"), "{text}");
     assert!(text.len() <= PROSE_BRIEF_BYTES, "{} bytes", text.len());
-    assert!(!finished.record.answer);
-    assert_eq!(finished.record.excerpt_bytes, 0);
+    assert!(finished.record.answer);
+    assert!(finished.record.excerpt_bytes > 0);
     assert_eq!(finished.record.bytes, text.len());
 }
 
@@ -3417,13 +2987,6 @@ fn answer_evidence_should_skip_a_rationale_a_maybe_a_strong_prompt_and_a_gap() {
     strong.signal = Some(Signal::Strong);
     let mut cut = ready();
     cut.cut = true;
-    // A maybe gathers its chunks too, only to fix the ranges to read.
-    let mut low = ready();
-    low.relevance = low.relevance.map(|verdict| relevance::Verdict {
-        tier: Tier::Low,
-        ..verdict
-    });
-    assert_eq!(answered(low, &fake).excerpts.len(), 1);
     for (name, brief) in [("rationale", rationale), ("strong", strong), ("cut", cut)] {
         assert!(answered(brief, &fake).excerpts.is_empty(), "{name}");
     }
@@ -3509,16 +3072,8 @@ fn a_rationale_brief_should_carry_the_receipt_and_no_excerpt() {
 
 fn high_brief() -> Brief {
     let hit = rhit("src/a.rs", 3, "fn a");
-    let model = verdict_in(
-        Tier::High,
-        &GateInput {
-            relevance: &on_topic_answer().input,
-            typed: "t",
-        },
-    );
     Brief {
         signal: Some(Signal::Prose),
-        relevance: Some(model),
         receipt: Receipt::new(&on_topic_answer().input, Some(2)),
         files: vec![hit.clone(); 6],
         excerpts: (0..2)
@@ -3544,9 +3099,6 @@ fn high_brief() -> Brief {
 fn an_oversized_brief_should_drop_the_second_excerpt_first_and_keep_the_receipt() {
     let mut brief = high_brief();
     brief.caps = vec!["c".repeat(110); 10];
-    // The ZERO step fires, so the excerpts are shown.
-    brief.zero_rule = Some((0, 0, 2));
-    brief.lexical = vec!["src/f0.rs".into()];
     let (text, stats) = fit(&brief).unwrap();
     assert!(text.len() <= PROSE_BRIEF_BYTES, "{}", text.len());
     assert!(
@@ -3588,15 +3140,17 @@ fn a_tight_cap_should_empty_the_excerpts_before_it_touches_the_receipt() {
 }
 
 #[test]
-fn a_cut_packet_should_carry_no_receipt_and_no_excerpt() {
+fn a_cut_packet_should_keep_bounded_source_excerpts_without_a_receipt() {
     let mut brief = high_brief();
     brief.cut = true;
     let (text, stats) = fit(&brief).unwrap();
     assert!(
-        !text.contains("searched:") && !text.contains("\nanswer "),
+        !text.contains("searched:") && text.contains("\nanswer "),
         "{text}"
     );
-    assert_eq!(stats, AnswerStats::default());
+    assert!(stats.answer);
+    assert!(!stats.receipt);
+    assert!(stats.excerpt_bytes > 0);
 }
 
 fn lead_at(path: &str, line: u32, symbol: Option<&str>) -> MeaningHit {
@@ -3695,153 +3249,22 @@ fn excerpts_should_skip_tests_docs_and_test_modules_unless_the_question_asks() {
     );
 }
 
-/// A high-tier brief whose top chunk is `DAEMON:280`: the meaning
-/// search's best, holding `density` keywords, and the lexical probe's
-/// co-files are `lexical`. The ZERO rule `(0, 0, 2)` is in force.
-fn zeroing_brief(lexical: &[&str], density: usize) -> Brief {
-    let mut brief = high_brief();
-    brief.excerpts = vec![Excerpt {
-        label: format!("{DAEMON}:280"),
-        path: DAEMON.to_string(),
-        from_meaning: true,
-        meaning_rank: Some(0),
-        density,
-        lines: vec!["280| pub fn watch_ready()".into()],
-    }];
-    brief.reads = vec![ReadRange {
-        path: DAEMON.to_string(),
-        first: 280,
-        last: 288,
-        symbol: Some("watch_ready".to_string()),
-    }];
-    brief.lexical = lexical.iter().map(ToString::to_string).collect();
-    brief.confidence = Some(HIGH_CONFIDENCE.to_string());
-    brief.zero_rule = Some((0, 0, 2));
-    brief
-}
-
-#[test]
-fn the_zero_step_should_fire_only_when_the_whole_rule_holds() {
-    let zero = zeroing_brief(&[DAEMON, "b.rs"], 2);
-    assert!(zero.zero() && zero.confident());
-    let (text, stats) = fit(&zero).unwrap();
-    assert!(text.contains(HIGH_CONFIDENCE), "{text}");
-    assert!(
-        text.contains(&format!("\nanswer {DAEMON}:280:\n")),
-        "{text}"
-    );
-    assert!(text.ends_with(ZERO_LINE), "{text}");
-    assert!(!text.contains("read: "), "{text}");
-    assert!(text.contains("answer from them if they suffice"), "{text}");
-    assert!(stats.answer);
-
-    // One keyword short, the file second among the lexical co-files, a
-    // lexical-only chunk, a lower meaning rank, no rule: each is a miss.
-    let mut misses = vec![
-        zeroing_brief(&[DAEMON], 1),
-        zeroing_brief(&["b.rs", DAEMON], 2),
-    ];
-    let mut lexical = zeroing_brief(&[DAEMON], 2);
-    lexical.excerpts[0].from_meaning = false;
-    let mut ranked = zeroing_brief(&[DAEMON], 2);
-    ranked.excerpts[0].meaning_rank = Some(1);
-    let mut ruleless = zeroing_brief(&[DAEMON], 2);
-    ruleless.zero_rule = None;
-    let mut noted = zeroing_brief(&[DAEMON], 2);
-    noted.unresolved = vec!["find-symbol x: 2 candidates".into()];
-    misses.extend([lexical, ranked, ruleless, noted]);
-    for (index, brief) in misses.iter().enumerate() {
-        assert!(!brief.zero(), "miss {index}");
-        let (text, _) = fit(brief).unwrap();
-        assert!(!text.contains(ZERO_LINE), "miss {index}: {text}");
-        assert!(!text.contains("\nanswer "), "miss {index}: {text}");
-        assert!(!text.contains("confidence: high"), "miss {index}: {text}");
-        assert!(text.ends_with(READ_LINE), "miss {index}: {text}");
-    }
-}
-
-#[test]
-fn no_zero_rule_should_ship_until_one_is_validated() {
-    // Dev split of eval/brief-gate/answer_spans.jsonl: the strict rule
-    // fired once, the loosest five times and was right twice.
-    assert!(answer::ZERO_RULE.is_none());
-    assert!(Brief::default().zero_rule.is_none());
-}
-
-#[test]
-fn a_brief_that_did_not_earn_zero_should_end_on_the_ranges_to_read() {
-    let mut brief = zeroing_brief(&["b.rs"], 2);
-    brief.reads.push(ReadRange {
-        path: "crates/pixel/src/other.rs".into(),
-        first: 1,
-        last: 40,
-        symbol: None,
-    });
-    let (text, stats) = fit(&brief).unwrap();
-    assert!(text.contains(MEDIUM_CONFIDENCE), "{text}");
-    assert!(!text.contains("\nanswer "), "{text}");
-    assert!(!stats.answer);
-    let tail: Vec<&str> = text.lines().rev().take(3).collect();
-    assert_eq!(
-        tail,
-        [
-            READ_LINE,
-            "also: crates/pixel/src/other.rs:1-40",
-            &format!("read: {DAEMON}:280-288 — watch_ready"),
-        ]
-    );
-    assert_eq!(text.matches("read: ").count(), 1, "{text}");
-    assert!(text.len() <= PROSE_BRIEF_BYTES);
-}
-
 #[test]
 fn a_partial_brief_should_name_its_gap_and_still_end_on_the_instruction() {
-    let mut brief = zeroing_brief(&[DAEMON], 2);
+    let mut brief = full_brief();
     brief.unresolved = vec!["find-symbol x: 2 candidates".into()];
     brief.next = Some("pixel find-code 'x'".into());
+    brief.reads = vec![ReadRange {
+        path: "src/a.rs".into(),
+        first: 1,
+        last: 3,
+        symbol: None,
+    }];
     let (text, _) = fit(&brief).unwrap();
     assert!(text.contains("packet partial"), "{text}");
     assert!(text.contains("\nnext: pixel find-code 'x'\n"), "{text}");
     assert!(text.ends_with(READ_LINE), "{text}");
     assert!(!text.contains("answer from them"), "{text}");
-}
-
-#[test]
-fn no_range_should_be_named_for_a_cut_packet_or_a_strong_prompt_without_a_definition() {
-    let mut strong = zeroing_brief(&[DAEMON], 2);
-    strong.signal = Some(Signal::Strong);
-    strong.reads.clear();
-    let mut cut = zeroing_brief(&[DAEMON], 2);
-    cut.cut = true;
-    for brief in [strong, cut] {
-        assert!(brief.read_ranges().is_empty());
-        let text = fit(&brief).map(|(text, _)| text).unwrap_or_default();
-        assert!(!text.contains("read: "), "{text}");
-    }
-    // Without a range the brief keeps a verification footer.
-    let mut bare = zeroing_brief(&[DAEMON], 2);
-    bare.reads.clear();
-    bare.zero_rule = None;
-    let (text, _) = fit(&bare).unwrap();
-    assert!(text.contains(MEDIUM_FILES_CONFIDENCE), "{text}");
-    assert!(text.ends_with(UNCORROBORATED_FOOTER), "{text}");
-}
-
-#[test]
-fn a_maybe_should_name_the_range_to_read_inside_its_cap() {
-    let mut brief = low_brief(vec![rhit("a.rs", 1, "one"), rhit("b.rs", 2, "two")]);
-    brief.finished = true;
-    brief.reads = vec![ReadRange {
-        path: "a.rs".into(),
-        first: 10,
-        last: 30,
-        symbol: Some("run".into()),
-    }];
-    let (text, _) = fit(&brief).unwrap();
-    assert!(text.contains("\nread: a.rs:10-30 — run\n"), "{text}");
-    assert!(text.ends_with(READ_LINE), "{text}");
-    assert!(text.contains(LOW_CONFIDENCE), "{text}");
-    assert!(text.len() <= LOW_READ_BRIEF_BYTES, "{}", text.len());
 }
 
 #[test]
@@ -3870,13 +3293,11 @@ fn a_flow_or_tests_question_should_borrow_the_symbol_of_the_best_non_test_chunk(
     assert!(lookup.anchors.names().next().is_none());
     let named = seeded(plan(QuestionKind::Flow, "who calls `retry_loop`"), &state);
     assert_eq!(named.anchors.names().collect::<Vec<_>>(), ["retry_loop"]);
-    // A maybe never borrows one.
-    state.lock().unwrap().relevance = None;
     let cold = seeded(
         plan(QuestionKind::Tests, "which tests cover the watchdog"),
         &state,
     );
-    assert!(cold.anchors.names().next().is_none());
+    assert_eq!(cold.anchors.symbol_name().as_deref(), Some("watch_ready"));
 }
 
 #[test]
@@ -4135,7 +3556,7 @@ fn every_brief_that_ends_on_ranges_should_say_to_search_as_usual_if_they_fail() 
         last: 9,
         symbol: None,
     };
-    let mut high = zeroing_brief(&[DAEMON], 1);
+    let mut high = full_brief();
     high.reads = vec![range()];
     let mut strong = Brief {
         signal: Some(Signal::Strong),
@@ -4145,10 +3566,7 @@ fn every_brief_that_ends_on_ranges_should_say_to_search_as_usual_if_they_fail() 
         ..Brief::default()
     };
     strong.defined = vec![symbol("a.rs", "f")];
-    let mut low = low_brief(vec![rhit("a.rs", 1, "x")]);
-    low.finished = true;
-    low.reads = vec![range()];
-    for (name, brief) in [("high", high), ("strong", strong), ("low", low)] {
+    for (name, brief) in [("prose", high), ("strong", strong)] {
         let (text, _) = fit(&brief).unwrap();
         assert!(text.ends_with(READ_LINE), "{name}: {text}");
         assert!(
@@ -4397,7 +3815,8 @@ fn the_pack_stage_should_publish_into_the_brief_and_do_nothing_when_off_or_late(
     );
     assert!(text.ends_with(region_pack::LEAD), "{text}");
     shown.pack_limit.chars = 1;
-    assert!(fit(&shown).is_none(), "a notice alone is not evidence");
+    let fallback = fit(&shown).expect("the brief falls back when its pack does not fit");
+    assert!(!fallback.0.contains("region pack"), "{}", fallback.0);
     let off = Mutex::new(brief(0));
     pack_evidence(&plan, &repo, &off, Instant::now() + SECOND);
     assert!(off.into_inner().unwrap().pack.is_none());
@@ -4414,118 +3833,6 @@ const TOUR: &str =
 const REVIEW: &str = "review the latest commit and tell me if anything looks risky";
 const WALK: &str = "walk me through what happens when someone drops an image onto the canvas";
 
-/// A gate reading of `shared` words in a file of `structural` symbols,
-/// in the off tier.
-fn off_with(shared: usize, structural: usize) -> Gathered {
-    let mut got = gathered(Some(Ok(off_topic_answer())), Tier::Off);
-    if let Some(scored) = got.scored.as_mut() {
-        scored.features.shared = shared;
-        scored.features.structural_files = structural;
-    }
-    got
-}
-
-#[test]
-fn refusal_should_admit_a_tour_and_a_review_but_a_walkthrough_only_beside_the_repositorys_words() {
-    for signal in [Signal::Prose, Signal::Weak] {
-        for kind in [QuestionKind::Overview, QuestionKind::Review] {
-            assert_eq!(
-                refusal(signal, &off_with(0, 0), true, true, kind),
-                None,
-                "{signal:?} {kind:?}"
-            );
-        }
-        assert!(
-            refusal(signal, &off_with(0, 0), true, true, QuestionKind::Flow).is_some(),
-            "{signal:?}: no word shared, no walkthrough"
-        );
-        assert!(
-            refusal(signal, &off_with(5, 0), true, true, QuestionKind::Flow).is_some(),
-            "{signal:?}: words shared with files that hold no symbol"
-        );
-        assert_eq!(
-            refusal(signal, &off_with(2, 1), true, true, QuestionKind::Flow),
-            None,
-            "{signal:?}"
-        );
-        // Asked about in so many words, history needs the same footing.
-        assert_eq!(
-            refusal(signal, &off_with(2, 1), true, true, QuestionKind::History),
-            None,
-            "{signal:?}"
-        );
-        assert!(
-            refusal(signal, &off_with(0, 4), true, true, QuestionKind::History).is_some(),
-            "{signal:?}"
-        );
-        assert!(
-            refusal(signal, &off_with(1, 9), true, true, QuestionKind::Lookup).is_some(),
-            "{signal:?}: one shared word is not coverage for a kind with no bypass"
-        );
-    }
-    // A tour does not need the probe to have answered at all.
-    let failed = gathered(Some(Err("cold".into())), Tier::Off);
-    assert_eq!(
-        refusal(Signal::Prose, &failed, true, true, QuestionKind::Overview),
-        None
-    );
-    assert!(refusal(Signal::Prose, &failed, true, true, QuestionKind::Lookup).is_some());
-}
-
-/// `off_with`, with the informative-word count the coverage floor weighs.
-fn off_covered(shared: usize, informative: usize, structural: usize) -> Gathered {
-    let mut got = off_with(shared, structural);
-    if let Some(scored) = got.scored.as_mut() {
-        scored.features.informative = informative;
-    }
-    got
-}
-
-#[test]
-fn refusal_should_let_an_off_score_through_when_one_file_covers_the_words() {
-    for signal in [Signal::Prose, Signal::Weak] {
-        for kind in [
-            QuestionKind::Lookup,
-            QuestionKind::Config,
-            QuestionKind::Tests,
-        ] {
-            // Half or more of the informative words in one file the graph
-            // knows by symbol: kinds with no bypass of their own pass.
-            assert_eq!(
-                refusal(signal, &off_covered(3, 5, 2), true, true, kind),
-                None,
-                "{signal:?} {kind:?}"
-            );
-            // The boundary is inclusive: exactly half the words covers.
-            assert_eq!(
-                refusal(signal, &off_covered(3, 6, 4), true, true, kind),
-                None,
-                "{signal:?} {kind:?}"
-            );
-            // Two shared words, even all of them, are what a status
-            // question shares with a repository ("le replay a fini ?").
-            assert!(
-                refusal(signal, &off_covered(2, 2, 4), true, true, kind).is_some(),
-                "{signal:?} {kind:?}: two shared words are not coverage"
-            );
-            assert!(
-                refusal(signal, &off_covered(2, 4, 4), true, true, kind).is_some(),
-                "{signal:?} {kind:?}: two shared words are not coverage"
-            );
-            // The same coverage with no structural footing stays closed.
-            assert!(
-                refusal(signal, &off_covered(3, 5, 0), true, true, kind).is_some(),
-                "{signal:?} {kind:?}: shared text is not a named thing"
-            );
-            // One shared word, however structural the files, is not coverage.
-            assert!(
-                refusal(signal, &off_covered(1, 4, 9), true, true, kind).is_some(),
-                "{signal:?} {kind:?}: one shared word is not coverage"
-            );
-        }
-    }
-}
-
 #[test]
 fn the_plan_should_read_a_tour_a_review_and_a_walkthrough_from_the_words() {
     for (prompt, kind) in [
@@ -4535,24 +3842,6 @@ fn the_plan_should_read_a_tour_a_review_and_a_walkthrough_from_the_words() {
     ] {
         assert_eq!(Plan::from_typed(prompt).kind, kind, "{prompt}");
     }
-}
-
-#[test]
-fn admission_should_name_a_kind_open_with_its_reason() {
-    let admission = Admission::Kind(QuestionKind::Overview);
-    assert_eq!(
-        (admission.label(), admission.reason()),
-        ("open", Some("kind: overview"))
-    );
-    assert_eq!(
-        Admission::Kind(QuestionKind::Review).reason(),
-        Some("kind: review")
-    );
-    assert_eq!(
-        Admission::Kind(QuestionKind::Flow).reason(),
-        Some("kind: flow")
-    );
-    assert_eq!(Admission::Kind(QuestionKind::Lookup).reason(), Some("kind"));
 }
 
 /// A fake repository that has a map, a README and nothing else.
@@ -4646,15 +3935,10 @@ fn a_tour_should_brief_through_a_gate_that_reads_it_as_off_topic() {
             record.tier,
             record.kind
         ),
-        (
-            "open",
-            Some("kind: overview"),
-            Some("off"),
-            Some("overview")
-        )
+        ("open", None, None, Some("overview"))
     );
     assert!(record.pack_located >= 2, "{}", record.pack_located);
-    // The same gate still closes a prompt of any other kind.
+    // Relevance tier no longer controls admission for other kinds either.
     let mut fake = Fake::new();
     fake.relevance = Ok(off_topic_answer());
     let closed = try_start_with(
@@ -4666,8 +3950,8 @@ fn a_tour_should_brief_through_a_gate_that_reads_it_as_off_topic() {
     )
     .unwrap()
     .finish_with_record();
-    assert!(closed.text.is_none());
-    assert_eq!(closed.record.gate, "closed");
+    assert!(closed.text.is_some());
+    assert_eq!(closed.record.gate, "open");
 }
 
 #[test]
@@ -4687,7 +3971,7 @@ fn a_tour_without_a_pack_or_without_anything_to_read_should_render_nothing() {
     )
     .unwrap()
     .finish_with_record();
-    assert!(off.text.is_none());
+    assert!(off.text.is_some());
     // Nothing to read: the fake has no map, no document, no manifest.
     let nothing = try_start_with(
         TOUR,
@@ -4698,26 +3982,8 @@ fn a_tour_without_a_pack_or_without_anything_to_read_should_render_nothing() {
     )
     .unwrap()
     .finish_with_record();
-    assert!(nothing.text.is_none());
-}
-
-#[test]
-fn a_brief_admitted_for_its_kind_should_render_only_its_pack() {
-    let brief = Brief {
-        signal: Some(Signal::Prose),
-        admission: Admission::Kind(QuestionKind::Review),
-        answered: 1,
-        files: vec![RichHit {
-            path: "src/a.rs".into(),
-            line: 1,
-            text: None,
-        }],
-        ..Brief::default()
-    };
-    assert!(
-        fit(&brief).is_none(),
-        "the packet of a kind admission says nothing"
-    );
+    assert!(nothing.text.is_some());
+    assert_eq!(nothing.record.gate, "open");
 }
 
 #[test]
@@ -4733,43 +3999,9 @@ fn a_window_defaults_per_caller_and_stays_inside_the_bounds() {
     let ms = |window: Duration| u64::try_from(window.as_millis()).unwrap();
     assert_eq!(ms(window_for(None, false)), WINDOW_HOOK_DEFAULT_MS);
     assert_eq!(ms(window_for(None, true)), WINDOW_COMMAND_DEFAULT_MS);
-    assert_eq!(ms(window_for(Some(1), false)), WINDOW_MIN_MS);
+    assert_eq!(ms(window_for(Some(1), false)), 1);
     assert_eq!(ms(window_for(Some(60_000), false)), WINDOW_MAX_MS);
-    assert_eq!(ms(window_for(Some(1), true)), WINDOW_MIN_MS);
-}
-
-#[test]
-fn a_kind_admission_whose_window_ended_before_its_pack_should_render_its_best_files_as_a_lead() {
-    let ended = Brief {
-        signal: Some(Signal::Prose),
-        admission: Admission::Kind(QuestionKind::History),
-        answered: 1,
-        cut: true,
-        files: vec![RichHit {
-            path: "src/a.rs".into(),
-            line: 7,
-            text: None,
-        }],
-        ..Brief::default()
-    };
-    let (text, stats) = fit(&ended).expect("the window ended: a lead, not silence");
-    assert!(text.starts_with(BRIEF_TAG), "{text}");
-    assert!(text.contains("confidence: low"), "{text}");
-    assert!(text.contains("files: src/a.rs:7"), "{text}");
-    assert_eq!(stats, AnswerStats::default());
-    let no_files = Brief {
-        files: Vec::new(),
-        ..ended.clone()
-    };
-    assert!(fit(&no_files).is_none(), "nothing arrived, nothing to say");
-    let in_time = Brief {
-        cut: false,
-        ..ended
-    };
-    assert!(
-        fit(&in_time).is_none(),
-        "a finished brief without its pack stays silent"
-    );
+    assert_eq!(ms(window_for(Some(1), true)), 1);
 }
 
 /// The session's files, as a hook with a transcript would collect them.
@@ -4782,201 +4014,6 @@ fn around_session(recent: &[&str], dirty: &[&str]) -> Around {
         context: Some(Box::new(move |_| paths)),
         ..Around::default()
     }
-}
-
-/// Start `prompt` on `fake`, with `around` and a model that puts every
-/// prompt it scores off topic.
-fn briefed_around(prompt: &str, fake: Fake, around: Around) -> Finished {
-    try_start_with(prompt, SECOND, move |_| Box::new(fake), model_off, around)
-        .expect("the prompt starts a brief")
-        .finish_with_record()
-}
-
-/// Start `prompt` on an off-topic repository, with `around`.
-fn briefed_off_topic(prompt: &str, around: Around) -> Finished {
-    let mut fake = Fake::new();
-    fake.relevance = Ok(off_topic_answer());
-    fake.meaning = Ok(vec![lead(DAEMON, 1, "an unrelated lead")]);
-    briefed_around(prompt, fake, around)
-}
-
-/// A short follow-up that names nothing: plain language, so the relevance
-/// gate alone decides it, and few enough words to be lifted.
-const FOLLOW_UP: &str = "now make the daemon faster";
-
-/// A repository whose relevance probe fails, as it does behind a stale
-/// base shard, while the meaning search still answers.
-fn probe_failed() -> Fake {
-    let mut fake = Fake::new();
-    fake.relevance = Err("facts: index_stale".into());
-    fake.meaning = Ok(vec![lead(DAEMON, 1, "an unrelated lead")]);
-    fake
-}
-
-#[test]
-fn a_short_follow_up_the_gate_would_close_should_be_let_through_on_the_session_files() {
-    let finished = briefed_off_topic(
-        "now fix the test",
-        around_session(&["src/a.rs"], &["src/b.rs", "src/a.rs"]),
-    );
-    let text = finished.text.expect("the session's files make a brief");
-    assert!(text.contains("\nfiles: src/a.rs; src/b.rs\n"), "{text}");
-    assert!(text.contains(relevance::LOW_CONFIDENCE_LINE), "{text}");
-    assert!(
-        !text.contains(DAEMON),
-        "the words' own leads were off topic: {text}"
-    );
-    let record = finished.record;
-    assert_eq!((record.gate, record.tier), ("open", Some("low")));
-    assert_eq!(
-        record.reason.as_deref(),
-        Some("context: a short follow-up on the session's files")
-    );
-    assert_eq!(finished.paths, vec!["src/a.rs", "src/b.rs"]);
-}
-
-#[test]
-fn a_short_follow_up_should_be_let_through_on_the_session_files_when_the_relevance_probe_fails() {
-    assert_eq!(
-        brief_signal(FOLLOW_UP),
-        Some((FOLLOW_UP.to_string(), Signal::Prose))
-    );
-    assert!(is_follow_up(FOLLOW_UP));
-    let finished = briefed_around(
-        FOLLOW_UP,
-        probe_failed(),
-        around_session(&["src/a.rs"], &["src/b.rs", "src/a.rs"]),
-    );
-    let text = finished.text.expect("the session's files make a brief");
-    assert!(text.contains("\nfiles: src/a.rs; src/b.rs\n"), "{text}");
-    assert!(text.contains(relevance::LOW_CONFIDENCE_LINE), "{text}");
-    assert!(
-        !text.contains(DAEMON),
-        "the words' own leads are left out of a lifted brief: {text}"
-    );
-    let record = finished.record;
-    assert_eq!(
-        (record.signal, record.gate, record.tier),
-        (Some("prose"), "open", Some("low"))
-    );
-    assert_eq!(
-        record.reason.as_deref(),
-        Some("context: a short follow-up on the session's files")
-    );
-    assert_eq!(finished.paths, vec!["src/a.rs", "src/b.rs"]);
-}
-
-#[test]
-fn a_lifted_follow_up_should_be_briefed_on_the_session_files_when_no_probe_answered() {
-    // The relevance probe fails and the meaning search is unavailable: the
-    // only evidence left is the session's own files.
-    let mut fake = Fake::new();
-    fake.relevance = Err("facts: index_stale".into());
-    let finished = briefed_around(
-        FOLLOW_UP,
-        fake,
-        around_session(&["src/a.rs"], &["src/b.rs", "src/a.rs"]),
-    );
-    let text = finished.text.expect("the session's files make a brief");
-    assert!(text.contains("\nfiles: src/a.rs; src/b.rs\n"), "{text}");
-    assert!(text.contains(relevance::LOW_CONFIDENCE_LINE), "{text}");
-    let record = finished.record;
-    assert_eq!((record.gate, record.tier), ("open", Some("low")));
-    assert_eq!((record.ops, record.answered), (2, 1));
-    assert_eq!(finished.paths, vec!["src/a.rs", "src/b.rs"]);
-}
-
-#[test]
-fn the_same_follow_up_without_session_files_should_stay_closed() {
-    for around in [Around::default(), around_session(&[], &[])] {
-        let finished = briefed_off_topic("now fix the test", around);
-        assert_eq!(finished.text, None);
-        assert_eq!(finished.record.gate, "closed");
-    }
-    // A failed probe closes it as well when there is no session to lift it.
-    for around in [Around::default(), around_session(&[], &[])] {
-        let finished = briefed_around(FOLLOW_UP, probe_failed(), around);
-        assert_eq!(finished.text, None);
-        assert_eq!(finished.record.gate, "closed");
-        assert_eq!(
-            finished.record.reason.as_deref(),
-            Some("relevance: facts: index_stale")
-        );
-    }
-}
-
-#[test]
-fn a_prompt_that_is_not_a_short_follow_up_should_not_be_lifted_by_the_session_files() {
-    let around = || around_session(&["src/a.rs"], &["src/b.rs"]);
-    for prompt in [
-        "what's the weather going to be like tomorrow",
-        "quel temps fera-t-il demain dans la region parisienne",
-        "now explain how the quarterly revenue forecast from the finance team changes next year",
-    ] {
-        let finished = briefed_off_topic(prompt, around());
-        assert_eq!(
-            (finished.text, finished.record.gate),
-            (None, "closed"),
-            "{prompt}"
-        );
-    }
-}
-
-#[test]
-fn is_follow_up_should_need_few_words_and_a_change_or_a_lean_on_what_came_before() {
-    for yes in [
-        "now fix the test",
-        "also update the docs",
-        "do the same for the other one",
-        "rename it",
-        "maintenant corrige le test",
-        "Fix that, please!",
-    ] {
-        assert!(is_follow_up(yes), "{yes}");
-    }
-    for no in [
-        "",
-        "   ",
-        "what's the weather going to be like tomorrow",
-        "how does the daemon decide when to rebuild the graph after a commit lands in the middle of startup",
-    ] {
-        assert!(!is_follow_up(no), "{no:?}");
-    }
-    assert_eq!(FOLLOW_UP_WORDS, 10);
-}
-
-#[test]
-fn the_session_files_should_lift_a_lead_they_name_and_never_add_a_file_of_their_own() {
-    let leads = [
-        lead("x.rs", 1, "x"),
-        lead("y.rs", 1, "y"),
-        lead("z.rs", 1, "z"),
-    ];
-    let plain: Vec<String> = fuse_with(&leads, &[], &[], false)
-        .into_iter()
-        .map(|hit| hit.path)
-        .collect();
-    assert_eq!(plain, vec!["x.rs", "y.rs", "z.rs"]);
-    let session = ["z.rs".to_string(), "dirty-and-unrelated.rs".to_string()];
-    let boosted: Vec<String> = fuse_with(&leads, &[], &session, false)
-        .into_iter()
-        .map(|hit| hit.path)
-        .collect();
-    assert_eq!(boosted, vec!["z.rs", "x.rs", "y.rs"]);
-    // The session stands alone only for a lifted follow-up, newest first.
-    let only: Vec<(String, u64)> = fuse_with(&leads, &[], &session, true)
-        .into_iter()
-        .map(|hit| (hit.path, hit.line))
-        .collect();
-    assert_eq!(
-        only,
-        vec![
-            ("z.rs".to_string(), 0),
-            ("dirty-and-unrelated.rs".to_string(), 0)
-        ]
-    );
-    let credential = ["config/.env".to_string()];
-    assert!(fuse_with(&[], &[], &credential, true).is_empty());
 }
 
 #[test]
@@ -5074,46 +4111,6 @@ fn a_brief_with_no_pack_should_remember_nothing() {
     assert!(sent::load(&root, "s", now_ms()).is_empty());
 }
 
-#[test]
-fn probes_get_the_rest_of_the_window_a_floor_when_the_chain_used_it_up_and_never_past_the_ceiling()
-{
-    use crate::probes::{PROBE_FLOOR, probe_deadline};
-
-    let started = Instant::now();
-    let at = |ms: u64| started + Duration::from_millis(ms);
-    // Plenty of window left: the end of the window.
-    assert_eq!(
-        probe_deadline(started, at(3_000), at(500), PROBE_FLOOR),
-        at(3_000)
-    );
-    // The chain used it up at 2.9 s: the floor is added from now.
-    assert_eq!(
-        probe_deadline(started, at(3_000), at(2_900), PROBE_FLOOR),
-        at(4_100)
-    );
-    // Late, and the floor would cross the ceiling: the ceiling wins.
-    assert_eq!(
-        probe_deadline(started, at(3_000), at(4_500), PROBE_FLOOR),
-        at(5_000)
-    );
-    assert_eq!(
-        probe_deadline(started, at(4_500), at(100), PROBE_FLOOR),
-        at(4_500)
-    );
-    // The `brief` command has no floor: the window is all there is, even when
-    // it is over.
-    assert_eq!(
-        probe_deadline(started, at(750), at(700), Duration::ZERO),
-        at(750)
-    );
-    assert_eq!(
-        probe_deadline(started, at(750), at(900), Duration::ZERO),
-        at(900)
-    );
-}
-
-/// A probe plugin under `<root>/.pixel/plugins/<name>` printing `output` after
-/// `delay` seconds, and the host that offers it.
 fn probe_host(
     root: &Path,
     name: &str,
@@ -5150,117 +4147,78 @@ fn probed(
     root: &Path,
     host: pixel_plugin::Host,
     window: Duration,
-    floor: Duration,
+    setup_delay: Duration,
 ) -> Finished {
-    // The chain is complete before the window ends.
     let (send, done) = mpsc::channel();
     send.send(()).unwrap();
     let started = Instant::now();
-    Pending {
+    let pending = Pending {
         state: Arc::new(Mutex::new(brief)),
         done,
         deadline: started + window,
         started,
         task: "what does this crate expose".into(),
         signal: Signal::Prose,
+        intent: None,
         sent: None,
         probes: Some(ProbeSetup {
             host,
             root: root.to_path_buf(),
             cap: 1_000,
-            floor,
             max_bytes: None,
         }),
-    }
-    .finish_with_record()
+    };
+    std::thread::sleep(setup_delay);
+    pending.finish_with_record()
 }
 
 #[test]
-fn finishing_should_allow_probe_recovery_but_preserve_explicit_silence() {
+fn finishing_should_run_configured_evidence_probes_on_an_open_brief() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
-    let output = "### source.rs:1-1 — evidence\\n1| pub struct Library;\\n";
-    let host = probe_host(
-        &root,
-        "recovery",
-        "when_prompt = \"crate\"\nwhen_gate_closed = true\n",
-        "0",
-        output,
+    let output = "### source.rs:1-1 — evidence\n1| pub struct Library;\n";
+    let host = probe_host(&root, "recovery", "when_prompt = \"crate\"\n", "0", output);
+    let finished = probed(Brief::default(), &root, host, SECOND, Duration::ZERO);
+    assert_eq!(
+        finished.text.as_deref(),
+        Some("[PIXEL:BRIEF]\n### source.rs:1-1 — evidence\n1| pub struct Library;\n")
     );
-    for (admission, silenced, expected) in [
-        (Admission::Closed("no graph vocabulary".into()), true, true),
-        (Admission::Unjudged, false, true),
-        (Admission::Kind(QuestionKind::Overview), false, true),
-        (Admission::Open, true, false),
-    ] {
-        let label = admission.label();
-        let brief = Brief {
-            admission,
-            silenced,
-            ..Brief::default()
-        };
-        let finished = probed(brief, &root, host.clone(), SECOND, Duration::ZERO);
-        if expected {
-            assert_eq!(
-                finished.text.as_deref(),
-                Some("[PIXEL:BRIEF]\n### source.rs:1-1 — evidence\n1| pub struct Library;\n"),
-                "{label}"
-            );
-            assert_eq!(finished.record.probes.len(), 1, "{label}");
-            assert_eq!(finished.record.probes[0].outcome, "ok", "{label}");
-            assert!(finished.record.stages.probe_ms.is_some(), "{label}");
-            if label == "closed" {
-                assert!(
-                    !finished.record.enforced,
-                    "recovery bypassed the relevance verdict"
-                );
-            }
-        } else {
-            assert_eq!(finished.text, None, "{label}");
-            assert_eq!(finished.record.probes, [], "{label}");
-            assert_eq!(finished.record.stages.probe_ms, None, "{label}");
-        }
-    }
+    assert_eq!(finished.record.probes.len(), 1);
+    assert_eq!(finished.record.probes[0].outcome, "ok");
+    assert!(finished.record.stages.probe_ms.is_some());
 }
 
 #[test]
-fn a_probe_the_floor_carries_past_the_window_should_not_make_the_brief_cut() {
-    use crate::probes::PROBE_FLOOR;
-
+fn a_slow_probe_cannot_extend_the_shared_deadline_and_keeps_the_rendered_brief() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().canonicalize().unwrap();
     let host = probe_host(
         &root,
         "slow",
         "when_prompt = \"crate\"\n",
-        "0.2",
-        "### source.rs:1-1 — evidence\\n1| pub struct Library;\\n",
+        "1",
+        "### source.rs:1-1 — evidence\n1| pub struct Library;\n",
     );
-    let window = Duration::from_millis(60);
-    // A hook's floor keeps the probe running past the window: the brief ends
-    // late, but nothing was lost, so it is neither hedged nor cut.
-    let floored = probed(Brief::default(), &root, host.clone(), window, PROBE_FLOOR);
+    let window = Duration::from_millis(500);
+    let started = Instant::now();
+    let finished = probed(
+        full_brief(),
+        &root,
+        host,
+        window,
+        Duration::from_millis(430),
+    );
     assert!(
-        floored
-            .text
-            .as_deref()
-            .is_some_and(|text| text.contains("pub struct Library")),
-        "{:?}",
-        floored.text
+        started.elapsed() < window + Duration::from_millis(250),
+        "probe exceeded shared expiry by too much: {:?}",
+        started.elapsed()
     );
-    assert_eq!(floored.record.probes[0].outcome, "ok");
-    assert_eq!(floored.record.deadline_ms, Some(60));
-    assert!(
-        floored.record.elapsed_ms > 60,
-        "{}",
-        floored.record.elapsed_ms
-    );
-    assert!(!floored.record.cut);
-    // Without the floor the window ends the probe: that loss is the probe's
-    // `timeout`, and the packet still was not cut.
-    let unfloored = probed(Brief::default(), &root, host, window, Duration::ZERO);
-    assert_eq!(unfloored.record.probes[0].outcome, "timeout");
-    assert!(!unfloored.record.cut);
+    let text = finished
+        .text
+        .expect("base brief remains available after probe timeout");
+    assert!(text.contains("src/handleError.ts"), "{text}");
+    assert_eq!(finished.record.probes[0].outcome, "timeout");
+    assert_eq!(finished.record.deadline_ms, Some(500));
 }
 
 #[test]

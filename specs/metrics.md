@@ -24,7 +24,7 @@ through a channel to a writer thread; `finish` never blocks the caller beyond a
 
 | `t` | Contents |
 |---|---|
-| `brief` | signal, gate and reason, tier, score, kind, steps that ran with ms (absent when the step's gate stayed closed), brief probes with their outcome and ms, bytes, cut, deadline, route, daemon launch outcome, masked typed text (≤600 chars) and its SHA-256 |
+| `brief` | signal, classifier intent, gate and reason, kind, steps that ran with ms (absent when the step's gate stayed closed), brief probes with their outcome and ms, bytes, cut, deadline, route, daemon launch outcome, masked typed text (≤600 chars) and its SHA-256. `tier`, `score`, `model`, `best_file` and `features` remain in the record as null legacy fields; lexical relevance no longer decides admission or evidence included in a brief. |
 | `part` | bytes each hook part printed, and whether it gave up waiting (`late`) |
 | `edit` | the file, the callers named, bytes, or the silence reason (`no_shape_change`, `no_external_callers`, `already_sent`, `no_proposed_text`, `index_stale`, `no_daemon`) |
 | `stale` | the file, the sites added to the pending set, bytes, or the silence reason (`no_baseline`, `no_shape_change`, `nothing_new`) |
@@ -78,7 +78,7 @@ under concurrency and is never used; each relay matches its own invocation.
 ## `pixel metrics [--since 24h] [--json]`
 
 Replaces Pixel's `token-savings`/`action-log` and `brief-feedback-summary.py`.
-Reports, from the two files: briefs delivered and declined by tier and kind;
+Reports, from the two files: briefs delivered and declined by admission and kind;
 the zero-call turn rate and the calls before the first answer; precision and
 recall of injected vs read paths; edit cards, stale sites fixed before Stop,
 Stop blocks; CLI calls with estimated tokens and time saved grouped by

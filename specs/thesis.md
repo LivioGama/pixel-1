@@ -40,8 +40,11 @@ have not yet run.
 2. **Push, don't offer.** A capability that matters runs inside a hook at the
    moment it changes the agent's next action, and its *result* is injected. The
    model is never asked whether to call it. A skill exists only as a fallback.
-3. **Deterministic.** Same repository state, same prompt, same bytes. No model
-   in the default path. Classification and semantic search are opt-in.
+3. **Deterministic by default.** Same repository state, same prompt, same bytes
+   when optional classifiers and semantic search are off. No model runs in the
+   default path. Classification and semantic search are opt-in; enabling a
+   configured classifier makes its decision an external, non-deterministic
+   input to the brief.
 4. **Quiet unless actionable.** After the brief, a mid-session injection fires
    only when deterministic evidence says the agent's next action is wrong or
    incomplete. Silence is the default and is measured.
@@ -59,7 +62,8 @@ have not yet run.
 
 - No MCP server, no hosted service, no account, no telemetry.
 - No search interception: Pixel never denies `grep` or a file read.
-- No model call in the default path.
+- No model call in the default path; an explicitly enabled and configured
+  classifier may call its configured remote provider.
 - No git mutation commands in core (they live in the separate git plugin).
 - No task contracts, verification receipts or edit gating.
 

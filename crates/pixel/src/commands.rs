@@ -379,6 +379,7 @@ struct BriefAsk<'a> {
 /// the journal and print the block. `brief: off` in the settings, or
 /// `PIXEL_BRIEF=0`, computes none.
 fn brief(ask: &BriefAsk, json: bool, no_daemon: bool) -> Result<Done, String> {
+    let started = Instant::now();
     let BriefAsk {
         prompt,
         path,
@@ -394,17 +395,36 @@ fn brief(ask: &BriefAsk, json: bool, no_daemon: bool) -> Result<Done, String> {
         )));
     }
     let root = client::discover_root(path)?;
-    let data = call(
-        path,
-        Request::Brief {
-            prompt: prompt.to_owned(),
-            session: session.unwrap_or_default().to_owned(),
-            host: host.to_owned(),
-            parts,
-            without: without.to_vec(),
-        },
-        no_daemon,
-    )?;
+    let budget = pixel_brief::chain::window_for(None, host == "cli");
+    let deadline = started + budget;
+    let deadline_unix_ms = std::time::SystemTime::now()
+        .checked_add(deadline.saturating_duration_since(Instant::now()))
+        .and_then(crate::brief_intent::deadline_unix_ms)
+        .ok_or("brief deadline could not be represented")?;
+    let intent = crate::brief_intent::classify(prompt, deadline);
+    if Instant::now() >= deadline {
+        let value = json!({"text": null, "declined": "deadline", "paths": []});
+        return Ok(Done::new(value.clone(), String::new(), json).note(Some(
+            "no brief: deadline exhausted during task-intent classification".to_owned(),
+        )));
+    }
+    let request = Request::Brief {
+        prompt: prompt.to_owned(),
+        intent,
+        deadline_unix_ms: Some(deadline_unix_ms),
+        session: session.unwrap_or_default().to_owned(),
+        host: host.to_owned(),
+        parts,
+        without: without.to_vec(),
+    };
+    let call_path = path.to_path_buf();
+    let Some(data) = wait_brief_call_until(deadline, move || call(&call_path, request, no_daemon))?
+    else {
+        let value = json!({"text": null, "declined": "deadline", "paths": []});
+        return Ok(Done::new(value, String::new(), json).note(Some(
+            "no brief: deadline exhausted while contacting the daemon".to_owned(),
+        )));
+    };
     journal(&root, &data["record"]);
     let text = data["text"].as_str().map(|text| format!("{text}\n"));
     let note = if text.is_none() {
@@ -413,6 +433,34 @@ fn brief(ask: &BriefAsk, json: bool, no_daemon: bool) -> Result<Done, String> {
         None
     };
     Ok(Done::new(data.clone(), text.unwrap_or_default(), json).note(note))
+}
+
+/// Wait for this brief's client path only until its shared deadline. If a
+/// probe, daemon start, request, or in-process open is still running, the
+/// request already carries the same absolute expiry and cannot start fresh
+/// retrieval after the caller returns.
+fn wait_brief_call_until(
+    deadline: Instant,
+    call: impl FnOnce() -> Result<Value, String> + Send + 'static,
+) -> Result<Option<Value>, String> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Ok(None);
+    }
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("pixel-brief-client".into())
+        .spawn(move || {
+            let _ = sender.send(call());
+        })
+        .map_err(|error| format!("start brief client worker: {error}"))?;
+    match receiver.recv_timeout(remaining) {
+        Ok(result) => result.map(Some),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err("brief client worker stopped without a response".to_owned())
+        }
+    }
 }
 
 /// Appends a hook decision to `.pixel/journal.jsonl`, best effort: the journal
@@ -1000,6 +1048,26 @@ fn daemon(cmd: &DaemonCmd) -> Result<Done, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brief_call_wait_does_not_wait_for_a_slow_fallback_open() {
+        let (started, started_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        let (finished, finished_rx) = std::sync::mpsc::channel();
+        let began = Instant::now();
+        let result = wait_brief_call_until(began + Duration::from_millis(40), move || {
+            started.send(()).unwrap();
+            release_rx.recv().unwrap();
+            finished.send(()).unwrap();
+            Ok(json!({"text": "late"}))
+        })
+        .unwrap();
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(result.is_none());
+        assert!(began.elapsed() < Duration::from_millis(250));
+        release.send(()).unwrap();
+        finished_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    }
 
     #[test]
     fn the_review_threshold_maps_each_word_to_a_severity() {

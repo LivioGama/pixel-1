@@ -4,6 +4,7 @@
 //! The `pixel` binary: deterministic evidence for coding agents
 //! (`specs/thesis.md`). `run` owns an invocation from argv to exit status.
 
+mod brief_intent;
 mod classify;
 mod classify_config;
 mod classify_setup;

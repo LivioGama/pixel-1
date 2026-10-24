@@ -161,6 +161,8 @@ impl Reader<'_> {
             } => history_read_only(self.root, query, facet.as_deref(), *limit),
             Op::Brief {
                 prompt,
+                intent,
+                deadline_unix_ms,
                 session,
                 host,
                 parts,
@@ -172,6 +174,8 @@ impl Reader<'_> {
                     behind,
                     &Ask {
                         prompt,
+                        intent: intent.as_ref(),
+                        deadline_unix_ms: *deadline_unix_ms,
                         session,
                         host,
                         parts: *parts,

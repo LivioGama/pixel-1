@@ -44,6 +44,13 @@ pub enum Op {
     /// implementation (`specs/brief.md`).
     Brief {
         prompt: String,
+        /// The configured task-intent classifier result, when the CLI could
+        /// obtain one within the brief's shared deadline.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        intent: Option<serde_json::Value>,
+        /// Absolute end-to-end brief expiry as Unix epoch milliseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline_unix_ms: Option<u64>,
         /// The host's session id, for the dedupe (the stores that key by it hash it).
         session: String,
         /// The host the brief is delivered to; it sets the size limits.
@@ -329,6 +336,8 @@ mod tests {
             op,
             Op::Brief {
                 prompt: "p".into(),
+                intent: None,
+                deadline_unix_ms: None,
                 session: "s".into(),
                 host: "claude".into(),
                 parts: 1,
@@ -341,6 +350,8 @@ mod tests {
     fn brief_sends_the_switched_off_steps_only_when_there_are_some() {
         let mut op = Op::Brief {
             prompt: "p".into(),
+            intent: None,
+            deadline_unix_ms: None,
             session: "s".into(),
             host: "cli".into(),
             parts: 1,
@@ -354,6 +365,28 @@ mod tests {
             serde_json::to_value(&op).unwrap()["without"],
             serde_json::json!(["workspace-overview"])
         );
+    }
+
+    #[test]
+    fn brief_transports_intent_and_an_absolute_deadline() {
+        let intent = json!({
+            "predicted": "investigate",
+            "probs": {"investigate": 0.7, "none": 0.3},
+            "snapshot": {"provider": "test"}
+        });
+        let op = Op::Brief {
+            prompt: "explain the post list".into(),
+            intent: Some(intent.clone()),
+            deadline_unix_ms: Some(1_800_000_000_000),
+            session: "s".into(),
+            host: "claude".into(),
+            parts: 1,
+            without: Vec::new(),
+        };
+        let encoded = serde_json::to_value(&op).unwrap();
+        assert_eq!(encoded["intent"], intent);
+        assert_eq!(encoded["deadline_unix_ms"], 1_800_000_000_000_u64);
+        assert_eq!(serde_json::from_value::<Op>(encoded).unwrap(), op);
     }
 
     #[test]

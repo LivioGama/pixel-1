@@ -14,9 +14,11 @@ every op as read, write or repo-write with no wildcard arm).
 Socket, pid and lock live in `$XDG_RUNTIME_DIR` when set, else
 `~/.cache/pixel/sockets/` (0700), named `pixel-<xxh3 of canonical repo path>.sock`;
 `TMPDIR` is never read. A path longer than `sockaddr_un` moves to
-`/tmp/pixel-<hash of HOME>/` (0700, owner-checked). Versions: `PROTOCOL_VERSION`
-in `pixel-proto`; a version skew is answered with an error naming both sides and
-the CLI falls back to in-process.
+`/tmp/pixel-<hash of HOME>/` (0700, owner-checked). The envelope
+`PROTOCOL_VERSION` is 2. On a version skew, the CLI retires and restarts a stale
+daemon before falling back to an in-process service; it never sends a brief
+request with new optional fields to a v1 daemon that could ignore them and
+silently apply the old keyword gate.
 
 ## Envelope
 
@@ -31,7 +33,7 @@ which cap fired.
 | Group | Op | Notes |
 |---|---|---|
 | Admin | `Ping`, `Status`, `Reindex`, `Shutdown` | `Status` reports index, graph and history freshness and the daemon's generation |
-| Hooks | `Brief{prompt, session, host, parts}` | runs `pixel-brief` inside the daemon, on a read replica (it takes its whole window and never holds the writer). Result: `{text, declined, paths, record}`: the block or `null`, why there is none (`continuation`, `not_about_code`, `no_worker`; the caller adds `disabled` when `PIXEL_BRIEF` is off), the repository files the block names, and the journal's `brief` record for the caller to append with its own provenance |
+| Hooks | `Brief{prompt, intent?, deadline_unix_ms?, session, host, parts}` | runs `pixel-brief` inside the daemon, on a read replica. `intent` carries the configured classifier's JSONL decision when available; `deadline_unix_ms` is the absolute deadline set at CLI entry, before classification and daemon-client work. The daemon converts it to the remaining chain budget; an expired deadline starts no retrieval. Result: `{text, declined, paths, record}`: the block or `null`, why there is none (`continuation`, `intent_none`, `not_about_code`, `deadline_expired`, `no_worker`; the caller adds `disabled` when `PIXEL_BRIEF` is off), the repository files the block names, and the journal's `brief` record for the caller to append with its own provenance |
 | | `EditCheck{path, proposed?, phase, session}` | `hooks.md`. `phase` is `before` (default: the card, and the session's baseline for the file) or `after` (the stale-caller set). Reads the generation and writes only the session file |
 | | `StopCheck{session}` | `hooks.md` |
 | Queries | `Search` (regex/literal over the trigram index), `Symbol`, `Callers` (callers and callees by uid and tier), `Impact` (blast radius, includes tests), `Changes` (working tree or a base), `History`, `Meaning` (feature `semantic`), `Map` (repo map and signatures) | |
@@ -57,8 +59,11 @@ diff, review…) are not carried; 14 of that engine's 42 had no client at all.
   tracked files at a pinned commit, a delta shard for files changed since, and
   an in-memory overlay for the dirty tree. Catch-up after a ref moves is
   bounded (2,000 paths) and a wider move leaves the set behind and says so.
-- **Brief window.** `Brief` answers within the caller's deadline or returns the
-  partial brief marked cut. It reads like a `stale_ok` caller: when the graph
+- **Brief window.** `Brief` carries an absolute `deadline_unix_ms` set at CLI
+  entry, covering classifier work and daemon client probing, startup, connection
+  and queue costs as well as retrieval. If already expired, it returns without
+  starting retrieval; otherwise it answers within the remaining deadline or
+  returns the partial brief marked cut. It reads like a `stale_ok` caller: when the graph
   lags the working tree the evidence is used and the block says it may predate
   the last edit. A repository whose graph was never built gets the text
   evidence only, until `pixel prepare` (or a graph query) builds it; semantic

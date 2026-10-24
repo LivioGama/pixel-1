@@ -358,6 +358,11 @@ mod tests {
             Probe::Stale
         );
         assert_eq!(
+            classify_ping(&pong(1, env!("CARGO_PKG_VERSION"))),
+            Probe::Stale,
+            "the previous wire protocol must not serve intent-bearing briefs"
+        );
+        assert_eq!(
             classify_ping(&pong(ENVELOPE_PROTOCOL_VERSION + 1, "9.9.9")),
             Probe::Newer
         );

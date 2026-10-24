@@ -14,25 +14,25 @@ use serde_json::{Value, json};
 pub struct Record {
     /// Milliseconds since the Unix epoch when the decision was recorded.
     pub ts_ms: u64,
-    /// `strong`, `weak`, `prose`, or `None` when the prompt asked nothing
-    /// about the repository.
+    /// Text shape (`strong`, `weak`, `prose`), or `None` when no task text exists.
     pub signal: Option<&'static str>,
-    /// `open`, `closed`, `unjudged` or `declined`.
+    /// `open`, `unjudged` or `declined`.
     pub gate: &'static str,
-    /// The gate decision silenced the brief (it is always `true` for prose;
-    /// a weak prompt records the verdict it would have been refused by).
+    /// The configured classifier's confident `none` verdict suppressed retrieval.
     pub enforced: bool,
-    /// Why the gate decided as it did.
+    /// Why the prompt was declined, when it did not start retrieval.
     pub reason: Option<String>,
-    /// The best file's share of the prompt's keyword weight.
+    /// The configured classifier winner, when a valid document was supplied.
+    pub intent: Option<Value>,
+    /// Legacy lexical relevance score; null for current brief decisions.
     pub score: Option<f64>,
-    /// The tier the score fell in (`high`, `low`, `off`), when the relevance
-    /// decision was made.
+    /// Legacy lexical relevance tier; null for current brief decisions.
     pub tier: Option<&'static str>,
-    /// The gate model's source (the json its constants were copied from).
-    pub model: &'static str,
+    /// Legacy lexical model source; null for current brief decisions.
+    pub model: Option<&'static str>,
+    /// Legacy lexical best-file result; null for current brief decisions.
     pub best_file: Option<String>,
-    /// What the relevance decision weighed, when the probe answered.
+    /// Legacy lexical features; null for current brief decisions.
     pub features: Option<crate::relevance::Features>,
     /// The question kind the plan routed to.
     pub kind: Option<&'static str>,
@@ -76,13 +76,13 @@ pub struct Record {
     /// The brief probes that were due, with how each ended.
     pub probes: Vec<crate::probes::ProbeRun>,
     /// The recipe steps that ran, with their milliseconds, in the order they
-    /// finished. A step whose lexical gate stayed closed is absent, not `0`.
+    /// finished. A step that did not run is absent, not `0`.
     pub steps: Vec<(&'static str, u64)>,
 }
 
 /// How long each stage of a brief took, in milliseconds; `None` for a stage
-/// that did not run, never `0`: a declined prompt runs none, a closed gate
-/// never ranks.
+/// that did not run, never `0`: a declined prompt runs none, and no search
+/// or rank time is recorded when retrieval does not start.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stages {
     /// Opening the evidence and the candidate searches: the relevance,
@@ -120,6 +120,7 @@ impl Record {
             "gate": self.gate,
             "enforced": self.enforced,
             "reason": self.reason,
+            "intent": self.intent,
             "score": self.score,
             "tier": self.tier,
             "model": self.model,
@@ -188,10 +189,11 @@ mod tests {
             signal: Some("prose"),
             gate: "open",
             enforced: true,
-            reason: Some("2 of 3 key terms".into()),
+            reason: None,
+            intent: Some(json!({"label": "investigate", "probability": 0.68})),
             score: Some(0.75),
             tier: Some("high"),
-            model: "test model",
+            model: Some("test model"),
             best_file: Some("src/a.rs".into()),
             features: Some(crate::relevance::Features {
                 struct_per_mille: 3.5,
@@ -251,7 +253,8 @@ mod tests {
                 "signal": "prose",
                 "gate": "open",
                 "enforced": true,
-                "reason": "2 of 3 key terms",
+                "reason": null,
+                "intent": {"label": "investigate", "probability": 0.68},
                 "score": 0.75,
                 "tier": "high",
                 "model": "test model",
@@ -298,6 +301,7 @@ mod tests {
         let bare = Record {
             signal: None,
             reason: None,
+            intent: None,
             score: None,
             best_file: None,
             features: None,
@@ -314,6 +318,7 @@ mod tests {
             "best_file",
             "features",
             "kind",
+            "intent",
         ] {
             assert_eq!(value[key], Value::Null, "{key}");
         }

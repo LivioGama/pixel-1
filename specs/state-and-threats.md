@@ -49,6 +49,13 @@ B4 same-user process → daemon socket (read-only ops only). B5 `pixel setup` �
 configs (hooks run on every tool call). B6 network. B7 contributor → CI →
 release.
 
+When the global classify switch is enabled, the prompt-submit brief asks the
+configured classifier engine for one task-intent decision (seven task labels
+plus `none`). A remote engine contacts only its configured provider; the call
+shares the brief's end-to-end deadline. The default remains off, and a missing,
+failed or timed-out classification fails open to local retrieval. Classifier
+credentials follow the existing key resolution and masking rules above.
+
 ## Threats and mitigations (summary; the full model is written at M9)
 
 1. **Prompt injection through Pixel's output.** Everything Pixel injects is

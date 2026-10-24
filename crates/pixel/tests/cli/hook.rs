@@ -4,7 +4,7 @@
 //! `pixel hook`: a host payload on stdin, one envelope or nothing on stdout,
 //! exit status 0 whatever happens (`specs/hosts.md`).
 
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Output, Stdio};
 
 use serde_json::{Value, json};
@@ -48,6 +48,64 @@ fn prompt_payload(fixture: &Fixture, session: &str, prompt: &str) -> String {
         "prompt": prompt,
     })
     .to_string()
+}
+
+/// A loopback OpenAI-compatible endpoint used by the CLI child process. The
+/// thread stays up until the test stops it, so duplicate classifier requests
+/// from split hooks are captured too.
+fn classifier_stub() -> (
+    String,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+    std::thread::JoinHandle<Vec<Value>>,
+) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        let mut requests = Vec::new();
+        while !thread_stop.load(Ordering::Relaxed) && Instant::now() < deadline {
+            let Ok((mut stream, _)) = listener.accept() else {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            let mut content_length = 0;
+            while reader.read_line(&mut line).unwrap_or(0) > 0 && line != "\r\n" {
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    content_length = value.trim().parse::<usize>().unwrap_or(0);
+                }
+                line.clear();
+            }
+            let mut body = vec![0; content_length];
+            if reader.read_exact(&mut body).is_err() {
+                continue;
+            }
+            requests.push(serde_json::from_slice(&body).unwrap_or(Value::Null));
+            let content = r#"{"probs":{"bugfix":0.01,"feature":0.01,"refactor":0.01,"investigate":0.9,"question":0.02,"review":0.01,"ops":0.01,"none":0.03}}"#;
+            let response = json!({"choices":[{"message":{"content":content}}]}).to_string();
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            );
+            let _ = stream.write_all(reply.as_bytes());
+        }
+        requests
+    });
+    (base, stop, server)
 }
 
 fn envelope(output: &Output) -> Value {
@@ -96,6 +154,154 @@ fn claude_gets_the_brief_as_additional_context_and_a_line_for_the_user() {
         "{out}"
     );
     assert_eq!(out.as_object().unwrap().len(), 2);
+}
+
+#[test]
+fn configured_classifier_runs_once_for_a_cached_split_prompt_and_journals_its_verdict() {
+    use std::sync::atomic::Ordering;
+
+    let fixture = project();
+    let home = home_dir(&fixture);
+    std::fs::create_dir_all(home.join(".pixel")).unwrap();
+    std::fs::write(
+        home.join(".pixel/config.yaml"),
+        "classify: {enabled: true, engine: remote, remote_preset: local, remote_model: fake}\n",
+    )
+    .unwrap();
+    let (base, stop, server) = classifier_stub();
+    let prompt = format!(
+        "## Files in context\n{}\n## My request:\nExplain how the list of posts works",
+        "FILE_LIST_SHOULD_NOT_REACH_CLASSIFIER ".repeat(1_000)
+    );
+    assert!(prompt.len() > 32_768);
+    let payload = prompt_payload(&fixture, "classified-split", &prompt);
+    let outputs: Vec<Output> = std::thread::scope(|scope| {
+        ["1/3", "2/3", "3/3"]
+            .into_iter()
+            .map(|part| {
+                let (fixture, payload, base) = (&fixture, &payload, &base);
+                scope.spawn(move || {
+                    hook(
+                        fixture,
+                        &["prompt-submit", "--host", "claude", "--part", part],
+                        payload,
+                        &[
+                            ("Pixel_REMOTE_BASE", base),
+                            ("Pixel_BRIEF_TEST_PAD_PARTS", "3"),
+                        ],
+                    )
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect()
+    });
+    assert!(outputs.iter().all(|output| output.status.success()));
+    stop.store(true, Ordering::Relaxed);
+    let requests = server.join().unwrap();
+    assert_eq!(requests.len(), 1, "split parts share one classifier call");
+    let sent = requests[0].to_string();
+    assert!(
+        sent.contains("Explain how the list of posts works"),
+        "{sent}"
+    );
+    assert!(
+        !sent.contains("FILE_LIST_SHOULD_NOT_REACH_CLASSIFIER"),
+        "{sent}"
+    );
+    for label in [
+        "bugfix",
+        "feature",
+        "refactor",
+        "investigate",
+        "question",
+        "review",
+        "ops",
+        "none",
+    ] {
+        assert!(
+            sent.contains(label),
+            "missing `{label}` from classifier request: {sent}"
+        );
+    }
+    let journal = journal(&fixture);
+    let records = lines_of(&journal, "brief");
+    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(records[0]["intent"]["label"], "investigate", "{records:?}");
+}
+
+#[test]
+fn classify_kill_switch_skips_the_provider_call() {
+    use std::sync::atomic::Ordering;
+
+    let fixture = project();
+    let home = home_dir(&fixture);
+    std::fs::create_dir_all(home.join(".pixel")).unwrap();
+    std::fs::write(
+        home.join(".pixel/config.yaml"),
+        "classify: {enabled: false, engine: remote, remote_preset: local, remote_model: fake}\n",
+    )
+    .unwrap();
+    let (base, stop, server) = classifier_stub();
+    let output = hook(
+        &fixture,
+        &["prompt-submit", "--host", "claude"],
+        &prompt_payload(
+            &fixture,
+            "classifier-off",
+            "Explain how the list of posts works",
+        ),
+        &[("Pixel_REMOTE_BASE", &base)],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    stop.store(true, Ordering::Relaxed);
+    assert!(
+        server.join().unwrap().is_empty(),
+        "kill switch contacted provider"
+    );
+}
+
+#[test]
+fn classifier_skips_nonhuman_envelopes_but_keeps_human_acknowledgements_eligible() {
+    use std::sync::atomic::Ordering;
+
+    let fixture = project();
+    let home = home_dir(&fixture);
+    std::fs::create_dir_all(home.join(".pixel")).unwrap();
+    std::fs::write(
+        home.join(".pixel/config.yaml"),
+        "classify: {enabled: true, engine: remote, remote_preset: local, remote_model: fake}\n",
+    )
+    .unwrap();
+    let (base, stop, server) = classifier_stub();
+    let prompts = [
+        "<task-notification><summary>fix auth</summary></task-notification>",
+        "<realtime_delegation><input>where is fetchUser</input></realtime_delegation>",
+        "<system-reminder>Only nonhuman reminder</system-reminder>",
+        "Thanks, that works",
+    ];
+    for (index, prompt) in prompts.iter().enumerate() {
+        let output = hook(
+            &fixture,
+            &["prompt-submit", "--host", "claude"],
+            &prompt_payload(&fixture, &format!("envelope-{index}"), prompt),
+            &[("Pixel_REMOTE_BASE", &base)],
+        );
+        assert!(output.status.success(), "{}", stderr(&output));
+    }
+    stop.store(true, Ordering::Relaxed);
+    let requests = server.join().unwrap();
+    assert_eq!(
+        requests.len(),
+        1,
+        "only the human acknowledgement is classified"
+    );
+    let sent = requests[0].to_string();
+    assert!(sent.contains("Thanks, that works"), "{sent}");
+    assert!(!sent.contains("task-notification"), "{sent}");
+    assert!(!sent.contains("realtime_delegation"), "{sent}");
+    assert!(!sent.contains("Only nonhuman reminder"), "{sent}");
 }
 
 #[test]

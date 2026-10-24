@@ -192,7 +192,7 @@ fn nothing_is_said_without_a_word_about_parts_or_for_the_kinds_that_skip_it() {
 }
 
 #[test]
-fn the_step_may_answer_a_prompt_the_gate_refused() {
+fn the_step_may_add_matching_evidence_without_admission_context() {
     let source = matcher();
     let repo = Repo::new(&[("src/matcher.rs", &source)]);
     let deadline = Instant::now() + Duration::from_secs(5);

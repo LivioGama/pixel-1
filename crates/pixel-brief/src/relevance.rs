@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: The RTO contributors
 // SPDX-License-Identifier: MIT
 
-//! The relevance gate of a plain-language prompt: does the repository talk
-//! about what the prompt talks about?
+//! Keyword evidence for retrieval ranking, plus the legacy lexical score model
+//! kept separate from brief admission.
 //!
 //! The daemon counts, per task keyword, the files it occurs in
 //! (`facts.relevance`) and weighs the keywords and the files they meet in.
-//! This module turns that block and the typed prompt into one decision with
-//! no language model in it: four [`Features`], each a small function of the
+//! The score helpers turn that block and the typed prompt into one legacy
+//! score with no language model in it: four [`Features`], each a small function of the
 //! evidence, are scored by a fixed logistic model
 //! (`intercept + sum(coef * feature)`, the constants in [`super::gate_model`])
 //! and the score falls in one of three [`Tier`]s by two thresholds.

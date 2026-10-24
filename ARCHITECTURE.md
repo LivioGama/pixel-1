@@ -5,8 +5,8 @@ every contract live in [`specs/`](specs/); this file says where they live in
 the code and what the tests hold in place. `cargo test -p pixel --test cli
 docs_drift::` fails when the two tables below disagree with the tree.
 
-Pixel avoids repeated investigation: it computes, with no model, the evidence an agent
-would otherwise fetch with tool calls, and pushes it through hooks
+Pixel avoids repeated investigation: it computes the evidence an agent would
+otherwise fetch with tool calls, and pushes it through hooks
 (`specs/thesis.md`). This file describes the candidate implementation, including
 the hook handlers, setup/doctor commands and the `pixel-setup` crate.
 
@@ -32,12 +32,12 @@ One row per subcommand of `pixel --help`, in that order.
 | `repo-map` | Every indexed file with its symbols. |
 | `search-history` | Searches commit messages, paths and diffs. |
 | `rename` | Renames a symbol through the sites the graph resolved to it; a dry run unless `--apply`. |
-| `brief` | The brief a prompt would get, computed by the daemon with no model; the decision goes to the journal. `--without STEP` leaves recipe steps out (`pixel_brief::steps`). |
+| `brief` | The brief a prompt would get, computed by the daemon; when the opt-in classifier is enabled it uses the configured task-intent engine for admission, otherwise it makes no model call. The decision goes to the journal. `--without STEP` leaves recipe steps out (`pixel_brief::steps`). |
 | `hook` | Answers one agent-host hook event from the payload on stdin: one JSON envelope or nothing, always exit 0. |
 | `setup` | Registers hooks, plugin, package and skill with the agents on the machine, or removes them (`--remove`); `--print` writes nothing. At a terminal with no `--agent`, `--print`, `--json` or `--yes` it asks one question per agent (`pixel_setup::setup::wizard`). |
 | `doctor` | Green/yellow/red checks of the install, the binary, the daemon and the freshness of the indexes, each flagged one with its repair command; `--fix` runs each distinct repair once. |
 | `config` | Lists the settings in force with where each value comes from (environment, repository, global, default), or sets or unsets one (`metrics`, `daemon_auto_start`, `brief`, `brief_parts`, `edit_hooks`). |
-| `metrics` | The report of `.pixel/journal.jsonl` and `.pixel/actions.jsonl` over a window (`--since`): briefs delivered and declined by tier and kind, the zero-call turn rate, precision and recall of injected versus read files, edit cards, stale sites and Stop blocks, and the commands' estimated savings by estimator version; measured and estimated numbers are labelled apart. |
+| `metrics` | The report of `.pixel/journal.jsonl` and `.pixel/actions.jsonl` over a window (`--since`): briefs delivered and declined by admission and kind, the zero-call turn rate, precision and recall of injected versus read files, edit cards, stale sites and Stop blocks, and the commands' estimated savings by estimator version; measured and estimated numbers are labelled apart. Brief `tier`, `score`, `model`, `best_file` and `features` journal fields remain null legacy fields. |
 | `classify` | The opt-in zero-shot decision over a bounded label set: probabilities per label from a remote OpenAI-compatible chat, OpenAI Decisions, Jev, Clef-flash or a local Ollaya engine; off until `pixel config classify on`, no call in any default path. `--task-intent` judges a prompt against the built-in task labels. |
 | `workspace` | `add`, `remove`, `list` and `clear` the repositories that `impact --workspace` and `who-calls --workspace` fan out across; each member answers from its own index and the results stay per repository. |
 | `index` | `pack` freezes `.pixel/`'s index files (`base.shard`, `state.json`, `graph.db`, and with `--include-history` `history.db`) into one `.pixelpack` with an xxh3 manifest; `unpack` verifies every file against it and installs it (path or `https://` URL), refusing while a daemon answers unless `--force`. |
@@ -65,8 +65,8 @@ One row per workspace member; `Depends on` is the `pixel-*` entries of its
 | `pixel-plugin` | The plugin host (`specs/plugins.md`): manifests (`pixel-plugin.toml`), the lookup order, the trust store keyed by a digest of the plugin directory, install from a directory, a git URL or a checked release asset through directory descriptors that refuse links, and the argv and environment a plugin runs with. | `pixel-io` |
 | `pixel-graph` | The code graph: one pipeline (`tree` → `extract` → `link`), a store, rules per language (`rust`, `ruby`, `names`), shapes, the edit check, the analyses, rename. | `pixel-model`, `pixel-io` |
 | `pixel-index` | The git-anchored trigram text index, the history store and the semantic chunker, vector store and ranking. | `pixel-io`, `pixel-model` |
-| `pixel-brief` | The prompt brief: typed-text signal, the relevance gate (`gate_model`), the question kind (`routes`), the evidence chain over an `Evidence` trait (`chain`), the recipe steps with their ablation flags (`steps`), the third-party brief-probe runner (`probes`), the region pack, render and parts. Reads no store; the daemon implements `Evidence`. | `pixel-io`, `pixel-metrics`, `pixel-model`, `pixel-plugin` |
-| `pixel-daemon` | The Unix-socket NDJSON daemon: serve loop, `Service::handle`, one `Reader` for the writer and its replicas, `brief/` (the `Evidence` of a brief over the stores it holds, the relevance counts the gate scores) and `edit/` (the card before an edit, the stale callers after it, the Stop block, and the session memory they share). | `pixel-brief`, `pixel-graph`, `pixel-index`, `pixel-io`, `pixel-metrics`, `pixel-model`, `pixel-plugin`, `pixel-proto` |
+| `pixel-brief` | The prompt brief: typed-text signal, caller-supplied classifier verdict for admission, question kind (`routes`), evidence chain over an `Evidence` trait (`chain`), recipe steps with ablation flags (`steps`), third-party brief-probe runner (`probes`), region pack, render and parts. Keyword evidence ranks retrieval candidates; it does not admit or refuse prompts. Reads no store; the daemon implements `Evidence`. | `pixel-io`, `pixel-metrics`, `pixel-model`, `pixel-plugin` |
+| `pixel-daemon` | The Unix-socket NDJSON daemon: serve loop, `Service::handle`, one `Reader` for the writer and its replicas, `brief/` (the `Evidence` of a brief over the stores it holds, including keyword evidence used to rank retrieval candidates) and `edit/` (the card before an edit, the stale callers after it, the Stop block, and the session memory they share). | `pixel-brief`, `pixel-graph`, `pixel-index`, `pixel-io`, `pixel-metrics`, `pixel-model`, `pixel-plugin`, `pixel-proto` |
 | `pixel-setup` | The host table (the hosts PIXEL serves, the event each fires and what it is called there, the payload fields read from each, the envelope each accepts, the metrics relay) and the installers that register it: hook entries, OpenCode's plugin, pi's package, Antigravity's plugin, the `pixel` skill, the ownership receipt, uninstall, the migration off a Pixel install, the doctor's file-based checks, the typed settings of `config.yaml`, and the delivery of a plugin's skill. | `pixel-io`, `pixel-model`, `pixel-plugin` |
 | `pixel` | The binary: the clap surface, the daemon client, rendering, the invocation lifecycle, and `hook/` (the one entry point every host's registered hook runs). The opt-in classifier lives here too (`classify`, `classify_setup`, `decide_*`, `classify_config`, `task_intent`) behind `pixel classify`. | `pixel-brief`, `pixel-daemon`, `pixel-graph`, `pixel-index`, `pixel-io`, `pixel-metrics`, `pixel-model`, `pixel-plugin`, `pixel-proto`, `pixel-setup` |
 
@@ -140,7 +140,16 @@ seconds. Both the receive wait and the idle-exit check use that duration.
 `Op::Brief` is a read-plane op that always goes to a read replica: the pipeline
 of `pixel-brief` runs in a worker thread under its window over a `BriefEvidence`
 (`pixel-daemon/src/brief/`) holding the shared stores, and the answer carries the
-block and the journal record. `pixel brief` prints the block and appends the
+block and the journal record. When configured classification is enabled, the
+calling `pixel` process supplies one task-intent decision from the configured
+engine, using the existing task labels plus `none`; it is cached across split
+deliveries. The request carries an absolute `deadline_unix_ms` established at
+CLI entry, before classifier work and daemon probing, startup, connection and
+queue time, so all consume the same end-to-end budget. The daemon converts that
+deadline into the chain's remaining window; an expired deadline starts no
+retrieval. A confident `none` suppresses before retrieval; missing or failed
+classification fails open. Keyword evidence ranks retrieval candidates and
+never gates admission. `pixel brief` prints the block and appends the
 record to `.pixel/journal.jsonl`. The op's `without` lists recipe steps to leave
 out, and `PIXEL_BRIEF_STEPS=-name,+name` (`pixel_daemon::brief::STEPS_ENV`, read by
 whichever process computes the brief) switches them off or on; a step also
@@ -153,9 +162,10 @@ After the render, `pixel-brief/src/probes.rs` runs the plugin host's brief probe
 and merges their blocks (`PIXEL_BRIEF_PROBES=off` runs none; the daemon builds the
 host from `HOME` and `PATH`).
 
-The protocol is `pixel_proto::ENVELOPE_PROTOCOL_VERSION`; a daemon of another
-version is retired and replaced by the next command, a newer protocol is left
-alone. A request line is at most 64 KiB and a connection serves at most 64
+The envelope protocol is `pixel_proto::ENVELOPE_PROTOCOL_VERSION` (2); a daemon
+of another version is retired before sending optional `intent` and
+`deadline_unix_ms`, so an old daemon cannot ignore them and run keyword
+admission. A request line is at most 64 KiB and a connection serves at most 64
 requests. Every answer carries the snapshot (head, branch, dirty count, token)
 and epistemics (`closed_world: false`, `lower_bound`, basis, extraction limits).
 

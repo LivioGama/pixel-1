@@ -222,9 +222,24 @@ impl Hook {
     /// The brief of `prompt` over `parts` hooks, or `None` when the daemon
     /// did not answer within the bound or the prompt gets none.
     fn brief(&self, prompt: &str, parts: u8) -> Option<Brief> {
+        let brief_window = pixel_brief::chain::window_for(None, false);
+        let remaining = brief_window
+            .saturating_sub(self.started.elapsed())
+            .min(self.bound().saturating_sub(self.started.elapsed()));
+        let deadline = Instant::now().checked_add(remaining)?;
+        let deadline_unix_ms = std::time::SystemTime::now()
+            .checked_add(remaining)
+            .and_then(crate::brief_intent::deadline_unix_ms)?;
+        let intent = crate::brief_intent::classify(prompt, deadline);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
         let (sender, receiver) = mpsc::sync_channel(1);
         let request = Request::Brief {
             prompt: prompt.to_owned(),
+            intent,
+            deadline_unix_ms: Some(deadline_unix_ms),
             session: self.session().unwrap_or_default().to_owned(),
             host: self.host.as_str().to_owned(),
             parts,
@@ -239,7 +254,9 @@ impl Hook {
                 let _ = sender.send(answer);
             })
             .ok()?;
-        let wait = self.bound().saturating_sub(self.started.elapsed());
+        let wait = deadline
+            .saturating_duration_since(Instant::now())
+            .min(self.bound().saturating_sub(self.started.elapsed()));
         let data = receiver.recv_timeout(wait).ok()?.ok()?;
         Some(Brief {
             text: data["text"].as_str().map(str::to_owned),

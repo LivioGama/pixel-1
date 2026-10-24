@@ -170,8 +170,8 @@ impl<'a> Ctx<'a> {
     }
 
     /// Times `step` from here to the end of the scope that holds the timer: a
-    /// step that returns before its lexical gate passed never starts one, so
-    /// it is absent from the brief's record, not `0`. The tracked-file listing
+    /// step that returns before its execution condition is met never starts
+    /// one, so it is absent from the brief's record, not `0`. The tracked-file listing
     /// belongs to the first step that asks for it.
     fn timer(&self, step: Step) -> Timer<'_> {
         Timer {
@@ -344,8 +344,7 @@ pub(crate) struct Outcome {
     pub(crate) append: Vec<Block>,
     /// What the rest of the pack loses because of what the steps found.
     pub(crate) drops: Drops,
-    /// A step that ran even though the relevance gate had closed the prompt
-    /// (Pixel's `when_gate_closed`) produced a block.
+    /// The step produced a block that otherwise would not be present.
     pub(crate) rescuing: bool,
     /// The steps that ran, in the order they finished.
     pub(crate) timings: Vec<StepRun>,
@@ -360,6 +359,7 @@ pub(crate) struct Held {
 
 /// The blocks of every step that applies to a `kind` question about `typed`;
 /// `near` is the paths the brief already points at.
+#[cfg(test)]
 pub(crate) fn blocks(
     typed: &str,
     kind: QuestionKind,

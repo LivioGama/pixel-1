@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 //! The task tokenizer: the keywords, identifiers and paths a task text names
-//! (`specs/brief.md`, "Signal and gate"). The relevance gate and the signal
-//! read the same words, so they have one spelling here.
+//! (`specs/brief.md`, "Signal and admission"). Keyword evidence ranks
+//! retrieval candidates, while the signal describes the typed text shape.
 
 use std::collections::HashSet;
 

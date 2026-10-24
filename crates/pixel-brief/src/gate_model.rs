@@ -12,10 +12,6 @@
 //! reviewed as one. The recorded blocks of `gate_parity.json` hold the Rust
 //! score to the reference scorer's.
 
-/// The json these constants were copied from, and its SHA-256; the journal
-/// names it beside every decision.
-pub(super) const SOURCE: &str = "gate-model.json@multirepo sha256:396b14dcc8f2942290eaeca7fa38efe5b866f8521faf58f7df7f3f3479651d7a";
-
 /// The score before any feature (`intercept_raw`).
 pub(super) const INTERCEPT: f64 = -5.103_519_618_265_883;
 

@@ -22,70 +22,6 @@ pub const ORCHESTRATOR_PREFIXES: &[&str] = &[
     "[Request interrupted",
 ];
 
-/// Trivial continuations that are almost certainly not new tasks, and
-/// harness envelopes (see [`is_harness_envelope`]), which are not the user's.
-pub(crate) fn is_trivial_continuation(prompt: &str) -> bool {
-    if is_harness_envelope(prompt) {
-        return true;
-    }
-    let trimmed = user_request(prompt)
-        .trim()
-        .trim_end_matches(['.', '!', '?'])
-        .to_lowercase();
-    if trimmed.is_empty() {
-        return true;
-    }
-    let words = trimmed.split_whitespace().count();
-    if words <= 3 {
-        // Single-word or common short affirmative/acknowledgment phrases
-        if matches!(
-            trimmed.as_str(),
-            "yes"
-                | "hi"
-                | "hello"
-                | "hey"
-                | "good morning"
-                | "good afternoon"
-                | "good evening"
-                | "y"
-                | "no"
-                | "n"
-                | "ok"
-                | "okay"
-                | "continue"
-                | "go"
-                | "proceed"
-                | "thanks"
-                | "thank you"
-                | "done"
-                | "next"
-                | "sure"
-                | "correct"
-                | "right"
-                | "exactly"
-                | "yep"
-                | "yeah"
-                | "nope"
-                | "fine"
-                | "good"
-                | "great"
-                | "perfect"
-                | "looks good"
-                | "lgtm"
-                | "go ahead"
-                | "sounds good"
-                | "do it"
-                | "ship it"
-                | "go for it"
-                | "proceed with that"
-                | "all good"
-        ) {
-            return true;
-        }
-    }
-    false
-}
-
 /// The headings Codex's IDE extension writes above what the user typed,
 /// after its own listing of the attached files (`# Files mentioned by the
 /// user:`, one `## <name>: <path>` per image).
@@ -116,7 +52,7 @@ const SYSTEM_REMINDER_CLOSE: &str = "</system-reminder>";
 /// rewrite the task packet nor open a boundary. Only the opening counts (after
 /// any leading reminders), so a human prompt that quotes an envelope mid-text
 /// is still a prompt.
-fn is_harness_envelope(prompt: &str) -> bool {
+pub(crate) fn is_harness_envelope(prompt: &str) -> bool {
     let mut rest = prompt.trim_start();
     while let Some(after) = rest.strip_prefix(SYSTEM_REMINDER_OPEN) {
         let Some(end) = after.find(SYSTEM_REMINDER_CLOSE) else {
@@ -133,30 +69,6 @@ fn is_harness_envelope(prompt: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn trivial_continuations_detected() {
-        assert!(is_trivial_continuation("yes"));
-        assert!(is_trivial_continuation("OK"));
-        assert!(is_trivial_continuation("  continue  "));
-        assert!(is_trivial_continuation("thanks"));
-        assert!(is_trivial_continuation("thank you"));
-        assert!(is_trivial_continuation("looks good"));
-        assert!(is_trivial_continuation("lgtm"));
-        assert!(is_trivial_continuation("go ahead"));
-        assert!(is_trivial_continuation("sounds good"));
-        assert!(is_trivial_continuation("ship it"));
-        assert!(is_trivial_continuation(""));
-    }
-
-    #[test]
-    fn non_trivial_prompts_not_flagged() {
-        assert!(!is_trivial_continuation("now let's set up docker"));
-        assert!(!is_trivial_continuation("fix the login bug"));
-        assert!(!is_trivial_continuation(
-            "can you also add tests for the auth module"
-        ));
-    }
 
     const TASK_NOTIFICATION: &str = "<task-notification>\n<task-id>b1f0c2</task-id>\n<status>completed</status>\n<summary>Agent \"fix auth\" completed</summary>\n</task-notification>";
 
@@ -177,7 +89,6 @@ mod tests {
             "<send_user_message_question_reply>[]</send_user_message_question_reply>",
         ] {
             assert!(is_harness_envelope(prompt), "{prompt}");
-            assert!(is_trivial_continuation(prompt), "{prompt}");
         }
     }
 
@@ -201,7 +112,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_envelopes_are_continuations_whatever_precedes_them() {
+    fn codex_envelopes_are_harness_envelopes_whatever_precedes_them() {
         for envelope in codex_envelopes() {
             for prompt in [
                 envelope.clone(),
@@ -212,7 +123,6 @@ mod tests {
                 ),
             ] {
                 assert!(is_harness_envelope(&prompt), "{prompt}");
-                assert!(is_trivial_continuation(&prompt), "{prompt}");
             }
         }
         // A tag that carries an attribute is the same envelope.
@@ -220,7 +130,7 @@ mod tests {
             "<realtime_delegation id=\"rt-1\">x</realtime_delegation>",
             "<send_user_message_question_reply id=\"q-1\">[]</send_user_message_question_reply>",
         ] {
-            assert!(is_trivial_continuation(prompt), "{prompt}");
+            assert!(is_harness_envelope(prompt), "{prompt}");
         }
     }
 
@@ -237,7 +147,6 @@ mod tests {
             "<system-reminder>ctx</system-reminder>\nwhere is fetchUser, a <realtime_delegation> says",
         ] {
             assert!(!is_harness_envelope(prompt), "{prompt}");
-            assert!(!is_trivial_continuation(prompt), "{prompt}");
         }
     }
 
@@ -263,27 +172,5 @@ mod tests {
         ] {
             assert_eq!(user_request(prompt), prompt, "{prompt:?}");
         }
-    }
-
-    #[test]
-    fn an_acknowledgement_under_a_codex_request_heading_is_a_continuation() {
-        for prompt in [
-            "## My request:\nGo ahead",
-            "## My request:\nok",
-            "## My request:\n",
-        ] {
-            assert!(is_trivial_continuation(prompt), "{prompt:?}");
-        }
-        assert!(!is_trivial_continuation(
-            "## My request:\nfix the login bug"
-        ));
-    }
-
-    #[test]
-    fn greetings_and_punctuated_continuations_skip_lookup() {
-        for prompt in ["Hello!", "hi", "Good morning.", "OK!", "yes."] {
-            assert!(is_trivial_continuation(prompt), "{prompt}");
-        }
-        assert!(!is_trivial_continuation("fix auth"));
     }
 }

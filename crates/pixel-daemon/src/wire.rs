@@ -18,7 +18,7 @@ use std::time::Instant;
 
 /// The envelope sent when a response itself cannot be serialized.
 pub const SERIALIZE_FAILURE: &[u8] =
-    b"{\"ok\":false,\"op\":\"error\",\"protocol\":1,\"error\":{\"code\":\"INVARIANT_VIOLATION\",\"message\":\"serialize failure\"}}\n";
+    b"{\"ok\":false,\"op\":\"error\",\"protocol\":2,\"error\":{\"code\":\"INVARIANT_VIOLATION\",\"message\":\"serialize failure\"}}\n";
 
 /// How a read of one request line ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

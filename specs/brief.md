@@ -3,8 +3,8 @@
 Status: normative for `pixel-brief`. Starting points in Pixel (`e8fd304`):
 `crates/pixel/src/execution_brief/` (32k lines, of which ~14.7k production).
 The crate reads no store: `chain::Evidence` is the seam, the daemon implements it.
-The modules are `prompt` (signal), `tokens` (the task tokenizer), `relevance` and
-`gate_model` (gate), `routes` (kind), `chain` (the recipes, the worker, render),
+The modules are `prompt` (signal), `tokens` (the task tokenizer), `relevance`
+(retrieval evidence and ranking), `routes` (kind), `chain` (the recipes, the worker, render),
 `kinds` and `locator` (the kinds' own packs), `answer` (receipt and excerpts),
 `region_pack`, `parts`, `sent`, `session_paths`, `french`, `continuation`,
 `git_changes` and `decision` (the journal's `brief` record).
@@ -18,43 +18,54 @@ definition retain the ordinary packing behavior; this does not change graph
 retrieval or add a legacy command alias.
 
 ```
-prompt ──► signal ──► gate ──► route (kind) ──► recipe (typed steps) ──► pack ──► render ──► deliver (parts)
+prompt ──► signal ──► optional configured task-intent decision ──► route (kind) ──► recipe (typed steps) ──► pack ──► render ──► deliver (parts)
                                    │                                                  ▲
                                    └── session dedupe (sent.rs) ───────────────────────┘
 ```
 
-All stages are pure functions over an `Evidence` trait (one implementation over
+Brief construction is pure over an `Evidence` trait (one implementation over
 the stores the daemon holds in memory; an in-process implementation for the
-no-daemon path). A deadline (default 3 s) bounds the whole pipeline; each step
-carries its own budget.
+no-daemon path). When classification is enabled, the CLI starts its configured
+`pixel classify` engine with a JSONL request for the typed prompt, using the
+existing task-intent labels plus a `none` label and per-label criteria. The
+decision is cached across split parts. Classification and retrieval share the
+existing end-to-end brief deadline; time spent classifying reduces time left
+for retrieval. The classifier receives no engine or endpoint overrides.
 
-## Signal and gate
+## Signal and admission
 
-- **Typed text.** The user's text only: the last paragraph of a long untagged
+- **Typed text.** The human-authored text only: the last paragraph of a long untagged
   paste, a `<pasted_content>` block judged on the head of its first paragraph
   and the tail of its last (300 and 299 characters, links dropped), the text
-  under Codex's `## My request:` heading. Envelopes (`<task-notification>`,
-  command wrappers) and acknowledgements start no brief.
+  under Codex's `## My request:` heading. Empty input and non-human harness
+  envelopes (`<task-notification>`, command wrappers) are ignored. Nonempty
+  human-authored requests, including acknowledgements, are eligible for intent
+  classification; lexical signal labels do not exclude them.
 - **Signal** (`prompt.rs`): `Strong` (a backticked name, `snake_case`,
   `camelCase`, a path, a source file), `Weak` (a code word or opener), `Prose`
-  (two or more content words, not an ops-only request: git, a PR, a release, a
-  steer such as `go next`).
+  (other natural-language text). These labels describe text shape and may help
+  route retrieval; they do not control classifier eligibility or admission.
 - **French.** A prompt the lexicon reads as French is searched on the English
   words code uses (`pixel-model` `terms` and the `fr-en.tsv` lexicon); the typed
   text is never rewritten.
-- **Gate** (`relevance.rs`, `gate_model.rs`): a fixed logistic model over five features
-  (`struct_per_mille`, `question`, `ops_share`, `struct_ratio`, `coverage`)
-  with two thresholds that cut the score into `high`, `low` and `off`. The
-  coefficients and thresholds are lifted byte-identical from `gate_model.rs`
-  together with its parity vectors (`gate_parity.json`: blocks recorded from a
-  daemon, with the score and tier the reference scorer gives them). The features read the
-  daemon's keyword and co-file weights (the daemon's `relevance`,
-  `keyword_weight` byte-identical); the gate is refit only by script, never by hand.
-- **No model.** Pixel's classify intent judge is not consulted. `Strong`
-  prompts skip the gate's refusal; `Weak` and `Prose` prompts need the gate.
-- **Tiers.** `high`: the full brief with `confidence: high — n/m key terms
-  covered`. `low`: ≤3 `path:line — text` files within 700 bytes, no recipe.
-  `off`: nothing.
+- **Admission.** There is no keyword-based gate, lexical refusal, coverage
+  threshold or keyword fallback. A configured classifier's winning `none`
+  label suppresses the brief only when its probability is at least 0.5. Any
+  other winning task-intent label permits retrieval and may steer change
+  intent. If classification is disabled, unavailable, fails or times out, the
+  brief proceeds without an intent verdict. `Strong`, `Weak` and `Prose` are
+  signal descriptions only; none controls admission.
+- **Keyword evidence** (`relevance`): co-file and keyword weights remain leads
+  for retrieval and ranking. They do not decide whether a brief is admitted,
+  assign a `high`/`low`/`off` tier, suppress a recipe, source read, excerpt or
+  region pack, or authorize an answer directive. Candidate keywords may still
+  rank which source regions are read. Every admitted or fail-open human request
+  runs its typed question-kind recipe, answer reads and region pack within the
+  operation and shared time budgets. A complete anchored region pack may carry
+  its existing directive; incomplete, unanchored or path-only results remain
+  leads and use the normal search fallback. Strong code-shaped prompts keep
+  their existing bounded path. Question-kind selection remains a heuristic
+  over typed text.
 
 ## Route: nine kinds
 
@@ -118,15 +129,10 @@ brief from paying for a file listing; what a step answers is decided by the
 files it reads, and a repository with nothing to say gets nothing. They are not
 Pixel's flow `when_prompt` regexes, which also decided *what* a probe answered.
 
-**A step can open a closed gate.** The three Overview steps, `name-files`,
-`cand-j-callers`, `cand-j-chain`, `cand-j-stop-cause`, `flow-rank`, `history-fallback`, `cand-k-commit-patch`, `cand-k-code-sites` and `test-bodies` ran in Pixel even when
-the relevance gate had closed the prompt
-(`when_gate_closed`), because a question about the workspace or about a module
-shares few words with the code. Here a prompt the gate would close is briefed
-anyway when one of those steps produced blocks for it: the gate decision is
-logged as `open` with the reason `steps: answered from the manifests`, and the
-brief carries the steps' blocks alone (no files from the refused words).
-`doc-sections` never opens a gate.
+Recipe steps may use lexical conditions to decide whether a particular probe
+is worth running. Those conditions affect evidence collection only; they never
+admit or suppress a prompt. A classifier `none` verdict suppresses before
+retrieval and cannot be rescued by a recipe step.
 
 **Deviation from the scripts.** `doc-sections` scores a section on its own
 heading and opening lines. The script read the twelve lines after a heading
@@ -186,7 +192,7 @@ question also says test, spec, prove, proof or cover, the best test units follow
 named after a group word, with the siblings of its family by name, at most
 three; 12 lines and 3 000 bytes in all). Blocks are headed `path:a-b — where
 the question's words meet (code|test)`, lines numbered, cut at 200 characters.
-It opens a closed gate and takes away every non-definition block of the pack
+It appends evidence but does not affect admission, then takes away every non-definition block of the pack
 (`Drop::NotDefinitions`: the label after the range contains `definition` or
 `named by the prompt`, the script's test). Deviations from the script: the brief
 the script read is not available to a step, so "the brief points at the file"
@@ -261,7 +267,7 @@ joins overlapping ranges of one file, takes from a whole-file region the lines
 another block of the file shows, and cuts a block above 6 000 bytes (18 lines for
 a test) to the window with the most question words. Not ported: the call-trace
 rewrite and the config-registry row filter (the Rust steps print neither shape),
-the documentation-section drop (`doc-sections` gates itself) and the 8–14 KB
+the documentation-section filter and the 8–14 KB
 total (the pack has its own `parts × 9 800` budget and priorities).
 
 **Ablation.** Every step has a flag (`workspace-overview`,
@@ -272,7 +278,7 @@ replace). `pixel brief --without name[,name]` leaves steps out of one brief,
 and `PIXEL_BRIEF_STEPS=-name,+name` does the same for the process that computes
 it; the flag is applied after the variable. The brief's journal line lists the
 steps that ran with their milliseconds (`steps`, in the order they finished):
-a step whose lexical gate stayed closed is absent, not `0`; the tracked-file
+  a step whose probe condition stayed closed is absent, not `0`; the tracked-file
 listing is counted by the first step that asks for it; the two render passes
 are inside the pack's `rank_ms`. The external replay compares arms
 with and without each step; a step that does not remove tool calls is deleted.
@@ -282,12 +288,14 @@ with and without each step; a step that does not remove tool calls is deleted.
 Pixel bundles no probe; a plugin with the `brief-probe` capability (`plugins.md`)
 adds blocks to the brief. After the brief is rendered, every probe that is on,
 trusted and due runs in parallel: its `when_kinds`/`skip_kinds`/`when_prompt`
-fit the question, and on a prompt the relevance gate closed only the probes that
-set `when_gate_closed` run, and may answer it. Each gets
+fit the question. If a classifier returns suppressing `none`, the brief ends
+before probe scheduling; no probe runs and no probe can override admission.
+Each eligible probe gets
 `{prompt, repo_root, brief, kind, session_files}` as JSON on stdin and has
-`budget_ms` (at most 2 500) inside what is left of the brief's window; a hook
-gives probes at least 1.2 s after the chain and none runs past 5 s from the
-prompt, the `brief` command gives none beyond its window. What a probe prints is
+`budget_ms` (at most 2 500) inside what is left of the shared brief deadline;
+probes are best-effort and may receive less time, or no time, when retrieval
+uses most of the window. They cannot start after or run beyond that deadline.
+What a probe prints is
 a list of blocks (`### header`, then lines) and the directives `drop: <regex>`
 (remove the brief's own blocks whose header matches) and `first: <regex>` (move
 them to the front). `lead` blocks go before the brief's, `append` blocks after;
@@ -312,10 +320,10 @@ changes.
 - **Pack** (`pack.rs`): region pack of definitions with docs and bodies, usage
   sites, tests, and locator blocks; ranges already sent in this session are
   left out (`sent.rs`); the whole pack is bounded by `parts × 9,800` characters.
-- **Render** (`render.rs`): `[PIXEL:BRIEF]` header, `searched:` and `confidence:`
+- **Render** (`render.rs`): `[PIXEL:BRIEF]` header, `searched:`
   lines, `read:`, `also:` and `files:` entries as `path:line`, the staleness
   line when any evidence predates the last edit, the receipt of what was
-  searched, and the directive footer when tier is high and evidence complete.
+  searched, and the directive footer when evidence is complete.
   The 0.9.0 `SKILL_LINE` is dropped: it pointed the model at a CLI it does not
   call.
 - **Deliver** (`parts.rs`): per-host limits and the `--part K/N` split from
@@ -336,14 +344,14 @@ input `{prompt, repo_root, brief, kind, session_files}` on stdin, output
 ## Journal
 
 One typed record per decision into `.pixel/journal.jsonl` (`metrics.md`): signal,
-gate (`open`/`closed`/`declined`), tier, score, kind, steps run with their
+admission verdict (classifier label/probability or unavailable), kind, steps run with their
 milliseconds, bytes, whether the pack was cut, deadline, route (`daemon` or
 `local`), and the masked typed text and its SHA-256.
 
 ## Tests that prove it
 
-Gate parity with `gate_reference.py` over the 218 labelled prompts; each step's
-output on a fixture repository; `pixel brief --json` byte-stable across runs;
+Classifier intent decisions and fail-open admission cases; each step's output
+on a fixture repository; `pixel brief --json` byte-stable when classification is off;
 deadline expiry yields a partial brief marked cut; the part splitter
 concatenates back to the stored brief; French prompts route as their English
 equivalents. Acceptance replays the 13 public questions against Pixel 0.9.0

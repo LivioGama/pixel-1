@@ -3,8 +3,7 @@
 Status: normative for the opt-in `pixel classify` (not in the default path).
 Lifted from `classify.rs`, `classify_setup.rs`, `decide_remote.rs`,
 `decide_jev.rs`, `decide_clef.rs`, `decide_ollaya.rs`, `decide_infisical.rs`,
-`config_cmd.rs`. Dropped: `classify-eval`, `classify-history`, the brief's
-intent judge.
+`config_cmd.rs`. Dropped: `classify-eval`, `classify-history`.
 
 A zero-shot decision over a bounded label set: state text, shared `--context`,
 labels with per-label `--criterion`; one probability per label, renormalised to
@@ -43,8 +42,28 @@ classifier claim, never a repository fact.
 
 `pixel config setup` (a terminal) asks whether the classifier is allowed and, when
 it is, runs the engine proposal below; a failed first-time installation leaves
-the classifier off. Nothing in the default path (the brief, the hooks, every
-other command) calls a model or the network.
+the classifier off. The brief uses this same configured classifier for its
+task-intent admission decision only when the global switch is on. It sends one
+bounded JSONL decision for the typed prompt using the existing seven task-intent
+labels plus `none` and their documented criteria, reuses that decision across
+split deliveries, and spends the existing shared brief deadline on classification
+and retrieval together. It does not override the configured engine or its
+endpoint with per-call flags. Only a winning `none` label with probability at
+least 0.5 suppresses the brief; other labels permit retrieval, with task labels
+available to steer change intent. If classification is off,
+unavailable, times out, or fails, the brief proceeds without an intent verdict.
+There is no keyword-based admission or fallback gate. Keyword evidence remains
+available for retrieval and ranking only; it cannot assign a brief tier or
+suppress recipes, source reads, excerpts, or region packs after admission. A
+complete anchored region pack is authoritative by its existing directive;
+path-only or incomplete evidence remains a lead. With classification off, the default path
+makes no model or network call; when enabled, a configured remote engine may
+contact its configured provider. Credentials remain subject to the masking and
+storage rules above.
+
+For this integration, “task-intent” names the reused label vocabulary and
+criteria: the brief sends them in its custom JSONL request rather than invoking
+the CLI's `--task-intent` flag, which emits only the built-in seven-label set.
 
 Setup proposes the engine with each option's measured accuracy and, when
 accepted, the `pixel-classify` skill and the pi classify tools (`skills.md`,

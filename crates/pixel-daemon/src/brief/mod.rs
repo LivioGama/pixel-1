@@ -29,6 +29,8 @@ const COMMAND_HOSTS: [&str; 1] = ["cli"];
 /// What a brief asks of the daemon, from the wire.
 pub(crate) struct Ask<'a> {
     pub prompt: &'a str,
+    pub intent: Option<&'a Value>,
+    pub deadline_unix_ms: Option<u64>,
     pub session: &'a str,
     pub host: &'a str,
     pub parts: u8,
@@ -80,6 +82,8 @@ pub(crate) fn run(shared: &Arc<Shared>, behind: bool, ask: &Ask) -> Value {
         command: COMMAND_HOSTS.contains(&ask.host),
         parts: ask.parts.max(1),
         window_ms: None,
+        deadline_unix_ms: ask.deadline_unix_ms,
+        intent: ask.intent.cloned(),
         session: Some(Session {
             id: (!ask.session.is_empty()).then(|| ask.session.to_owned()),
             transcript: None,
@@ -100,7 +104,7 @@ pub(crate) fn run(shared: &Arc<Shared>, behind: bool, ask: &Ask) -> Value {
             None,
             Some(declined),
             &[],
-            &chain::declined_record(declined, ask.prompt),
+            &chain::declined_record(declined, ask.prompt, ask.intent),
         ),
     }
 }
