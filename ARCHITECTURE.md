@@ -1681,10 +1681,20 @@ The allocation-budget test bounds allocations while reading request frames.
     release prepare, Homebrew formula and Linux
     bottles, release SBOM, homebrew-core formula,
     nightly diff checkpoints, coverage selection, mutants
-    config, action pins, advisory ignores, SPDX headers, clean, CI input selection, cancel-stale sweep, embedding-model pin, release symbols split, public-claims check, harness-grid dispatch input,
+    config, action pins, verdict gate, advisory ignores, SPDX headers, clean, CI input selection, cancel-stale sweep, embedding-model pin, release symbols split, public-claims check, harness-grid dispatch input,
     reproducible release build environment, the brief-gate bench, excavation counter and live brief A/B driver self-tests with the `eval/brief-gate/` prompt set's schema check, the `eval/` agent A/B harness against fixture CLIs), the
     pixel-retro lead-time and adherence contracts
     (`.agents/skills/pixel-retro/test_lead_time.py`, `test_adherence.py`);
+  - **Record the green verdict** (the check name branch protection keys on):
+    runs after every lane, even when one failed or was cancelled, because a
+    skipped job passes a required check. `scripts/ci/verdict-gate.py` reads
+    `toJSON(needs)` and fails on any `failure` or `cancelled` lane, and on a
+    `skipped` lane unless the classifier's flag for it (`installer`,
+    `rust-source`, `deps`) is not `true`; Test + Format, `scope` and `changes`
+    must succeed, and an unmapped lane fails closed. On success it saves the
+    tree-and-day marker the skip guard restores. Only a release-prepare run
+    or a duplicate tree skips the job. `scripts/test-verdict-gate.py` also
+    checks that the job's `needs` list and the script's lane table agree.
   - **Lint**: `cargo clippy --all-targets` with warnings denied, then
     `cargo check` of the two reduced feature lanes (`--no-default-features`,
     `model2vec` only);
