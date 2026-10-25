@@ -1406,7 +1406,8 @@ adds the matching tests by name with `path:line`, the first lines of the best
 eight and, when a manifest vouches for a runner (`pytest`, `vitest`, `jest`,
 `cargo test`, `go test`), the command that runs only them. The blocks join the
 pack after the symbols' own and ahead of nothing but the graph facts; a block
-over lines a definition already shows is dropped, and a pack of locator blocks
+over lines a definition already shows is dropped, as is any block over lines a
+better-ranked block of the pack shows (`assemble` skips it), and a pack of locator blocks
 alone ends on the directive. Quoted tokens that read as credentials are
 masked, and a credential-shaped path never reaches the searches' rows
 (`.env*` files stay out of the brief). A locator spends no brief operation,

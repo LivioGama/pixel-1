@@ -2109,13 +2109,21 @@ fn assemble(
     let mut ranked: Vec<&Candidate> = candidates.iter().collect();
     ranked.sort_by_key(|candidate| candidate.priority);
     let mut chosen: Vec<&Candidate> = Vec::new();
+    let mut shown: Vec<(String, u64, u64)> = Vec::new();
     let mut all = true;
     for candidate in ranked {
+        // Lines a better-ranked block already shows are not shown twice,
+        // whichever part either block belongs to.
+        if overlaps(&shown, &candidate.block) {
+            continue;
+        }
         chosen.push(candidate);
         chosen.sort_by_key(|held| held.order);
         pack.blocks = chosen.iter().map(|held| held.block.clone()).collect();
         pack.searched = header(input, targets, &chosen, *found_sites, fallback);
-        if !fits(&pack.text(), input.limit) {
+        if fits(&pack.text(), input.limit) {
+            shown.extend(block_range(&candidate.block));
+        } else {
             chosen.retain(|held| !std::ptr::eq(*held, candidate));
             all = false;
         }
@@ -3705,6 +3713,76 @@ mod tests {
             "{heads:?}"
         );
         assert_eq!(pack.located(), 1);
+    }
+
+    /// The first two blocks of `pack` that show lines of one file in common.
+    fn doubled(pack: &Pack) -> Option<(String, String)> {
+        let blocks: Vec<(String, u64, u64)> = pack.ranges();
+        let heads = heads(pack);
+        (0..blocks.len())
+            .flat_map(|a| (a + 1..blocks.len()).map(move |b| (a, b)))
+            .find(|&(a, b)| {
+                blocks[a].0 == blocks[b].0
+                    && blocks[a].1 <= blocks[b].2
+                    && blocks[b].1 <= blocks[a].2
+            })
+            .map(|(a, b)| (heads[a].clone(), heads[b].clone()))
+    }
+
+    #[test]
+    fn a_pack_should_never_show_the_same_lines_in_two_blocks() {
+        let scenarios: [(&str, Vec<Block>); 4] = [
+            (
+                "a locator over the line a usage block shows",
+                vec![located(
+                    "src/main.rs:4-4 — source reference to SEARCH_DEFAULT_ROWS",
+                    "4|     let rows = SEARCH_DEFAULT_ROWS;",
+                )],
+            ),
+            (
+                "two locators over one line",
+                vec![
+                    located("src/other.rs:1-1 — OTHER (constant)", "1| OTHER = 1"),
+                    located(
+                        "src/other.rs:1-1 — source reference to OTHER",
+                        "1| OTHER = 1",
+                    ),
+                ],
+            ),
+            (
+                "two locators over overlapping ranges",
+                vec![
+                    located("src/other.rs:1-2 — OTHER (constant)", "1| OTHER = 1"),
+                    located(
+                        "src/other.rs:2-3 — source reference to OTHER",
+                        "2| OTHER = 2",
+                    ),
+                ],
+            ),
+            (
+                "a locator over the tests block",
+                vec![located(
+                    "tests/api_test.rs:5-5 — source reference to SEARCH_DEFAULT_ROWS",
+                    "5|     assert_eq!(SEARCH_DEFAULT_ROWS, 100);",
+                )],
+            ),
+        ];
+        for (name, locators) in scenarios {
+            let mut with = input(3);
+            with.locators = locators;
+            let pack = built(&with, &repo()).expect("a pack");
+            assert_eq!(doubled(&pack), None, "{name}: {}", pack.text());
+        }
+        // Lines no other locator shows stay located.
+        let mut apart = input(3);
+        apart.locators = vec![
+            located("src/other.rs:1-1 — OTHER (constant)", "1| OTHER = 1"),
+            located(
+                "src/other.rs:7-7 — source reference to OTHER",
+                "7| OTHER = 7",
+            ),
+        ];
+        assert_eq!(built(&apart, &repo()).unwrap().located(), 2);
     }
 
     #[test]
