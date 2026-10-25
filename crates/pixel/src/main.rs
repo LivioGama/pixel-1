@@ -315,6 +315,27 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Search commit messages, paths and diffs through the history index.
+    /// The index is built on the first query; `--read-only` answers from it as
+    /// it stands and never builds it.
+    SearchHistory {
+        /// Words to look for; a "double quoted phrase" stays whole.
+        query: String,
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// What to search: `message`, `path`, `diff` or `all` (default).
+        #[arg(long, value_parser = ["message", "path", "diff", "all"])]
+        facet: Option<String>,
+        /// Hits to return (default and ceiling: 200).
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Answer from the history index as it stands: never ingest, never
+        /// create it. An absent index is an error.
+        #[arg(long)]
+        read_only: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Sniper target list: task description in, closed prioritized file list
     /// out (P0 = start here, P1 = likely, P2 = droppable). Writes the
     /// enforcement manifest .pixel/targets.json unless --no-manifest.
@@ -2111,6 +2132,50 @@ fn finish_graph_cmd(
     } else {
         print_data(&data, false)
     }
+}
+
+/// `pixel search-history` as text: one line per hit (short oid, date,
+/// subject, kind), then its path and the first lines of its snippet.
+fn history_text(data: &Value) -> String {
+    const SNIPPET_LINES: usize = 6;
+    let text = |hit: &Value, key: &str| {
+        hit.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_owned()
+    };
+    let mut out = String::new();
+    for hit in data
+        .get("candidates")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let (oid, at) = (text(hit, "oid"), text(hit, "at"));
+        out.push_str(&format!(
+            "{} {} {} [{}]\n",
+            oid.chars().take(10).collect::<String>(),
+            at.get(..10).unwrap_or(&at),
+            text(hit, "subject"),
+            text(hit, "kind"),
+        ));
+        if let Some(path) = hit.get("path").and_then(Value::as_str) {
+            out.push_str(&format!("    {path}\n"));
+        }
+        for line in hit
+            .get("snippet")
+            .and_then(Value::as_str)
+            .into_iter()
+            .flat_map(str::lines)
+            .take(SNIPPET_LINES)
+        {
+            out.push_str(&format!("    {line}\n"));
+        }
+    }
+    if out.is_empty() {
+        out.push_str("no commits match\n");
+    }
+    out
 }
 
 fn symbol_line(s: &Value) -> String {
@@ -4099,6 +4164,7 @@ const READ_ONLY_COMMANDS: &[&str] = &[
     "search-content",
     "search-like-rg",
     "search-meaning",
+    "search-history",
     "find-code",
     "find-symbol",
     "list-signatures",
@@ -4565,6 +4631,31 @@ fn run_command(
             max_files,
             json,
         } => run_ask(question, path, limit, max_files, json),
+        Command::SearchHistory {
+            query,
+            path,
+            facet,
+            limit,
+            read_only,
+            json,
+        } => {
+            let data = execute(
+                &path,
+                Request::History {
+                    query,
+                    facet,
+                    limit,
+                    read_only,
+                },
+                false,
+            )?;
+            // Not `finish_graph_cmd`: its `candidates` are ambiguous symbol uids.
+            if json {
+                return print_data(&data, true);
+            }
+            operation_metrics::observe(&data);
+            write_stdout(&history_text(&data))
+        }
         Command::ScopeTask {
             task,
             path,
@@ -7385,7 +7476,8 @@ mod prompt_asset_parity {
 
 #[cfg(test)]
 mod hook_prompt_tests {
-    use super::{bounded_result_note, is_developer_build, logged_args};
+    use super::{bounded_result_note, history_text, is_developer_build, logged_args};
+    use serde_json::json;
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(ToString::to_string).collect()
@@ -7548,6 +7640,27 @@ mod hook_prompt_tests {
             ),
         ] {
             assert_eq!(logged_args(&argv(&argv_words)), logged, "{argv_words:?}");
+        }
+    }
+
+    #[test]
+    fn history_text_prints_each_hit_with_its_path_and_six_snippet_lines_at_most() {
+        let data = json!({"candidates": [
+            {"oid": "0123456789abcdef", "at": "2026-10-25T05:29:06+01:00", "subject": "tune limits",
+             "kind": "diff", "path": "a.rs", "snippet": "1\n2\n3\n4\n5\n6\n7\n"},
+            {"oid": "abc", "at": "x", "subject": "s", "kind": "message", "path": null, "snippet": null},
+        ]});
+        assert_eq!(
+            history_text(&data),
+            concat!(
+                "0123456789 2026-10-25 tune limits [diff]\n",
+                "    a.rs\n",
+                "    1\n    2\n    3\n    4\n    5\n    6\n",
+                "abc x s [message]\n",
+            )
+        );
+        for none in [json!({"candidates": []}), json!({})] {
+            assert_eq!(history_text(&none), "no commits match\n");
         }
     }
 

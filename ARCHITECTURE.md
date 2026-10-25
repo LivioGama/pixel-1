@@ -82,6 +82,7 @@ ARCHITECTURE, CONTRIBUTING, `docs/manual-setup.md`, the site's `website/content/
 | `pixel search-like-rg` | Native-output literal file search for automatic routing; unsupported inputs execute the original rg/grep command without modification |
 | `pixel run-recipe` | Compile and execute one bounded deterministic retrieval recipe |
 | `pixel search-meaning` | Semantic code search: embed a natural-language question ("how is authentication handled?") and rank files by fusing semantic and BM25 lexical ranks over symbol chunks (tree-sitter symbols with their doc comments, windows for unparsed files); tests, configuration/data and docs are weighted below code unless the question names them. |
+| `pixel search-history` | Search commit messages, paths and diffs through the history index (`pixel-facts`, the `history` op): `--facet message\|path\|diff\|all`, `--limit` (default and ceiling 200), `--json` for the ranked `candidates` (abbreviated oid, date, subject, kind, path, snippet) with the index state. The first query builds the index (`history.db`); `--read-only` answers from it as it stands and exits 1 with `facts index absent or not built` instead of creating it. The `pixel-git` plugin repository also publishes this word, but the core builds it in |
 | `pixel scope-task` | Sniper target list: task description in, closed prioritized file list out (P0 = start here, P1 = likely, P2 = droppable). `--read-only` instead returns a typed deterministic fact envelope only from a compatible running daemon; it never starts a daemon, builds/refreshes indexes, or writes the targets manifest. `--regions` also writes `.pixel/regions.json` beside `targets.json`: symbol line ranges + context reference, conservative conflict pairs with reasons, merge-order layers from the condensed call graph, and declared shared files — evidence for orchestration, never an action recommendation. |
 | `pixel brief` | Print the bounded `[PIXEL:BRIEF]` evidence context for a code-related prompt in an indexed repository; optional `[path]` selects the repository, and no applicable brief prints nothing. |
 | `pixel execution-brief` | Build a task-specific ordered retrieval route from scope-task evidence: one populated first command, one retry for an empty or irrelevant result, a bounded native fallback, a maximum 40-line read, and minimal validation. |
@@ -516,7 +517,10 @@ exits 2, without running anything; any other name keeps clap's error. That table
 repositories `pixel-git`, `pixel-flow`, `pixel-recall`, `pixel-telemetry` and
 `pixel-utilities` to their repository. The core builds in none of them but
 `check-release` (the release workflow runs it before any plugin could be
-installed), so the hint is reached for the other 29. The core keeps what other commands read:
+installed) and `search-history` (the brief's next step names it, and a
+`pixel-git` plugin no longer has to be installed to run it; both are
+`pixel_plugin::stays_in_core`, so clap answers them before any plugin lookup),
+so the hint is reached for the other 28. The core keeps what other commands read:
 `workspace.json` for `--workspace`, the flow store for `plan`,
 and the library crates (`pixel-ops`, `pixel-facts`, …) the
 plugins link at a pinned revision. The flow libraries (`pixel-flow`,

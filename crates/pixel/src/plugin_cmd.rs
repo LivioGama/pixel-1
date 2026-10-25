@@ -593,9 +593,10 @@ mod tests {
         ] {
             assert!(is_moved_name(name) && !built_in(name), "{name}");
         }
-        // ... the one moved command still built in is clap's, whatever the table
+        // ... the moved commands still built in are clap's, whatever the table
         // says.
         assert!(is_moved_name("check-release") && built_in("check-release"));
+        assert!(is_moved_name("search-history") && built_in("search-history"));
     }
 
     fn is_moved_name(name: &str) -> bool {

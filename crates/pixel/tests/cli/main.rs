@@ -42,6 +42,7 @@ mod rename_cli;
 mod run_recipe_cli;
 mod scope_task_precision;
 mod search_compat_cli;
+mod search_history_cli;
 mod setup_cli;
 #[cfg(unix)]
 mod setup_goldens_cli;
