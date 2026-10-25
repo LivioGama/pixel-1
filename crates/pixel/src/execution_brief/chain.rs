@@ -2693,6 +2693,9 @@ pub(crate) struct Session {
     pub(crate) id: Option<String>,
     /// The host's transcript of the session, when it names one.
     pub(crate) transcript: Option<PathBuf>,
+    /// The instant the hook must have its answer ready by: the brief's window
+    /// and its probes end at or before it, whatever their own bounds say.
+    pub(crate) until: Option<Instant>,
 }
 
 /// What a brief does around its chain besides running it.
@@ -2718,6 +2721,8 @@ pub(crate) struct Around {
     /// Whether a French prompt is searched and gated on the English words
     /// code uses (`french::english`) instead of its own.
     pub(crate) french: bool,
+    /// The instant the window never outlives ([`Session::until`]).
+    pub(crate) until: Option<Instant>,
 }
 
 /// The repository whose brief is probed and the plugin host that offers the
@@ -2735,6 +2740,8 @@ pub(crate) struct ProbeSetup {
     /// What the probes are given at least after the chain: [`PROBE_FLOOR`] for a
     /// hook, nothing for the `brief` command (OpenCode kills it at 1.2 s).
     pub(crate) floor: Duration,
+    /// The instant the probes never outlive, floor or not ([`Session::until`]).
+    pub(crate) until: Option<Instant>,
     /// Bytes the merged brief may hold when the host drops a longer one (the
     /// `brief` command's OpenCode extension drops above 4 000).
     pub(crate) max_bytes: Option<usize>,
@@ -2777,9 +2784,17 @@ const PROBE_CEILING: Duration = Duration::from_millis(5_000);
 const COMMAND_MAX_BYTES: usize = 3_990;
 
 /// When the probes must be done: the end of the brief's window, or `now` plus
-/// the floor if the chain left less than that, and never past the ceiling.
-fn probe_deadline(started: Instant, window_end: Instant, now: Instant, floor: Duration) -> Instant {
-    window_end.max(now + floor).min(started + PROBE_CEILING)
+/// the floor if the chain left less than that, and never past the ceiling nor
+/// past the hook's answer deadline (`until`), which no floor extends.
+fn probe_deadline(
+    started: Instant,
+    window_end: Instant,
+    now: Instant,
+    floor: Duration,
+    until: Option<Instant>,
+) -> Instant {
+    let end = window_end.max(now + floor).min(started + PROBE_CEILING);
+    until.map_or(end, |until| end.min(until))
 }
 
 /// A brief on its way: the worker is running, the deadline is fixed.
@@ -2855,7 +2870,13 @@ impl Pending {
             prompt: &self.task,
             kind,
             gate_closed,
-            deadline: probe_deadline(self.started, self.deadline, Instant::now(), setup.floor),
+            deadline: probe_deadline(
+                self.started,
+                self.deadline,
+                Instant::now(),
+                setup.floor,
+                setup.until,
+            ),
             cap: setup.cap.saturating_sub(footer_reserve),
             max_bytes,
         };
@@ -3023,6 +3044,7 @@ fn try_start_as(
         .then(|| decision_log::central_log_path(root).map(|_| root.to_path_buf()))
         .flatten();
     let gate = Gate::read(root);
+    let until = session.as_ref().and_then(|session| session.until);
     let root = root.to_path_buf();
     let for_start = root.clone();
     let for_context = root.clone();
@@ -3054,6 +3076,7 @@ fn try_start_as(
             root: root.clone(),
             cap: pack.parts.max(1) * pack.chars,
             floor: if command { Duration::ZERO } else { PROBE_FLOOR },
+            until,
             max_bytes: (command && pack.parts <= 1).then_some(COMMAND_MAX_BYTES),
         });
     let result = try_start_with(
@@ -3075,6 +3098,7 @@ fn try_start_as(
             french: super::french::enabled(
                 std::env::var(super::french::FRENCH_ENV).ok().as_deref(),
             ),
+            until,
         },
     );
     let auto_start = crate::config_cmd::feature_enabled(
@@ -3170,6 +3194,7 @@ where
         sent,
         probes,
         french,
+        until,
     } = around;
     if !gate.open() {
         return Err(if gate.enabled {
@@ -3195,7 +3220,7 @@ where
     // one, whatever route this one takes.
     let kicked = starter.map(|start| start());
     let started = Instant::now();
-    let deadline = started + window;
+    let deadline = until.map_or(started + window, |until| (started + window).min(until));
     let state = Arc::new(Mutex::new(Brief {
         signal: Some(signal),
         // Every rendered pack path gets this line after fitting, including stale notices.
@@ -9945,32 +9970,152 @@ mod tests {
         let at = |ms: u64| started + Duration::from_millis(ms);
         // Plenty of window left: the end of the window.
         assert_eq!(
-            probe_deadline(started, at(3_000), at(500), PROBE_FLOOR),
+            probe_deadline(started, at(3_000), at(500), PROBE_FLOOR, None),
             at(3_000)
         );
         // The chain used it up at 2.9 s: the floor is added from now.
         assert_eq!(
-            probe_deadline(started, at(3_000), at(2_900), PROBE_FLOOR),
+            probe_deadline(started, at(3_000), at(2_900), PROBE_FLOOR, None),
             at(4_100)
         );
         // Late, and the floor would cross the ceiling: the ceiling wins.
         assert_eq!(
-            probe_deadline(started, at(3_000), at(4_500), PROBE_FLOOR),
+            probe_deadline(started, at(3_000), at(4_500), PROBE_FLOOR, None),
             at(5_000)
         );
         assert_eq!(
-            probe_deadline(started, at(4_500), at(100), PROBE_FLOOR),
+            probe_deadline(started, at(4_500), at(100), PROBE_FLOOR, None),
             at(4_500)
         );
         // The `brief` command has no floor: the window is all there is, even when it is over.
         assert_eq!(
-            probe_deadline(started, at(750), at(700), Duration::ZERO),
+            probe_deadline(started, at(750), at(700), Duration::ZERO, None),
             at(750)
         );
         assert_eq!(
-            probe_deadline(started, at(750), at(900), Duration::ZERO),
+            probe_deadline(started, at(750), at(900), Duration::ZERO, None),
             at(900)
         );
+    }
+
+    #[test]
+    fn probes_never_outlive_the_hooks_answer_deadline_floor_or_not() {
+        let started = Instant::now();
+        let at = |ms: u64| started + Duration::from_millis(ms);
+        // The chain used the window up at 2.9 s: the floor alone would run
+        // the probes to 4.1 s, but the hook must answer by 3.5 s.
+        assert_eq!(
+            probe_deadline(started, at(3_000), at(2_900), PROBE_FLOOR, Some(at(3_500))),
+            at(3_500)
+        );
+        // Nothing to cut when the window ends first.
+        assert_eq!(
+            probe_deadline(started, at(3_000), at(500), PROBE_FLOOR, Some(at(3_500))),
+            at(3_000)
+        );
+        // A deadline already behind the probes leaves them none.
+        assert_eq!(
+            probe_deadline(started, at(3_000), at(2_900), PROBE_FLOOR, Some(at(2_000))),
+            at(2_000)
+        );
+    }
+
+    /// The window is the shorter of its own length and the hook's answer
+    /// deadline: a long window set for a slow machine never carries the brief
+    /// past the instant the hook must print by.
+    #[test]
+    fn a_brief_should_end_by_the_hooks_answer_deadline_whatever_its_window() {
+        let mut fake = Fake::new();
+        fake.pause = Duration::from_millis(600);
+        fake.files = Ok(found(vec![hit("src/a.ts", 2)]));
+        let started = Instant::now();
+        let record = try_start_with(
+            "callers of `fetchUser`",
+            OPEN,
+            Duration::from_secs(3),
+            move |_| Box::new(fake),
+            no_verdict,
+            model_high,
+            Around {
+                until: Some(started + Duration::from_millis(60)),
+                ..Around::default()
+            },
+        )
+        .expect("the prompt starts a brief")
+        .finish_with_record()
+        .record;
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(record.cut);
+        assert!(
+            record.deadline_ms.is_some_and(|ms| ms <= 60),
+            "{:?}",
+            record.deadline_ms
+        );
+    }
+
+    /// A probe slower than the hook's answer deadline is ended by it, not by
+    /// the floor the chain's spent window would have granted: the wall time of
+    /// the whole stage is the deadline, not the sum of the stage bounds.
+    #[test]
+    fn a_slow_probe_should_end_by_the_hooks_answer_deadline_not_by_the_floor() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let plugin = root.join(".pixel/plugins/slow");
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(
+            plugin.join("pixel-plugin.toml"),
+            "name = \"slow\"\nversion = \"0.1.0\"\napi = 1\ndescription = \"slow evidence\"\nrun = \"probe\"\ncapabilities = [\"brief-probe\"]\n[brief-probe]\nowner = \"test\"\nbudget_ms = 2500\nwhen_prompt = \"crate\"\n",
+        ).unwrap();
+        let program = plugin.join("probe");
+        std::fs::write(&program, "#!/bin/sh\ncat >/dev/null\nsleep 3\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let finish = |until: Option<Duration>| {
+            // The chain is complete before the window (60 ms) ends.
+            let (send, done) = mpsc::channel();
+            send.send(()).unwrap();
+            let started = Instant::now();
+            let finished = Pending {
+                state: Arc::new(Mutex::new(Brief::default())),
+                done,
+                deadline: started + Duration::from_millis(60),
+                started,
+                log: None,
+                central: None,
+                kicked: None,
+                task: "what does this crate expose".into(),
+                signal: Signal::Prose,
+                sent: None,
+                probes: Some(ProbeSetup {
+                    host: pixel_plugin::Host {
+                        home: root.clone(),
+                        repo_root: None,
+                        path: std::ffi::OsString::new(),
+                        github_base: None,
+                    },
+                    root: root.clone(),
+                    cap: 1_000,
+                    floor: PROBE_FLOOR,
+                    until: until.map(|after| started + after),
+                    max_bytes: None,
+                }),
+            }
+            .finish_with_record();
+            (started.elapsed(), finished)
+        };
+        // Without a hook deadline the floor lets the probe run 1.2 s.
+        let (floored, finished) = finish(None);
+        assert_eq!(finished.record.probes[0].outcome, "timeout");
+        assert!(floored >= PROBE_FLOOR, "{floored:?}");
+        // With one at 300 ms, the whole stage ends there.
+        let (bounded, finished) = finish(Some(Duration::from_millis(300)));
+        assert_eq!(finished.record.probes[0].outcome, "timeout");
+        assert!(bounded < Duration::from_millis(800), "{bounded:?}");
     }
 
     #[test]
@@ -10433,6 +10578,7 @@ mod tests {
                     root: root.clone(),
                     cap: 1_000,
                     floor: Duration::ZERO,
+                    until: None,
                     max_bytes: None,
                 }),
             };
@@ -10510,6 +10656,7 @@ mod tests {
                     root: root.clone(),
                     cap: char_cap,
                     floor: Duration::ZERO,
+                    until: None,
                     max_bytes,
                 }),
             }
@@ -10580,6 +10727,7 @@ mod tests {
                     root: root.clone(),
                     cap: 1_000,
                     floor,
+                    until: None,
                     max_bytes: None,
                 }),
             }

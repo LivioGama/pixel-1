@@ -30,6 +30,16 @@ const _: () = assert!(
 );
 // The probes' ceiling (5 s after the prompt) leaves a second of the decision to print the merged brief.
 const _: () = assert!(5_000 + 1_000 <= PI_DECISION_TIMEOUT.as_millis() as u64);
+/// What of the decision window printing the answer needs: the brief and its
+/// probes end that much before the decision does (the second the probes'
+/// ceiling above leaves).
+const PRINT_RESERVE: Duration = Duration::from_millis(1_000);
+
+/// The instant a decision that starts at `now` must have its answer ready by:
+/// the host's decision window less [`PRINT_RESERVE`].
+fn answer_by(provider: TaskProvider, now: std::time::Instant) -> std::time::Instant {
+    now + decision_timeout(provider).saturating_sub(PRINT_RESERVE)
+}
 // A stdin its host leaves open is waited on before the decision starts: both
 // together stay inside Pi's eight-second deadline, the tighter of the two.
 const _: () =
@@ -1693,6 +1703,7 @@ fn start_brief(
         id: brief_session(payload).map(str::to_string),
         transcript: string(payload, &["transcript_path", "transcriptPath"])
             .map(std::path::PathBuf::from),
+        until: crate::hook_input::answer_by(),
     };
     crate::execution_brief::chain::start_in(&prompt, &root, parts, session)
 }
@@ -1919,6 +1930,9 @@ fn respond(provider: TaskProvider, event: TaskHookEvent, part: Option<BriefPart>
         journal_payload.as_ref().and_then(brief_session),
     );
     crate::hook_input::test_panic("before-response");
+    // One instant for every stage that works for this answer; what is left of
+    // the decision window after it is what printing the answer needs.
+    crate::hook_input::fix_answer_by(answer_by(provider, std::time::Instant::now()));
     let mut recovered_head = false;
     let mut output = if let Some(raw) = &raw {
         let later = part.filter(|part| part.index > 1 && event == TaskHookEvent::PromptSubmit);
@@ -2029,6 +2043,22 @@ fn respond(provider: TaskProvider, event: TaskHookEvent, part: Option<BriefPart>
 mod tests {
     use super::*;
     use std::process::Command;
+
+    #[test]
+    fn the_answer_deadline_should_leave_the_print_reserve_of_each_hosts_decision_window() {
+        let now = std::time::Instant::now();
+        for provider in [TaskProvider::Claude, TaskProvider::Codex, TaskProvider::Pi] {
+            assert_eq!(
+                answer_by(provider, now) + PRINT_RESERVE,
+                now + decision_timeout(provider),
+                "{provider:?}"
+            );
+        }
+        assert_eq!(
+            answer_by(TaskProvider::Pi, now),
+            now + Duration::from_secs(5)
+        );
+    }
 
     /// A Claude-argued `task-event` inside a host that imports Claude's
     /// configuration must exit without acting: the marker names the real host.

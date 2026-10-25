@@ -21,8 +21,8 @@
 //! denies `PreToolUse` on an enforced session.
 
 use std::io::Read;
-use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
+use std::time::{Duration, Instant};
 
 /// The largest hook payload read from stdin, in bytes.
 pub(crate) const MAX_HOOK_INPUT: u64 = 1_048_576;
@@ -32,6 +32,25 @@ pub(crate) const MAX_HOOK_INPUT: u64 = 1_048_576;
 /// 1 MiB payload ample time on a loaded machine, and with the task gate's
 /// decision window it stays inside the host deadlines `task_hook` names.
 pub(crate) const STDIN_WAIT: Duration = Duration::from_secs(1);
+
+/// The one instant this hook process must have its answer ready by: fixed once
+/// the payload is read, from the host's decision window less what printing
+/// needs. Every stage that works for the answer (the brief's window, its
+/// probes) ends at or before it, instead of starting a timeout of its own
+/// that the others do not know about.
+static ANSWER_BY: OnceLock<Instant> = OnceLock::new();
+
+/// Fix this process's answer deadline. The first call wins; the hook runs one
+/// decision, so there is no second.
+pub(crate) fn fix_answer_by(at: Instant) {
+    let _ = ANSWER_BY.set(at);
+}
+
+/// The answer deadline [`fix_answer_by`] fixed; `None` outside a hook (the
+/// `brief` command, a test), where each stage keeps its own bound.
+pub(crate) fn answer_by() -> Option<Instant> {
+    ANSWER_BY.get().copied()
+}
 
 /// Read one hook payload from stdin through [`MAX_HOOK_INPUT`], waiting at
 /// most [`STDIN_WAIT`] for the host to close the pipe.
