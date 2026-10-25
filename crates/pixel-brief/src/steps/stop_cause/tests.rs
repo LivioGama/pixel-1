@@ -718,6 +718,13 @@ fn evidence_text_preserves_words_after_slashes_inside_single_quoted_strings() {
 }
 
 #[test]
+fn evidence_text_preserves_raw_string_hashes_and_slashes() {
+    let text = evidence_text("let expected = r#\"http://alpha/beta\"#;");
+
+    assert!(text.contains("alpha/beta"), "got {text:?}");
+}
+
+#[test]
 fn test_families_preserve_numbers_that_distinguish_behavior_variants() {
     assert_eq!(family_of("load_mode1_default"), "load_mode1");
     assert_eq!(family_of("load_mode2_text"), "load_mode2");

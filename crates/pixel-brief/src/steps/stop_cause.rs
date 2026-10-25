@@ -141,7 +141,7 @@ static STRINGS_AND_COMMENTS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#""(\\.|[^"\\])*"|'(\\.|[^'\\])'|//.*$"#).expect("the mask pattern is a literal")
 });
 static EVIDENCE_STRINGS_AND_COMMENTS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#""(\\.|[^"\\])*"|'(\\.|[^'\\])*'|//.*$|#.*$"#)
+    Regex::new(r#""(\\.|[^"\\])*"|'(\\.|[^'\\])*'|//.*$|(?:^|\s)#.*$"#)
         .expect("the mask pattern is a literal")
 });
 static LITERAL_OPEN: LazyLock<Regex> = LazyLock::new(|| {
@@ -586,7 +586,7 @@ fn evidence_text(line: &str) -> String {
     let mut text = String::with_capacity(line.len());
     let mut copied = 0;
     for found in EVIDENCE_STRINGS_AND_COMMENTS.find_iter(line) {
-        if found.as_str().starts_with("//") || found.as_str().starts_with('#') {
+        if found.as_str().starts_with("//") || found.as_str().trim_start().starts_with('#') {
             text.push_str(&line[copied..found.start()]);
             copied = line.len();
             break;
