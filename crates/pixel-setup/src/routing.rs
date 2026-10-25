@@ -40,14 +40,24 @@ impl Provider {
     }
 }
 
-/// Ends a prompt-submit hook command so that it exits 0 whatever the
-/// binary does. Claude Code blocks the user's prompt when a `UserPromptSubmit`
-/// hook exits 2, and an older `pixel` exits 2 on a flag it does not know
-/// (`--part`), so every command written for that event runs through the shell
-/// (both hosts run hook commands in one) with this tail. Recognition accepts
-/// the command with or without it, so entries of either form are replaced,
-/// counted and removed alike.
+/// Ends every hook command so that it exits 0 whatever the binary does.
+/// A host treats exit 2 as a block: Claude Code drops the user's prompt on
+/// `UserPromptSubmit`, refuses the tool call on `PreToolUse` and keeps the
+/// session from ending on `Stop`, and Gemini blocks the turn. A binary that
+/// does not know the verb or a flag it is called with (an older or a newer
+/// `pixel` behind the same path, `--part`) exits 2, so every command Pixel
+/// writes runs through the shell (every host runs hook commands in one) with
+/// this tail. Pixel's hooks block through the JSON they print, never through
+/// their exit status, so the tail removes no intended block. Recognition
+/// accepts the command with or without it, so entries of either form are
+/// replaced, counted and removed alike.
 pub(crate) const FAIL_OPEN: &str = " || true";
+
+/// `command` with [`FAIL_OPEN`] appended: the form of every hook command
+/// `pixel setup` writes.
+pub(crate) fn fail_open(command: &str) -> String {
+    format!("{command}{FAIL_OPEN}")
+}
 
 /// `(executable, verb)` with a trailing [`FAIL_OPEN`] taken off the verb.
 fn without_fail_open<'a>((executable, verb): (&'a str, &'a str)) -> (&'a str, &'a str) {
@@ -289,14 +299,12 @@ pub(crate) fn merge_task_hooks(
             quoted_executable(exe),
             provider.name()
         );
-        let commands = if name != "prompt-submit" {
-            vec![command]
-        } else if split > 1 {
+        let commands = if name == "prompt-submit" && split > 1 {
             (1..=split)
-                .map(|part| format!("{command} --part {part}/{split}{FAIL_OPEN}"))
+                .map(|part| fail_open(&format!("{command} --part {part}/{split}")))
                 .collect()
         } else {
-            vec![format!("{command}{FAIL_OPEN}")]
+            vec![fail_open(&command)]
         };
         let mut fresh = Vec::new();
         for command in commands {
@@ -443,11 +451,11 @@ pub(crate) fn remove_matching_hooks(hooks: &mut Map<String, Value>, remove: impl
 /// twice for the model. Codex's own entry lives in `codex_config`.
 fn metrics_relay_group(exe: &Path, provider: Provider) -> Value {
     hook_group(
-        format!(
+        fail_open(&format!(
             "{} run-hook metrics --provider {}",
             quoted_executable(exe),
             provider.name()
-        ),
+        )),
         Some(provider.shell()),
     )
 }
@@ -1149,6 +1157,53 @@ mod tests {
         // Remove takes every form.
         remove_pixel_hooks(value["hooks"].as_object_mut().unwrap(), release());
         assert_eq!(prompt_commands(&value), vec!["other-tool"]);
+    }
+
+    /// Every boundary carries the tail, not only the prompt: an entry written
+    /// before it is replaced where it stood, never left beside the new one.
+    #[test]
+    fn rerunning_setup_should_replace_every_old_form_entry_in_place() {
+        let old = |event: &str| {
+            format!("'/usr/local/bin/pixel' run-hook task-event --provider claude --event {event}")
+        };
+        let mut value = json!({"hooks": {
+            "Stop": [
+                {"hooks": [{"type": "command", "command": "other-tool"}]},
+                {"hooks": [{"type": "command", "command": old("stop")}]},
+            ],
+            "PreToolUse": [{"hooks": [{"type": "command", "command": old("pre-tool-use")}]}],
+        }});
+        merge_task_hooks(
+            value["hooks"].as_object_mut().unwrap(),
+            Provider::Claude,
+            release(),
+            1,
+        )
+        .unwrap();
+        let commands = |event: &str| -> Vec<String> {
+            value["hooks"][event]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|group| group["hooks"][0]["command"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        assert_eq!(
+            commands("Stop"),
+            vec!["other-tool".to_owned(), fail_open(&old("stop"))]
+        );
+        assert_eq!(
+            commands("PreToolUse"),
+            vec![fail_open(&old("pre-tool-use"))]
+        );
+        for event in value["hooks"].as_object().unwrap().keys() {
+            for command in commands(event) {
+                assert!(
+                    command == "other-tool" || command.ends_with(FAIL_OPEN),
+                    "{event}: {command}"
+                );
+            }
+        }
     }
 }
 

@@ -72,7 +72,7 @@ fn metrics_hook_entry(exe: &Path) -> serde_json::Value {
     serde_json::json!({
         "hooks": [{
             "type": "command",
-            "command": format!("{} run-hook metrics --provider codex", crate::routing::quoted_executable(exe)),
+            "command": crate::routing::fail_open(&format!("{} run-hook metrics --provider codex", crate::routing::quoted_executable(exe))),
             "timeout": 10,
         }]
     })
@@ -918,12 +918,12 @@ mod tests {
         );
         assert_eq!(
             post[0]["hooks"][0]["command"],
-            "'/opt/pixel custom/pixel-next' run-hook metrics --provider codex",
+            "'/opt/pixel custom/pixel-next' run-hook metrics --provider codex || true",
             "the metrics relay is re-merged in place under the current executable"
         );
         assert_eq!(
             post[1]["hooks"][0]["command"],
-            "'/opt/pixel custom/pixel-next' run-hook task-event --provider codex --event post-tool-use",
+            "'/opt/pixel custom/pixel-next' run-hook task-event --provider codex --event post-tool-use || true",
             "task lifecycle command is preserved"
         );
         assert!(check_task_hooks(&home, exe).is_ok());

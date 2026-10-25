@@ -795,10 +795,10 @@ fn antigravity_hook_drift(value: &serde_json::Value, exe: &Path) -> Vec<&'static
         "enabled": true,
         "PreInvocation": [{
             "type": "command",
-            "command": format!(
+            "command": crate::routing::fail_open(&format!(
                 "{} run-hook task-event --provider antigravity --event prompt-submit",
                 crate::routing::quoted_executable(exe)
-            ),
+            )),
             "timeout": 10
         }]
     });

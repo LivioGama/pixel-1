@@ -1063,9 +1063,10 @@ keep one hook too.
   run no ledger, so one prompt is one ledger event.
 - **Fails open.** Claude Code blocks the user's prompt when a
   `UserPromptSubmit` hook exits 2, which is what an older `pixel` does on the
-  unknown `--part`. Every prompt-submit command `pixel setup` writes ends in
-  ` || true` (`routing::FAIL_OPEN`; both hosts run hook commands in a shell:
-  Codex as `<shell> -lc`), recognition strips it so entries with and without
+  unknown `--part`; exit 2 also refuses a `PreToolUse` call, holds a `Stop`
+  and blocks a Gemini turn. Every hook command `pixel setup` writes ends in
+  ` || true` (`routing::fail_open`, `routing::FAIL_OPEN`; every host runs hook
+  commands in a shell: Codex as `<shell> -lc`), recognition strips it so entries with and without
   it are the same hook to install, doctor and uninstall, and `main` exits 0
   with the clap error on stderr for any `run-hook` argument it cannot parse.
 - **Slicing** (`split`) is deterministic and cuts at line boundaries: a part

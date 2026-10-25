@@ -101,8 +101,7 @@ fn task_hook_group_with(exe: &Path, provider: &str, event: &str, flags: &str) ->
         .replace('\'', "'\\''");
     let mut group = serde_json::json!({"hooks":[{
         "type":"command",
-        "command":format!("'{executable}' run-hook task-event --provider {provider} --event {event}{flags}{}",
-            if event == "prompt-submit" { " || true" } else { "" }),
+        "command":format!("'{executable}' run-hook task-event --provider {provider} --event {event}{flags} || true"),
         "timeout":if matches!(event, "session-end" | "interrupt") { 3 } else { 10 }
     }]});
     // Devin shows no hook output; `show_output` prints that the brief hook ran.
