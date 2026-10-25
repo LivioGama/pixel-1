@@ -21,13 +21,12 @@
 //!
 //! A prompt in plain language (no identifier, no code word) starts differently:
 //! the intent judge, the relevance probe and the meaning search run at once on
-//! the shared deadline, and the relevance decision, with no model in it, says
-//! whether the prompt is about this repository at all. Off topic ends the
-//! brief at once and renders nothing; on topic fuses the meaning leads with
+//! the shared deadline. The relevance score ranks and is logged, but never
+//! closes the brief: only the intent judge's `none` and a probe that failed
+//! or never answered do. The meaning leads fuse with
 //! the files the prompt's words meet in, and the routed kind goes on from
-//! there. A weakly code-shaped prompt gets the same probes as its retriever;
-//! the same decision silences it when [`ENFORCE_GATE_ON_WEAK`] is set, and a
-//! code graph that did not answer leaves its pre-gate brief in place.
+//! there. A weakly code-shaped prompt gets the same probes as its retriever,
+//! and a code graph that did not answer leaves its pre-gate brief in place.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -116,10 +115,6 @@ pub(crate) const PLAIN_PROSE_BRIEF_BYTES: usize = 2048;
 const ANSWER_FILES: usize = 4;
 /// Files a generic excerpt covers.
 const EXCERPT_FILES: usize = 3;
-/// Whether an off-tier relevance decision silences a weakly code-shaped
-/// prompt's brief, as it does a plain-language one. The decision is computed
-/// and logged either way.
-pub(crate) const ENFORCE_GATE_ON_WEAK: bool = true;
 /// Files a low-tier brief names.
 const LOW_FILES: usize = 3;
 /// Rendered size cap of a low-tier brief: a maybe stays short.
@@ -935,6 +930,9 @@ pub(crate) enum Admission {
     Closed(String),
     /// The intent judge said the prompt is not a coding task.
     Denied(String),
+    /// The relevance score put the prompt off topic. A score ranks and is
+    /// logged, it never closes the brief: the reason says what it saw.
+    Ranked(String),
     /// The relevance gate would have closed the prompt, but it asks for a
     /// tour, a review or a walkthrough, which the repository's words cannot
     /// say: the kind admits it.
@@ -953,13 +951,13 @@ impl Admission {
             Self::Open => "open",
             Self::Closed(_) => "closed",
             Self::Denied(_) => "denied",
-            Self::Kind(_) | Self::Context => "open",
+            Self::Ranked(_) | Self::Kind(_) | Self::Context => "open",
         }
     }
 
     fn reason(&self) -> Option<&str> {
         match self {
-            Self::Closed(reason) | Self::Denied(reason) => Some(reason),
+            Self::Closed(reason) | Self::Denied(reason) | Self::Ranked(reason) => Some(reason),
             Self::Kind(kind) => Some(match kind {
                 QuestionKind::Overview => "kind: overview",
                 QuestionKind::Review => "kind: review",
@@ -1082,8 +1080,18 @@ pub(crate) struct Brief {
 
 impl Brief {
     /// The tier the relevance decision put the prompt in; `None` when it was
-    /// not made, or when the model did not apply (no code graph).
+    /// not made, or when the model did not apply (no code graph). A prompt the
+    /// score put off topic is still briefed, as a maybe ([`Admission::Ranked`]).
     fn tier(&self) -> Option<Tier> {
+        if matches!(self.admission, Admission::Ranked(_)) {
+            return Some(Tier::Low);
+        }
+        self.scored_tier()
+    }
+
+    /// [`Brief::tier`] as the decision record spells it: the score's own tier,
+    /// which an off-topic prompt keeps although it is briefed as a maybe.
+    fn scored_tier(&self) -> Option<Tier> {
         if self.lifted {
             return Some(Tier::Low);
         }
@@ -2829,13 +2837,12 @@ pub(crate) struct Finished {
     pub(crate) paths: Vec<String>,
 }
 
-/// Whether the gate's verdict decided if the brief was shown: always for
-/// plain language, for a weak prompt only when [`ENFORCE_GATE_ON_WEAK`] says
-/// so or the judge refused it.
-const fn gate_enforced(signal: Signal, silenced: bool, enforce_weak: bool) -> bool {
+/// Whether a probe's answer decided if the brief was shown: always for plain
+/// language, for a weak prompt only when the brief was closed.
+const fn gate_enforced(signal: Signal, silenced: bool) -> bool {
     match signal {
         Signal::Prose => true,
-        Signal::Weak => silenced || enforce_weak,
+        Signal::Weak => silenced,
         Signal::Strong => false,
     }
 }
@@ -2928,10 +2935,9 @@ impl Pending {
             ts_ms: pixel_task::now_ms(),
             signal: Some(self.signal.as_str()),
             gate: brief.admission.label(),
-            enforced: gate_enforced(self.signal, brief.silenced, ENFORCE_GATE_ON_WEAK)
-                && !recovered,
+            enforced: gate_enforced(self.signal, brief.silenced) && !recovered,
             reason: brief.admission.reason().map(str::to_string),
-            tier: brief.tier().map(Tier::as_str),
+            tier: brief.scored_tier().map(Tier::as_str),
             model: gate_model_source(),
             score: brief.relevance.as_ref().and_then(|verdict| verdict.score),
             best_file: brief
@@ -3345,14 +3351,7 @@ where
         .unwrap_or_default()
         .ranked();
     let lift = !session.is_empty() && is_follow_up(typed);
-    let mut settled = |got: &Gathered| match refusal_lifting(
-        signal,
-        got,
-        false,
-        ENFORCE_GATE_ON_WEAK,
-        kind,
-        lift,
-    ) {
+    let mut settled = |got: &Gathered| match refusal_lifting(signal, got, false, kind, lift) {
         Some(admission) => {
             close(state, got, admission);
             let _ = finished.send(());
@@ -3373,7 +3372,7 @@ where
     if edit(state, |brief| brief.silenced) {
         return;
     }
-    if let Some(admission) = refusal_lifting(signal, &got, true, ENFORCE_GATE_ON_WEAK, kind, lift) {
+    if let Some(admission) = refusal_lifting(signal, &got, true, kind, lift) {
         close(state, &got, admission);
         return;
     }
@@ -3533,38 +3532,22 @@ fn score(got: &mut Gathered, typed: &str, model: Model) {
 /// relevance gate does not close (see [`is_follow_up`]): not by scoring it off
 /// topic, and not by a probe that failed or never answered, which says nothing
 /// about the prompt.
-/// Plain language must be shown on topic by the repository, the intent judge
-/// having no say in it; a weak prompt is refused by the judge, and by the
-/// relevance decision when `enforce_weak`.
+/// The relevance score never refuses a prompt: it ranks, and is logged. A weak
+/// prompt is refused by the judge; plain language, the judge having no say in
+/// it, only by a relevance probe that failed or never answered.
 fn refusal_lifting(
     signal: Signal,
     got: &Gathered,
     complete: bool,
-    enforce_weak: bool,
     kind: QuestionKind,
     lift: bool,
 ) -> Option<Admission> {
     let verdict = got.judged.as_ref().and_then(Option::as_ref);
     match signal {
         Signal::Strong => None,
-        Signal::Weak => {
-            if let Some(verdict) = verdict.filter(|verdict| verdict.denies_brief()) {
-                return Some(Admission::Denied(judge_reason(verdict)));
-            }
-            // Without a code graph the model does not apply: a weak prompt
-            // keeps the behaviour it had before the gate.
-            got.scored
-                .as_ref()
-                .filter(|scored| {
-                    enforce_weak
-                        && scored.tier == Tier::Off
-                        && scored.basis != Basis::NoGraph
-                        && !lift
-                        && !admitted_by_kind(kind, Some(scored))
-                        && !admitted_by_coverage(scored)
-                })
-                .map(|scored| Admission::Closed(off_topic_reason(scored)))
-        }
+        Signal::Weak => verdict
+            .filter(|verdict| verdict.denies_brief())
+            .map(|verdict| Admission::Denied(judge_reason(verdict))),
         Signal::Prose => match (&got.relevance, &got.scored) {
             // A tour or a review is about the repository whatever words it
             // uses, and whether or not the probe could be asked.
@@ -3573,9 +3556,6 @@ fn refusal_lifting(
             // said or failed to say: `fold_with` lifts it onto them.
             _ if lift => None,
             (Some(Err(reason)), _) => Some(Admission::Closed(format!("relevance: {reason}"))),
-            (_, Some(scored)) if scored.tier == Tier::Off && !admitted_by_coverage(scored) => {
-                Some(Admission::Closed(off_topic_reason(scored)))
-            }
             (None, _) if complete => Some(Admission::Closed(
                 "relevance: no answer before the deadline".to_string(),
             )),
@@ -3590,10 +3570,9 @@ fn refusal(
     signal: Signal,
     got: &Gathered,
     complete: bool,
-    enforce_weak: bool,
     kind: QuestionKind,
 ) -> Option<Admission> {
-    refusal_lifting(signal, got, complete, enforce_weak, kind, false)
+    refusal_lifting(signal, got, complete, kind, false)
 }
 
 /// Keywords one file must hold, at least, for a walkthrough to be about the
@@ -3614,15 +3593,15 @@ fn admitted_by_kind(kind: QuestionKind, scored: Option<&relevance::Verdict>) -> 
     }
 }
 
-/// Keywords one file must hold, at least, for the coverage floor to overrule
-/// an off-topic score. Two was the walkthrough's bar, and two words a
+/// Keywords one file must hold, at least, for the coverage floor to open an
+/// off-topic score in full instead of as a maybe. Two was the walkthrough's bar, and two words a
 /// repository uses (`replay` and `fini`, `merge` and `PRs`) are what a
 /// status question or a steer of the agent shares with it: on the #1222
 /// replay, three words refused 10 `other` prompts against 1 follow-up on the
 /// reference window and 8 against 2 on a window held out from it.
 const COVERAGE_MIN_SHARED: usize = 3;
 
-/// A prompt the model read as off topic is still about the repository when
+/// A prompt the model read as off topic is briefed in full, not as a maybe, when
 /// one structural co-file holds half or more of its informative keywords,
 /// and at least [`COVERAGE_MIN_SHARED`] of them: the words name something
 /// the codebase knows by name or symbol.
@@ -3713,7 +3692,7 @@ fn fold_with(state: &Mutex<Brief>, plan: &Plan, got: &Gathered, session: &[Strin
             Some(scored) if scored.tier != Tier::Off => Admission::Open,
             Some(scored) if admitted_by_coverage(scored) => Admission::Open,
             scored if admitted_by_kind(plan.kind, scored.as_ref()) => Admission::Kind(plan.kind),
-            Some(scored) => Admission::Closed(off_topic_reason(scored)),
+            Some(scored) => Admission::Ranked(off_topic_reason(scored)),
             None => Admission::Unjudged,
         };
         let answers = usize::from(matches!(got.relevance, Some(Ok(_))))
@@ -3726,7 +3705,7 @@ fn fold_with(state: &Mutex<Brief>, plan: &Plan, got: &Gathered, session: &[Strin
             // without this `fit` drops it as a brief of failures.
             brief.answered = 1;
         }
-        brief.confidence = if lifted {
+        brief.confidence = if lifted || matches!(brief.admission, Admission::Ranked(_)) {
             Some(relevance::LOW_CONFIDENCE_LINE.to_string())
         } else {
             got.scored
@@ -6601,7 +6580,7 @@ mod tests {
     }
 
     #[test]
-    fn a_prose_prompt_the_model_puts_off_should_render_nothing_and_say_why() {
+    fn a_prose_prompt_the_model_puts_off_should_still_be_briefed_and_keep_the_score() {
         let mut fake = Fake::new();
         fake.relevance = Ok(off_topic_answer());
         fake.meaning = Ok(vec![lead(DAEMON, 1, "x")]);
@@ -6611,15 +6590,26 @@ mod tests {
             no_verdict,
             model_off,
         );
-        assert_eq!(finished.text, None);
+        let text = finished
+            .text
+            .expect("an off-topic score never closes the brief");
+        assert!(text.contains(DAEMON), "{text}");
+        assert!(
+            text.contains(relevance::LOW_CONFIDENCE_LINE),
+            "briefed as a maybe: {text}"
+        );
+        assert!(
+            !text.contains(FOOTER),
+            "a maybe carries no directive: {text}"
+        );
         let record = finished.record;
-        assert_eq!((record.signal, record.gate), (Some("prose"), "closed"));
+        assert_eq!((record.signal, record.gate), (Some("prose"), "open"));
         assert_eq!((record.tier, record.score), (Some("off"), Some(-1.0)));
         assert_eq!(
             record.reason.as_deref(),
             Some("off topic: score -1.00, 3/3 key terms in the best file")
         );
-        assert_eq!((record.answered, record.bytes), (0, 0));
+        assert_eq!(record.answered, 2);
     }
 
     #[test]
@@ -6777,15 +6767,17 @@ mod tests {
     }
 
     #[test]
-    fn a_weak_prompt_the_model_puts_off_should_get_no_brief() {
+    fn a_weak_prompt_the_model_puts_off_should_still_be_briefed() {
         let mut fake = Fake::new();
         fake.relevance = Ok(off_topic_answer());
-        fake.concept = Ok(found(vec![hit("src/login.ts", 3)]));
+        fake.meaning = Ok(vec![lead(DAEMON, 1, "x")]);
         let finished = briefed_with("how does the login flow work", fake, no_verdict, model_off);
-        assert_eq!(finished.text, None);
-        assert_eq!(finished.record.gate, "closed");
+        let text = finished
+            .text
+            .expect("an off-topic score never closes the brief");
+        assert!(text.contains(DAEMON), "{text}");
+        assert_eq!(finished.record.gate, "open");
         assert_eq!(finished.record.tier, Some("off"));
-        assert!(finished.record.enforced);
     }
 
     #[test]
@@ -6928,29 +6920,28 @@ mod tests {
     fn refusal_should_let_a_strong_prompt_through_whatever_the_probes_say() {
         let got = gathered(Some(Ok(off_topic_answer())), said("none", 0.99), Tier::Off);
         assert_eq!(
-            refusal(Signal::Strong, &got, true, true, QuestionKind::Lookup),
+            refusal(Signal::Strong, &got, true, QuestionKind::Lookup),
             None
         );
     }
 
     #[test]
-    fn refusal_should_close_a_prose_prompt_the_model_puts_off() {
+    fn refusal_should_close_a_prose_prompt_only_for_a_probe_that_failed_never_for_its_score() {
         let off = gathered(Some(Ok(off_topic_answer())), None, Tier::Off);
         assert_eq!(
-            refusal(Signal::Prose, &off, false, false, QuestionKind::Lookup),
-            Some(Admission::Closed(
-                "off topic: score -1.00, 3/3 key terms in the best file".into()
-            ))
+            refusal(Signal::Prose, &off, true, QuestionKind::Lookup),
+            None,
+            "an off-topic score ranks, it never closes"
         );
         let failed = gathered(Some(Err("cold".into())), None, Tier::Off);
         assert_eq!(
-            refusal(Signal::Prose, &failed, false, false, QuestionKind::Lookup),
+            refusal(Signal::Prose, &failed, false, QuestionKind::Lookup),
             Some(Admission::Closed("relevance: cold".into()))
         );
         for tier in [Tier::High, Tier::Low] {
             let on = gathered(Some(Ok(on_topic_answer())), None, tier);
             assert_eq!(
-                refusal(Signal::Prose, &on, true, false, QuestionKind::Lookup),
+                refusal(Signal::Prose, &on, true, QuestionKind::Lookup),
                 None,
                 "{tier:?}"
             );
@@ -6961,11 +6952,11 @@ mod tests {
     fn refusal_should_wait_for_a_missing_relevance_answer_until_nothing_more_is_coming() {
         let silent = gathered(None, Some(None), Tier::Off);
         assert_eq!(
-            refusal(Signal::Prose, &silent, false, false, QuestionKind::Lookup),
+            refusal(Signal::Prose, &silent, false, QuestionKind::Lookup),
             None
         );
         assert_eq!(
-            refusal(Signal::Prose, &silent, true, false, QuestionKind::Lookup),
+            refusal(Signal::Prose, &silent, true, QuestionKind::Lookup),
             Some(Admission::Closed(
                 "relevance: no answer before the deadline".into()
             ))
@@ -6977,20 +6968,14 @@ mod tests {
         for label in ["none", "ops"] {
             let on = gathered(Some(Ok(on_topic_answer())), said(label, 0.99), Tier::High);
             assert_eq!(
-                refusal(Signal::Prose, &on, true, false, QuestionKind::Lookup),
+                refusal(Signal::Prose, &on, true, QuestionKind::Lookup),
                 None,
                 "{label}"
             );
         }
         let unanswered = gathered(None, said("none", 0.99), Tier::High);
         assert_eq!(
-            refusal(
-                Signal::Prose,
-                &unanswered,
-                false,
-                false,
-                QuestionKind::Lookup
-            ),
+            refusal(Signal::Prose, &unanswered, false, QuestionKind::Lookup),
             None,
             "a judge that answers first does not close the brief"
         );
@@ -7001,24 +6986,18 @@ mod tests {
         let lookup = QuestionKind::Lookup;
         let failed = gathered(Some(Err("facts: index_stale".into())), None, Tier::Off);
         let silent = gathered(None, Some(None), Tier::Off);
-        let off = gathered(Some(Ok(off_topic_answer())), None, Tier::Off);
         for (got, complete, closed) in [
             (&failed, false, "relevance: facts: index_stale"),
             (&failed, true, "relevance: facts: index_stale"),
             (&silent, true, "relevance: no answer before the deadline"),
-            (
-                &off,
-                false,
-                "off topic: score -1.00, 3/3 key terms in the best file",
-            ),
         ] {
             assert_eq!(
-                refusal_lifting(Signal::Prose, got, complete, false, lookup, false),
+                refusal_lifting(Signal::Prose, got, complete, lookup, false),
                 Some(Admission::Closed(closed.into())),
                 "unlifted: {closed}"
             );
             assert_eq!(
-                refusal_lifting(Signal::Prose, got, complete, false, lookup, true),
+                refusal_lifting(Signal::Prose, got, complete, lookup, true),
                 None,
                 "lifted: {closed}"
             );
@@ -7029,20 +7008,13 @@ mod tests {
     fn refusal_lifting_should_leave_a_judge_denial_standing_for_a_lifted_weak_prompt() {
         let denied = gathered(Some(Ok(on_topic_answer())), said("none", 0.9), Tier::High);
         assert_eq!(
-            refusal_lifting(
-                Signal::Weak,
-                &denied,
-                true,
-                false,
-                QuestionKind::Lookup,
-                true
-            ),
+            refusal_lifting(Signal::Weak, &denied, true, QuestionKind::Lookup, true),
             Some(Admission::Denied("judge: none (0.90)".into()))
         );
     }
 
     #[test]
-    fn refusal_should_deny_a_weak_prompt_only_on_none_and_close_it_only_when_enforced() {
+    fn refusal_should_deny_a_weak_prompt_only_on_none_never_for_its_score() {
         let on = |tier| Some(Ok(on_topic_answer())).map(|answer| (answer, tier));
         let on_gathered = |judged, tier| {
             let (answer, tier) = on(tier).unwrap();
@@ -7054,7 +7026,6 @@ mod tests {
                 Signal::Weak,
                 &on_gathered(said("none", 0.9), Tier::High),
                 true,
-                false,
                 QuestionKind::Lookup
             ),
             Some(Admission::Denied("judge: none (0.90)".into()))
@@ -7064,28 +7035,21 @@ mod tests {
                 Signal::Weak,
                 &on_gathered(said("ops", 0.99), Tier::High),
                 true,
-                false,
                 QuestionKind::Lookup
             ),
             None,
             "ops steers a weak prompt, it never silences it"
         );
         assert_eq!(
-            refusal(Signal::Weak, &off(), true, false, QuestionKind::Lookup),
-            None
-        );
-        assert_eq!(
-            refusal(Signal::Weak, &off(), true, true, QuestionKind::Lookup),
-            Some(Admission::Closed(
-                "off topic: score -1.00, 3/3 key terms in the best file".into()
-            ))
+            refusal(Signal::Weak, &off(), true, QuestionKind::Lookup),
+            None,
+            "an off-topic score ranks, it never closes"
         );
         for tier in [Tier::High, Tier::Low] {
             assert_eq!(
                 refusal(
                     Signal::Weak,
                     &on_gathered(None, tier),
-                    true,
                     true,
                     QuestionKind::Lookup
                 ),
@@ -7095,7 +7059,7 @@ mod tests {
         }
         let failed = gathered(Some(Err("cold".into())), None, Tier::Off);
         assert_eq!(
-            refusal(Signal::Weak, &failed, true, true, QuestionKind::Lookup),
+            refusal(Signal::Weak, &failed, true, QuestionKind::Lookup),
             None,
             "a probe that cannot tell never silences a weak prompt"
         );
@@ -7103,7 +7067,6 @@ mod tests {
             refusal(
                 Signal::Weak,
                 &gathered(None, None, Tier::Off),
-                true,
                 true,
                 QuestionKind::Lookup
             ),
@@ -7283,12 +7246,11 @@ mod tests {
     }
 
     #[test]
-    fn gate_enforced_should_bind_prose_always_and_a_weak_prompt_when_asked_or_refused() {
-        assert!(gate_enforced(Signal::Prose, false, false));
-        assert!(gate_enforced(Signal::Weak, true, false));
-        assert!(gate_enforced(Signal::Weak, false, true));
-        assert!(!gate_enforced(Signal::Weak, false, false));
-        assert!(!gate_enforced(Signal::Strong, true, true));
+    fn gate_enforced_should_bind_prose_always_and_a_weak_prompt_only_when_closed() {
+        assert!(gate_enforced(Signal::Prose, false));
+        assert!(gate_enforced(Signal::Weak, true));
+        assert!(!gate_enforced(Signal::Weak, false));
+        assert!(!gate_enforced(Signal::Strong, true));
     }
 
     #[test]
@@ -7569,16 +7531,15 @@ mod tests {
     }
 
     #[test]
-    fn a_pasted_block_should_still_meet_the_gate_and_reach_the_log_masked() {
-        // Plain language, whatever the paste holds: the gate closes a paste
-        // the repository is not about.
+    fn a_pasted_block_should_still_be_scored_and_reach_the_log_masked() {
+        // Plain language, whatever the paste holds: a paste the repository
+        // is not about is scored off topic and logged, not closed.
         let mut off = Fake::new();
         off.relevance = Ok(off_topic_answer());
-        let closed = briefed_with(&pasted_only_prompt(), off, no_verdict, model_off);
-        assert_eq!(closed.text, None);
+        let scored = briefed_with(&pasted_only_prompt(), off, no_verdict, model_off);
         assert_eq!(
-            (closed.record.signal, closed.record.gate),
-            (Some("prose"), "closed")
+            (scored.record.signal, scored.record.gate, scored.record.tier),
+            (Some("prose"), "open", Some("off"))
         );
         // A credential in the paste is masked in the log like one typed.
         let leaking = [
@@ -8090,16 +8051,14 @@ mod tests {
     }
 
     #[test]
-    fn a_prose_prompt_the_model_does_not_apply_to_should_get_no_brief() {
+    fn a_prose_prompt_the_model_does_not_apply_to_should_keep_its_pre_gate_brief() {
         let mut fake = Fake::new();
         fake.relevance = Ok(on_topic_answer());
         let finished = briefed_with(PROSE, fake, no_verdict, model_no_graph);
-        assert_eq!(finished.text, None);
-        assert_eq!(finished.record.gate, "closed");
-        assert_eq!(
-            finished.record.reason.as_deref(),
-            Some("no code graph: the model does not apply")
-        );
+        let text = finished.text.expect("no graph, no refusal");
+        assert!(text.contains(&format!("{DAEMON}:280")), "{text}");
+        assert_eq!(finished.record.gate, "unjudged");
+        assert_eq!(finished.record.tier, None);
     }
 
     #[test]
@@ -8126,17 +8085,32 @@ mod tests {
     }
 
     #[test]
-    fn fold_should_open_the_admission_for_both_tiers_and_record_an_off_tier_without_silencing() {
+    fn fold_should_open_a_scored_prompt_in_full_and_an_off_one_as_a_maybe_that_keeps_its_tier() {
         let plan = Plan::from_typed(PROSE, false, None);
-        for (tier, open) in [(Tier::High, true), (Tier::Low, true), (Tier::Off, false)] {
+        for tier in [Tier::High, Tier::Low, Tier::Off] {
             let state = Mutex::new(Brief::default());
             let got = gathered(Some(Ok(on_topic_answer())), None, tier);
             fold(&state, &plan, &got);
             let brief = edit(&state, |brief| brief.clone());
-            assert_eq!(brief.admission == Admission::Open, open, "{tier:?}");
             assert!(!brief.silenced, "{tier:?}: fold never silences");
-            assert_eq!(brief.tier(), Some(tier));
-            assert_eq!(brief.confidence.is_some(), open, "{tier:?}");
+            assert!(brief.confidence.is_some() || tier == Tier::Off, "{tier:?}");
+            if tier == Tier::Off {
+                assert_eq!(
+                    brief.admission,
+                    Admission::Ranked(
+                        "off topic: score -1.00, 3/3 key terms in the best file".into()
+                    )
+                );
+                assert_eq!(brief.tier(), Some(Tier::Low), "briefed as a maybe");
+                assert_eq!(brief.scored_tier(), Some(Tier::Off), "recorded as scored");
+                assert_eq!(
+                    brief.confidence.as_deref(),
+                    Some(relevance::LOW_CONFIDENCE_LINE)
+                );
+            } else {
+                assert_eq!(brief.admission, Admission::Open, "{tier:?}");
+                assert_eq!(brief.tier(), Some(tier));
+            }
         }
     }
 
@@ -9645,52 +9619,50 @@ mod tests {
         got
     }
 
+    /// How `fold` admits `got` for a prompt routed to `kind`.
+    fn folded(got: &Gathered, kind: QuestionKind) -> Admission {
+        let mut plan = Plan::from_typed(PROSE, false, None);
+        plan.kind = kind;
+        let state = Mutex::new(Brief::default());
+        fold(&state, &plan, got);
+        edit(&state, |brief| brief.admission.clone())
+    }
+
     #[test]
-    fn refusal_should_admit_a_tour_and_a_review_but_a_walkthrough_only_beside_the_repositorys_words()
+    fn fold_should_admit_a_tour_and_a_review_by_kind_but_a_walkthrough_only_beside_the_repositorys_words()
      {
-        for signal in [Signal::Prose, Signal::Weak] {
-            for kind in [QuestionKind::Overview, QuestionKind::Review] {
-                assert_eq!(
-                    refusal(signal, &off_with(0, 0), true, true, kind),
-                    None,
-                    "{signal:?} {kind:?}"
-                );
-            }
-            assert!(
-                refusal(signal, &off_with(0, 0), true, true, QuestionKind::Flow).is_some(),
-                "{signal:?}: no word shared, no walkthrough"
-            );
-            assert!(
-                refusal(signal, &off_with(5, 0), true, true, QuestionKind::Flow).is_some(),
-                "{signal:?}: words shared with files that hold no symbol"
-            );
-            assert_eq!(
-                refusal(signal, &off_with(2, 1), true, true, QuestionKind::Flow),
-                None,
-                "{signal:?}"
-            );
-            // Asked about in so many words, history needs the same footing.
-            assert_eq!(
-                refusal(signal, &off_with(2, 1), true, true, QuestionKind::History),
-                None,
-                "{signal:?}"
-            );
-            assert!(
-                refusal(signal, &off_with(0, 4), true, true, QuestionKind::History).is_some(),
-                "{signal:?}"
-            );
-            assert!(
-                refusal(signal, &off_with(1, 9), true, true, QuestionKind::Lookup).is_some(),
-                "{signal:?}: one shared word is not coverage for a kind with no bypass"
-            );
+        let maybe = |admission: Admission| matches!(admission, Admission::Ranked(_));
+        for kind in [QuestionKind::Overview, QuestionKind::Review] {
+            assert_eq!(folded(&off_with(0, 0), kind), Admission::Kind(kind));
         }
+        assert!(
+            maybe(folded(&off_with(0, 0), QuestionKind::Flow)),
+            "no word shared, no walkthrough"
+        );
+        assert!(
+            maybe(folded(&off_with(5, 0), QuestionKind::Flow)),
+            "words shared with files that hold no symbol"
+        );
+        assert_eq!(
+            folded(&off_with(2, 1), QuestionKind::Flow),
+            Admission::Kind(QuestionKind::Flow)
+        );
+        // Asked about in so many words, history needs the same footing.
+        assert_eq!(
+            folded(&off_with(2, 1), QuestionKind::History),
+            Admission::Kind(QuestionKind::History)
+        );
+        assert!(maybe(folded(&off_with(0, 4), QuestionKind::History)));
+        assert!(
+            maybe(folded(&off_with(1, 9), QuestionKind::Lookup)),
+            "one shared word is not coverage for a kind with no bypass"
+        );
         // A tour does not need the probe to have answered at all.
         let failed = gathered(Some(Err("cold".into())), None, Tier::Off);
-        assert_eq!(
-            refusal(Signal::Prose, &failed, true, true, QuestionKind::Overview),
-            None
-        );
-        assert!(refusal(Signal::Prose, &failed, true, true, QuestionKind::Lookup).is_some());
+        for signal in [Signal::Prose, Signal::Weak] {
+            assert_eq!(refusal(signal, &failed, true, QuestionKind::Overview), None);
+        }
+        assert!(refusal(Signal::Prose, &failed, true, QuestionKind::Lookup).is_some());
     }
 
     /// `off_with`, with the informative-word count the coverage floor weighs.
@@ -9703,47 +9675,47 @@ mod tests {
     }
 
     #[test]
-    fn refusal_should_let_an_off_score_through_when_one_file_covers_the_words() {
-        for signal in [Signal::Prose, Signal::Weak] {
-            for kind in [
-                QuestionKind::Lookup,
-                QuestionKind::Config,
-                QuestionKind::Tests,
-            ] {
-                // Half or more of the informative words in one file the graph
-                // knows by symbol: kinds with no bypass of their own pass.
-                assert_eq!(
-                    refusal(signal, &off_covered(3, 5, 2), true, true, kind),
-                    None,
-                    "{signal:?} {kind:?}"
-                );
-                // The boundary is inclusive: exactly half the words covers.
-                assert_eq!(
-                    refusal(signal, &off_covered(3, 6, 4), true, true, kind),
-                    None,
-                    "{signal:?} {kind:?}"
-                );
-                // Two shared words, even all of them, are what a status
-                // question shares with a repository ("le replay a fini ?").
-                assert!(
-                    refusal(signal, &off_covered(2, 2, 4), true, true, kind).is_some(),
-                    "{signal:?} {kind:?}: two shared words are not coverage"
-                );
-                assert!(
-                    refusal(signal, &off_covered(2, 4, 4), true, true, kind).is_some(),
-                    "{signal:?} {kind:?}: two shared words are not coverage"
-                );
-                // The same coverage with no structural footing stays closed.
-                assert!(
-                    refusal(signal, &off_covered(3, 5, 0), true, true, kind).is_some(),
-                    "{signal:?} {kind:?}: shared text is not a named thing"
-                );
-                // One shared word, however structural the files, is not coverage.
-                assert!(
-                    refusal(signal, &off_covered(1, 4, 9), true, true, kind).is_some(),
-                    "{signal:?} {kind:?}: one shared word is not coverage"
-                );
-            }
+    fn fold_should_open_an_off_score_in_full_when_one_file_covers_the_words_and_as_a_maybe_otherwise()
+     {
+        let maybe = |admission: Admission| matches!(admission, Admission::Ranked(_));
+        for kind in [
+            QuestionKind::Lookup,
+            QuestionKind::Config,
+            QuestionKind::Tests,
+        ] {
+            // Half or more of the informative words in one file the graph
+            // knows by symbol: kinds with no bypass of their own are open.
+            assert_eq!(
+                folded(&off_covered(3, 5, 2), kind),
+                Admission::Open,
+                "{kind:?}"
+            );
+            // The boundary is inclusive: exactly half the words covers.
+            assert_eq!(
+                folded(&off_covered(3, 6, 4), kind),
+                Admission::Open,
+                "{kind:?}"
+            );
+            // Two shared words, even all of them, are what a status
+            // question shares with a repository ("le replay a fini ?").
+            assert!(
+                maybe(folded(&off_covered(2, 2, 4), kind)),
+                "{kind:?}: two shared words are not coverage"
+            );
+            assert!(
+                maybe(folded(&off_covered(2, 4, 4), kind)),
+                "{kind:?}: two shared words are not coverage"
+            );
+            // The same coverage with no structural footing is a maybe.
+            assert!(
+                maybe(folded(&off_covered(3, 5, 0), kind)),
+                "{kind:?}: shared text is not a named thing"
+            );
+            // One shared word, however structural the files, is not coverage.
+            assert!(
+                maybe(folded(&off_covered(1, 4, 9), kind)),
+                "{kind:?}: one shared word is not coverage"
+            );
         }
     }
 
@@ -9891,10 +9863,11 @@ mod tests {
             )
         );
         assert!(record.pack_located >= 2, "{}", record.pack_located);
-        // The same gate still closes a prompt of any other kind.
+        // A prompt of any other kind is not admitted by its kind: the score
+        // ranks it as a maybe, here with no file to name.
         let mut fake = Fake::new();
         fake.relevance = Ok(off_topic_answer());
-        let closed = try_start_with(
+        let maybe = try_start_with(
             PROSE,
             OPEN,
             SECOND,
@@ -9905,8 +9878,9 @@ mod tests {
         )
         .unwrap()
         .finish_with_record();
-        assert!(closed.text.is_none());
-        assert_eq!(closed.record.gate, "closed");
+        assert!(maybe.text.is_none());
+        assert_eq!(maybe.record.gate, "open");
+        assert_eq!(maybe.record.tier, Some("off"));
     }
 
     #[test]
@@ -10287,11 +10261,15 @@ mod tests {
     }
 
     #[test]
-    fn the_same_follow_up_without_session_files_should_stay_closed() {
+    fn the_same_follow_up_without_session_files_should_be_a_maybe_on_its_own_words() {
         for around in [Around::default(), around_session(&[], &[])] {
             let finished = briefed_off_topic("now fix the test", around);
-            assert_eq!(finished.text, None);
-            assert_eq!(finished.record.gate, "closed");
+            let text = finished.text.expect("an off score never closes the brief");
+            assert!(text.contains(relevance::LOW_CONFIDENCE_LINE), "{text}");
+            assert_eq!(
+                (finished.record.gate, finished.record.tier),
+                ("open", Some("off"))
+            );
         }
         // A failed probe closes it as well when there is no session to lift it.
         for around in [Around::default(), around_session(&[], &[])] {
@@ -10314,10 +10292,17 @@ mod tests {
             "now explain how the quarterly revenue forecast from the finance team changes next year",
         ] {
             let finished = briefed_off_topic(prompt, around());
-            assert_eq!(
-                (finished.text, finished.record.gate),
-                (None, "closed"),
-                "{prompt}"
+            let text = finished.text.expect("an off score never closes the brief");
+            assert!(!text.contains("src/a.rs"), "{prompt}: not lifted: {text}");
+            assert_eq!(finished.record.gate, "open", "{prompt}");
+            assert!(
+                finished
+                    .record
+                    .reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.starts_with("off topic")),
+                "{prompt}: {:?}",
+                finished.record.reason
             );
         }
     }

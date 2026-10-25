@@ -1140,15 +1140,14 @@ long untagged paste:
 - **weakly code-shaped** (`Weak`: a code word or a code-question opener): the
   same chain, with the intent judge (`pixel classify --if-warm`, only when
   its local server is already listening) free to refuse it (`none`, 0.5 or
-  more), and the relevance gate below applied to it too
-  (`ENFORCE_GATE_ON_WEAK`). The probes are its retriever, so the concept
+  more), and the relevance score below ranking it. The probes are its retriever, so the concept
   search runs only when they found no file.
 - **plain language** (`Prose`: two or more content words, not a request made
   only of `OPS_WORDS` — git, a pull request or an issue, a release, a deploy,
   a steer of the agent's run such as `go next` or `stop` — not an
   acknowledgement): the intent judge, the relevance probe and the meaning
-  search run at once on the deadline, and only the gate decides whether the
-  repository is the subject. A plural acronym is one keyword (`PRs` is
+  search run at once on the deadline; the score ranks the prompt and never
+  closes it, only a probe that failed or did not answer does. A plural acronym is one keyword (`PRs` is
   `prs`, not the Rust extension `rs`).
 
 A prompt with nothing typed but a `<pasted_content>` block has no shape of its
@@ -1207,16 +1206,22 @@ calibrated out of fold at 5 and 10 % of the off-topic rows
 (`scripts/bench/research-gate/results/gate-model.json`, whose SHA-256
 `gate_model.rs` cites and a test checks, with `gate_reference.py` as the
 executable definition the parity test holds the Rust score to). It does not
-apply without a code graph or without a keyword to weigh: such a plain prompt
-gets no brief, and a weak one keeps its pre-gate brief when only the graph is
-missing.
+apply without a code graph (the prompt keeps its pre-gate brief) or without a
+keyword to weigh (an off-tier maybe, below).
 
 - **high** tier: the full brief below, with
   `confidence: high — n/m key terms covered; start with the first file`.
 - **low** tier: a compact brief, at most three `path:line — text` files within
   700 bytes, no kind route and no search, and
   `confidence: low — possibly related; verify before relying on it`.
-- **off**, a probe that cannot answer, or no answer in time: nothing. The
+- **off**: the prompt is still briefed, as a maybe (`Admission::Ranked`, gate
+  `open`, reason `off topic: score …`, the tier `off` and the score logged):
+  the low tier's compact shape and `confidence: low` line, no directive. A score
+  never closes a brief. One co-file that holds three or more keywords and half
+  of the informative ones (`admitted_by_coverage`) opens it in full, and a tour,
+  a review or a walkthrough is admitted by its kind (below).
+- **a probe that cannot answer, or no answer in time**: nothing
+  (`relevance: …`, gate `closed`). The
   fused leads of the `meaning` op (daemon only, resident vectors,
   `unavailable` while they build) join the co-files by reciprocal rank in
   the first `files:` of either brief.
@@ -1423,8 +1428,9 @@ fusion of the meaning leads and the relevance co-files as a third, boosting only
 those lists already name gains its reciprocal rank, and a file only the session
 names does not enter, so an unrelated dirty file never displaces a lead. A
 short follow-up (`is_follow_up`: at most ten words that ask for a change or
-lean on what came before) that the gate would have closed is let through
-instead, when the session has files: the files are the brief
+lean on what came before) that the score put off topic is briefed on the
+session's files instead of its own words, when the session has files: the files
+are the brief
 (`Admission::Context`, gate `open`, reason `context: …`, rendered as a low-tier
 maybe) and the off-topic leads of its words are dropped. The lift is checked
 before the relevance probe's outcome (`refusal_lifting`), so a probe that
@@ -1460,9 +1466,9 @@ cue of how the whole is put together needs a noun for the whole) and `Review`
 (a review cue beside a change noun: "review the latest commit", "is this PR
 safe to merge"), read from the words, with no model, and ahead of a judge's
 verdict; the walkthrough phrases ("walk me through", "what happens when",
-"end to end") route to `Flow` with or without a symbol. The relevance gate
-closes these prompts because they are not phrased in the repository's words,
-so `admitted_by_kind` lets a tour and a review through (`Admission::Kind`, logged
+"end to end") route to `Flow` with or without a symbol. The relevance score
+puts these prompts off topic because they are not phrased in the repository's words,
+so `admitted_by_kind` admits a tour and a review by kind (`Admission::Kind`, logged
 as gate `open` with reason `kind: overview`) and a walkthrough only when it
 shares two words with a file the graph knows by its symbols. Their packs are
 the evidence itself, built from three reads added to `Evidence`:
