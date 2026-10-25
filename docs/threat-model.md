@@ -280,12 +280,14 @@ repository file.
   Ollama server (default `http://127.0.0.1:11434`); a local host needs no key, a
   remote one takes `OLLAMA_API_KEY` as a Bearer token. The state, context and
   criteria are sent, capped like the other presets.
-- The prompt-submit brief's optional intent judge carries the full prompt
-  only to `decide_ollaya::DEFAULT_BASE` (loopback), passed explicitly with
-  `--if-warm --engine ollaya --ollaya-url`. It does not inherit the configured
-  classify engine or endpoint, does not start the local engine, and never
-  falls back to a remote provider; a cold engine leaves the heuristic plan
-  unchanged (`execution_brief::intent::judge`, 400 ms child budget).
+- The prompt-submit brief's optional intent judge runs only when the global
+  classifier switch is on (`classify.enabled`, off by default; switched off, no
+  process starts). Then it carries the typed prompt, the task-intent labels and
+  their criteria through `pixel classify --jsonl` to the engine the user
+  configured, which is a remote provider when the user chose one; it passes no
+  engine or endpoint override. A failed, slow or unconfident engine leaves the
+  heuristic plan unchanged, and the child is killed at half of what is left of
+  the brief's window, at most 1.5 s (`execution_brief::intent::judge`).
 - `pixel web-search`: SearXNG at `PIXEL_WEB_SEARCH_URL`, Perplexity with a
   key, else DuckDuckGo then Wikipedia (`crates/pixel/src/web_search.rs`).
 - The release check: one `HEAD` to `RELEASES_LATEST_URL`
@@ -857,13 +859,14 @@ retention remain those described below.
 - **Mitigation**: nothing is sent without an explicit command or setting:
   `classify` sends its capped input to the configured endpoint (including
   `https://api.openai.com/v1/decisions` for the OpenAI preset), `web-search`
-  (the pixel-utilities plugin) sends its query, and the automatic prompt-submit brief judge is pinned to an
-  already-warm loopback Ollaya endpoint with no remote fallback; the release
+  (the pixel-utilities plugin) sends its query, and the automatic prompt-submit brief judge runs only while
+  `classify.enabled` is on, against the engine the user configured; the release
   check sends no repository data (SECURITY.md, "Security model").
 - **Status**: Mitigated.
 - **Residual**: an explicit `pixel classify` invocation may use a configured
-  remote provider or non-loopback local endpoint; the prompt hook never makes
-  that choice on the user's behalf.
+  remote provider or non-loopback local endpoint, and so may the brief's intent
+  judge once the user switches the classifier on (`pixel config classify on`);
+  the prompt hook never makes that choice on the user's behalf.
 
 ### T18. A downloaded model or tool is tampered with (T, B6)
 
@@ -1037,7 +1040,7 @@ retention remain those described below.
 | Planted history database | `FactsStore::needs_rebuild`, `_pixel_marker` | `open_should_wipe_a_planted_history_database` (both refusals: no marker, foreign `created_by`; asserts the planted tables are gone and the marker is Pixel's); `concurrent_open_on_poisoned_db_never_ioerrors` covers the rebuild path |
 | Git argument handling | `validate_ref`, `end_of_options`, `GitRunner` | `rejects_leading_dash` and siblings in `ref_guard.rs`; `only_pixel_git_spawns_git_in_production_code` and `pixel_git_spawns_git_only_in_the_runner` (`crates/pixel-git/tests/boundary.rs`) |
 | Hook payload cap and wait | `hook_input::read_within` | the `bounded_read_*` and `timed_read_*` tests in `hook_input.rs`; `hook_guarantees_cli.rs` (exit 0 and one JSON line over hostile payloads, broken state, argument errors, a stdin left open) |
-| Prompt-submit intent judge | `execution_brief::intent::judge` | subprocess JSON, empty stdout and invalid UTF-8 fallback tests in `intent.rs` |
+| Prompt-submit intent judge | `execution_brief::intent::judge` | switch-off, request, subprocess JSON, empty stdout, invalid UTF-8 and timeout fallback tests in `intent.rs`; classifier-on `none` and failure cases in `prompt_brief_cli.rs` |
 | Typed prompts in the brief log | `decision_log::{logged_typed, mask_keys, append}` | `logged_typed_should_mask_a_credential_and_cut_at_the_bound`, `logged_typed_should_keep_only_the_last_paragraph_of_a_pasted_log`, `mask_keys_should_hide_a_prefixed_key_and_a_long_run_and_keep_prose`, `append_should_be_owner_only_and_not_create_a_missing_directory`, `append_should_refuse_a_link_at_the_log_and_leave_its_target_alone`, `append_should_refuse_a_linked_directory_and_write_nothing_through_it` (`decision_log.rs`), `the_decision_log_should_stay_off_when_pixel_brief_log_says_so` (`prompt_brief_cli.rs`) |
 | Secrets in the action log | `logged_args`, `GitError`'s `Display` (`pixel_git::redact`) | `only_the_remote_key_command_starts_the_mask`, `a_plugin_source_url_is_logged_without_its_credentials`, `logged_args_should_mask_the_credentials_of_a_reference_url` (`main.rs`), `display_should_mask_a_credentialed_url_in_every_args_variant` (`pixel-git`), `a_credentialed_reference_url_reaches_no_log_or_report` (CLI) |
 | Repo plugin trust | `pixel_plugin::resolve`, `dir_digest`, `contained_program` | `a_repo_plugin_is_refused_until_trusted_and_again_after_an_edit`, `every_kind_of_change_moves_the_digest`, `a_run_that_escapes_through_a_symlink_is_refused` (`pixel-plugin`); `plugin_cli.rs` |

@@ -5,10 +5,12 @@
 //! prompt in an indexed repository gets `[PIXEL:BRIEF]` as additional context,
 //! every other case gets nothing extra, and no case builds or refreshes an index.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::Command;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{Value, json};
@@ -1029,4 +1031,161 @@ fn a_part_on_another_event_is_ignored() {
         command.args(["--part", "2/3"]);
     });
     assert_eq!(plain, with_part);
+}
+
+// ---- the brief and the opt-in classifier -----------------------------------
+
+/// A prompt in plain words that the fixture's code answers.
+const WEAK: &str = "how does the page report an error to the user";
+
+/// The labels `pixel classify` is asked for: the seven task intents and `none`.
+const LABELS: [&str; 8] = [
+    "bugfix",
+    "feature",
+    "refactor",
+    "investigate",
+    "question",
+    "review",
+    "ops",
+    "none",
+];
+
+/// A stand-in for the local Ollaya engine on loopback: it answers every
+/// decision with `label` at 0.93 and counts the requests it drained. The
+/// accept loop is nonblocking with a deadline, so a mutant that never
+/// connects fails an assertion instead of hanging the test.
+fn engine_saying(label: &'static str, asked: Arc<AtomicUsize>) -> String {
+    let rest = 0.07 / 7.0;
+    let probabilities: serde_json::Map<String, Value> = LABELS
+        .iter()
+        .map(|name| {
+            let share = if *name == label { 0.93 } else { rest };
+            ((*name).to_string(), json!(share))
+        })
+        .collect();
+    let body = json!({"answers": {"q1": {
+        "type": "choice", "choice": label, "probabilities": probabilities, "confidence": 0.93
+    }}})
+    .to_string();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while Instant::now() < deadline {
+            let Ok((mut stream, _)) = listener.accept() else {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            };
+            // macOS hands out the accepted socket as nonblocking too.
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            if !drained(&mut stream) {
+                continue; // the reachability probe connects, then closes
+            }
+            asked.fetch_add(1, Ordering::SeqCst);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    base
+}
+
+/// Read one HTTP request to its last body byte; `false` when the peer sent
+/// nothing (a reachability probe).
+fn drained(stream: &mut std::net::TcpStream) -> bool {
+    let mut request = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let read = stream.read(&mut chunk).unwrap_or(0);
+        if read == 0 {
+            return !request.is_empty();
+        }
+        request.extend_from_slice(&chunk[..read]);
+        let text = String::from_utf8_lossy(&request);
+        let Some((head, body)) = text.split_once("\r\n\r\n") else {
+            continue;
+        };
+        let wanted = head
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .map(|n| n.trim().parse::<usize>().unwrap_or(0))
+            })
+            .unwrap_or(0);
+        if body.len() >= wanted {
+            return true;
+        }
+    }
+}
+
+/// A port nothing listens on: bound, then released.
+fn closed_engine() -> String {
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    format!("http://127.0.0.1:{}", probe.local_addr().unwrap().port())
+}
+
+/// The prompt-submit hook on [`WEAK`] under a home whose classify setting is
+/// `enabled` and whose local engine listens at `base`: whether a brief came
+/// back, and the decision the brief logged.
+fn classified(root: &Path, tag: &str, enabled: bool, base: &str) -> (bool, Value) {
+    let home = Scratch::for_test("prompt-brief-cli-home", tag);
+    std::fs::create_dir_all(home.join(".pixel")).unwrap();
+    std::fs::write(
+        home.join(".pixel/config.yaml"),
+        format!(
+            "classify: {{enabled: {enabled}, engine: local, ollaya: {{base: \"{base}\", argv: [\"/usr/bin/false\"]}}}}\n"
+        ),
+    )
+    .unwrap();
+    let home_path = home.to_str().unwrap();
+    let output = hook(root, "claude", WEAK, &[("HOME", home_path)]);
+    let delivered = output["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .is_some_and(|text| text.starts_with("[PIXEL:BRIEF]"));
+    let decision = logged(root).pop().expect("the brief logged its decision");
+    (delivered, decision)
+}
+
+#[test]
+fn a_switched_on_classifier_should_decline_a_prompt_it_calls_none_and_only_then() {
+    let root = indexed("classifier");
+    let asked = Arc::new(AtomicUsize::new(0));
+    let none = engine_saying("none", Arc::clone(&asked));
+    let task = engine_saying("investigate", Arc::clone(&asked));
+
+    // Off by default: the engine is never asked and the brief is made.
+    let (delivered, decision) = classified(&root, "off", false, &none);
+    assert!(delivered, "{decision}");
+    assert_eq!(decision["signal"], "weak", "{decision}");
+    assert_eq!(decision["judge"], Value::Null, "{decision}");
+    assert_eq!(
+        asked.load(Ordering::SeqCst),
+        0,
+        "a switched-off classifier is never asked"
+    );
+
+    // On, and sure the prompt is not a coding task: no brief.
+    let (delivered, decision) = classified(&root, "none", true, &none);
+    assert!(!delivered, "{decision}");
+    assert_eq!(decision["gate"], "denied", "{decision}");
+    assert_eq!(decision["judge"]["label"], "none", "{decision}");
+    assert!(asked.load(Ordering::SeqCst) >= 1);
+
+    // On, and a task label: the brief is made, and the label is logged.
+    let (delivered, decision) = classified(&root, "task", true, &task);
+    assert!(delivered, "{decision}");
+    assert_ne!(decision["gate"], "denied", "{decision}");
+    assert_eq!(decision["judge"]["label"], "investigate", "{decision}");
+
+    // On, and the engine cannot be reached: the brief is made.
+    let (delivered, decision) = classified(&root, "down", true, &closed_engine());
+    assert!(delivered, "{decision}");
+    assert_eq!(decision["judge"], Value::Null, "{decision}");
 }

@@ -3532,9 +3532,10 @@ fn score(got: &mut Gathered, typed: &str, model: Model) {
 /// relevance gate does not close (see [`is_follow_up`]): not by scoring it off
 /// topic, and not by a probe that failed or never answered, which says nothing
 /// about the prompt.
-/// The relevance score never refuses a prompt: it ranks, and is logged. A weak
-/// prompt is refused by the judge; plain language, the judge having no say in
-/// it, only by a relevance probe that failed or never answered.
+/// The relevance score never refuses a prompt: it ranks, and is logged. The
+/// intent judge, when the classifier is on and sure enough (`none`), refuses a
+/// weak or plain-language prompt; a plain-language one is also refused by a
+/// relevance probe that failed or never answered. No judge failure refuses.
 fn refusal_lifting(
     signal: Signal,
     got: &Gathered,
@@ -3542,12 +3543,16 @@ fn refusal_lifting(
     kind: QuestionKind,
     lift: bool,
 ) -> Option<Admission> {
-    let verdict = got.judged.as_ref().and_then(Option::as_ref);
+    let denied = got
+        .judged
+        .as_ref()
+        .and_then(Option::as_ref)
+        .filter(|verdict| verdict.denies_brief())
+        .map(|verdict| Admission::Denied(judge_reason(verdict)));
     match signal {
         Signal::Strong => None,
-        Signal::Weak => verdict
-            .filter(|verdict| verdict.denies_brief())
-            .map(|verdict| Admission::Denied(judge_reason(verdict))),
+        Signal::Weak => denied,
+        Signal::Prose if denied.is_some() => denied,
         Signal::Prose => match (&got.relevance, &got.scored) {
             // A tour or a review is about the repository whatever words it
             // uses, and whether or not the probe could be asked.
@@ -6641,8 +6646,15 @@ mod tests {
     }
 
     #[test]
-    fn the_intent_judge_should_have_no_say_in_whether_a_prose_prompt_is_briefed() {
-        for label in ["none", "ops", "question"] {
+    fn the_intent_judge_should_only_steer_a_prose_prompt_unless_it_says_none() {
+        let mut fake = Fake::new();
+        fake.relevance = Ok(on_topic_answer());
+        fake.meaning = Ok(vec![lead(DAEMON, 280, "fn watch_ready")]);
+        let denied = briefed(PROSE, fake, verdict("none"));
+        assert_eq!(denied.text, None);
+        assert_eq!(denied.record.gate, "denied");
+        assert_eq!(denied.record.judge, Some(("none".to_string(), 0.9)));
+        for label in ["ops", "question"] {
             let mut fake = Fake::new();
             fake.relevance = Ok(on_topic_answer());
             fake.meaning = Ok(vec![lead(DAEMON, 280, "fn watch_ready")]);
@@ -6964,21 +6976,148 @@ mod tests {
     }
 
     #[test]
-    fn refusal_should_leave_a_prose_prompt_to_the_model_whatever_the_intent_judge_says() {
-        for label in ["none", "ops"] {
-            let on = gathered(Some(Ok(on_topic_answer())), said(label, 0.99), Tier::High);
+    fn refusal_should_deny_a_prose_prompt_only_for_a_confident_none() {
+        let on = |judged| gathered(Some(Ok(on_topic_answer())), judged, Tier::High);
+        assert_eq!(
+            refusal(
+                Signal::Prose,
+                &on(said("none", 0.93)),
+                true,
+                QuestionKind::Lookup
+            ),
+            Some(Admission::Denied("judge: none (0.93)".into()))
+        );
+        for (why, judged) in [
+            ("an unsure none", said("none", 0.49)),
+            ("ops steers, it never silences", said("ops", 0.99)),
+            ("a task label", said("bugfix", 0.99)),
+            (
+                "a judge with no verdict: off, failed or too slow",
+                Some(None),
+            ),
+            ("a judge that never ran", None),
+        ] {
             assert_eq!(
-                refusal(Signal::Prose, &on, true, QuestionKind::Lookup),
+                refusal(Signal::Prose, &on(judged), true, QuestionKind::Lookup),
                 None,
-                "{label}"
+                "{why}"
             );
         }
-        let unanswered = gathered(None, said("none", 0.99), Tier::High);
+        // The judge answering before the relevance probe closes the brief at
+        // once, and a tour or a follow-up lifted onto the session does not
+        // outvote it.
+        let early = gathered(None, said("none", 0.93), Tier::High);
+        let denied = Some(Admission::Denied("judge: none (0.93)".into()));
         assert_eq!(
-            refusal(Signal::Prose, &unanswered, false, QuestionKind::Lookup),
-            None,
-            "a judge that answers first does not close the brief"
+            refusal(Signal::Prose, &early, false, QuestionKind::Lookup),
+            denied
         );
+        assert_eq!(
+            refusal(
+                Signal::Prose,
+                &on(said("none", 0.93)),
+                true,
+                QuestionKind::Overview
+            ),
+            denied
+        );
+        assert_eq!(
+            refusal_lifting(
+                Signal::Prose,
+                &on(said("none", 0.93)),
+                true,
+                QuestionKind::Lookup,
+                true
+            ),
+            denied
+        );
+    }
+
+    /// A judge that asks a stand-in `pixel classify --jsonl` child, `setting`
+    /// being what `classify.enabled` reads.
+    fn judge_by_engine(
+        setting: Result<bool, String>,
+        script: &'static str,
+        started: Arc<AtomicBool>,
+    ) -> impl Fn(&str, Instant) -> Option<Verdict> + Send + Sync + 'static {
+        move |typed, deadline| {
+            crate::execution_brief::intent::judge_when(setting.clone(), typed, deadline, || {
+                started.store(true, Ordering::SeqCst);
+                let mut command = std::process::Command::new("sh");
+                command.args(["-c", &format!("cat >/dev/null; {script}")]);
+                Some(command)
+            })
+        }
+    }
+
+    const ENGINE_SAYS_NONE: &str =
+        "printf '%s\\n' '{\"ok\":true,\"predicted\":\"none\",\"probs\":{\"none\":0.93}}'";
+
+    #[cfg(unix)]
+    #[test]
+    fn a_prose_prompt_a_switched_on_classifier_calls_none_should_get_no_brief() {
+        let mut fake = Fake::new();
+        fake.relevance = Ok(on_topic_answer());
+        fake.meaning = Ok(vec![lead(DAEMON, 1, "x")]);
+        let started = Arc::new(AtomicBool::new(false));
+        let judge = judge_by_engine(Ok(true), ENGINE_SAYS_NONE, Arc::clone(&started));
+        let finished = briefed(PROSE, fake, judge);
+        assert!(started.load(Ordering::SeqCst), "the engine was asked");
+        assert_eq!(finished.text, None);
+        assert_eq!(
+            (finished.record.signal, finished.record.gate),
+            (Some("prose"), "denied")
+        );
+        assert_eq!(
+            finished.record.reason.as_deref(),
+            Some("judge: none (0.93)")
+        );
+        assert_eq!(finished.record.judge, Some(("none".to_string(), 0.93)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_prose_prompt_should_be_briefed_when_the_classifier_is_off_or_cannot_answer() {
+        for (why, setting, script, asked) in [
+            ("switched off", Ok(false), ENGINE_SAYS_NONE, false),
+            (
+                "setting unreadable",
+                Err("bad config".to_string()),
+                ENGINE_SAYS_NONE,
+                false,
+            ),
+            ("engine failed", Ok(true), "exit 1", true),
+            ("engine said nonsense", Ok(true), "printf 'not json'", true),
+            ("engine too slow", Ok(true), "sleep 30", true),
+        ] {
+            let mut fake = Fake::new();
+            fake.relevance = Ok(on_topic_answer());
+            fake.meaning = Ok(vec![lead(DAEMON, 1, "x")]);
+            let started = Arc::new(AtomicBool::new(false));
+            let judge = judge_by_engine(setting, script, Arc::clone(&started));
+            let begun = Instant::now();
+            let finished = try_start_with(
+                PROSE,
+                OPEN,
+                Duration::from_millis(900),
+                move |_| Box::new(fake),
+                judge,
+                model_high,
+                Around::default(),
+            )
+            .expect("the prompt starts a brief")
+            .finish_with_record();
+            let text = finished.text.unwrap_or_else(|| panic!("{why}: no brief"));
+            assert!(text.contains(DAEMON), "{why}: {text}");
+            assert_eq!(finished.record.gate, "open", "{why}");
+            assert_eq!(finished.record.judge, None, "{why}");
+            assert!(
+                begun.elapsed() < Duration::from_secs(3),
+                "{why}: {:?}",
+                begun.elapsed()
+            );
+            assert_eq!(started.load(Ordering::SeqCst), asked, "{why}");
+        }
     }
 
     #[test]

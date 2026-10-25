@@ -1138,17 +1138,32 @@ long untagged paste:
 - **code-shaped** (`Signal::Strong`: a backticked name, `snake_case`,
   `camelCase`, a path or a source file): the chain below, no model.
 - **weakly code-shaped** (`Weak`: a code word or a code-question opener): the
-  same chain, with the intent judge (`pixel classify --if-warm`, only when
-  its local server is already listening) free to refuse it (`none`, 0.5 or
-  more), and the relevance score below ranking it. The probes are its retriever, so the concept
+  same chain, with the intent judge (below) free to refuse it, and the
+  relevance score below ranking it. The probes are its retriever, so the concept
   search runs only when they found no file.
 - **plain language** (`Prose`: two or more content words, not a request made
   only of `OPS_WORDS` — git, a pull request or an issue, a release, a deploy,
   a steer of the agent's run such as `go next` or `stop` — not an
   acknowledgement): the intent judge, the relevance probe and the meaning
   search run at once on the deadline; the score ranks the prompt and never
-  closes it, only a probe that failed or did not answer does. A plural acronym is one keyword (`PRs` is
+  closes it, only the judge or a probe that failed or did not answer does. A plural acronym is one keyword (`PRs` is
   `prs`, not the Rust extension `rs`).
+
+The **intent judge** (`execution_brief/intent.rs`) is off unless the global
+classifier switch is on (`classify.enabled`, `pixel config classify on`, off by
+default); switched off, no process starts. Switched on, it runs `pixel
+--metrics off classify --jsonl` as a child of the brief, so the engine is the one
+`pixel config` chose, local or remote (and a remote one sends the typed prompt
+to its provider), asks one decision (the typed prompt, the task-intent labels
+and criteria, and `none`) and reads the winning label and its probability. The
+child gets half of what is left of the brief's window, at most
+`CLASSIFY_BUDGET` (1.5 s), and runs beside the relevance probe and the meaning
+search. A `none` at 0.5 or more ends the brief of a weak or plain-language
+prompt (gate `denied`, reason `judge: none (0.93)`, no probe runs); any other
+label only steers the plan (`bugfix`, `refactor` and `review` run `impact`).
+Switched off, unreadable, failed, killed or unconfident, the judge has no
+verdict and the brief goes ahead: it never closes one. Code-shaped prompts do
+not ask it.
 
 A prompt with nothing typed but a `<pasted_content>` block has no shape of its
 own, and the paste is someone else's text. It is judged on the head of the

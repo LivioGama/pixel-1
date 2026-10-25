@@ -1,20 +1,21 @@
 // SPDX-FileCopyrightText: The Pixel contributors
 // SPDX-License-Identifier: MIT
 
-//! The prompt-submit brief's optional verdict: when the heuristic gate finds
-//! a prompt only weakly about code, `pixel classify` on the local Ollaya
-//! engine decides the intent instead of the stem table, but only when that
-//! server is already warm. The call runs as a child process on
-//! the brief's shared deadline: killed on timeout, absent, disabled or
-//! unconfident all fall back to the heuristics — a verdict is an upgrade,
-//! never a requirement.
+//! The prompt-submit brief's optional verdict: when the classifier is switched
+//! on (`pixel config classify on`, off by default), the configured
+//! `pixel classify` engine, local or remote, decides the task intent of a
+//! prompt that is not code-shaped, and a confident `none` ends its brief. The
+//! call runs as a child process on the brief's shared deadline: killed on
+//! timeout, and switched off, absent, failed or unconfident all fall back to
+//! the heuristics — a verdict is an upgrade, never a requirement, and no
+//! failure of it ever closes a brief.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
-use std::thread::JoinHandle;
+use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::prompt_intent::{INTENT_CONTEXT, INTENTS};
 
@@ -26,54 +27,59 @@ const NONE_CRITERION: &str = "not a coding task: chat, a git or release request,
 /// Poll granularity while the classify child answers.
 const POLL: Duration = Duration::from_millis(10);
 
-/// The child's own cap, inside the shared brief deadline: classify gets at
-/// most this much, so an on-time verdict always leaves room for the evidence
-/// ops that follow.
-const CLASSIFY_BUDGET: Duration = Duration::from_millis(400);
+/// The most the child gets, inside the shared brief deadline. A remote engine
+/// needs more than a warm local one.
+const CLASSIFY_BUDGET: Duration = Duration::from_millis(1500);
 
-fn judge_args(typed: &str) -> Vec<String> {
-    let mut args = vec![
-        "classify".to_string(),
-        typed.to_string(),
-        "--json".to_string(),
-        "--context".to_string(),
-        INTENT_CONTEXT.to_string(),
-        "--if-warm".to_string(),
-        "--engine".to_string(),
-        "ollaya".to_string(),
-        "--ollaya-url".to_string(),
-        crate::decide_ollaya::DEFAULT_BASE.to_string(),
-    ];
-    for kind in INTENTS
-        .iter()
-        .map(|kind| (kind.label, kind.criterion))
-        .chain([(NONE_LABEL, NONE_CRITERION)])
-    {
-        args.push("--label".to_string());
-        args.push(kind.0.to_string());
-        args.push("--criterion".to_string());
-        args.push(format!("{}={}", kind.0, kind.1));
-    }
-    args
+/// When the child is killed: after [`CLASSIFY_BUDGET`] or half of what is left
+/// of the brief's window, whichever is shorter, so a classifier that hangs
+/// still leaves the evidence ops half the window.
+fn classify_deadline(now: Instant, deadline: Instant) -> Instant {
+    now + (deadline.saturating_duration_since(now) / 2).min(CLASSIFY_BUDGET)
 }
 
-fn stdout_reader(child: &mut Child) -> Option<JoinHandle<Result<String, String>>> {
-    child.stdout.take().map(|mut stdout| {
-        std::thread::spawn(move || {
-            let mut text = String::new();
-            stdout
-                .read_to_string(&mut text)
-                .map(|_| text)
-                .map_err(|error| format!("read classify stdout: {error}"))
-        })
+/// The decision `pixel classify --jsonl` serves: the typed prompt, the
+/// task-intent labels with their criteria, and `none`.
+fn request(typed: &str) -> Value {
+    let mut labels: Vec<&str> = INTENTS.iter().map(|kind| kind.label).collect();
+    labels.push(NONE_LABEL);
+    let mut criteria = serde_json::Map::new();
+    for kind in INTENTS {
+        criteria.insert(kind.label.to_string(), json!(kind.criterion));
+    }
+    criteria.insert(NONE_LABEL.to_string(), json!(NONE_CRITERION));
+    json!({
+        "text": typed,
+        "context": INTENT_CONTEXT,
+        "labels": labels,
+        "criteria": criteria,
     })
 }
 
-fn join_stdout(reader: Option<JoinHandle<Result<String, String>>>) -> Result<String, String> {
+type Output = Result<String, String>;
+
+fn stdout_reader(child: &mut Child) -> Option<Receiver<Output>> {
+    let mut stdout = child.stdout.take()?;
+    let (send, receive) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = send.send(
+            stdout
+                .read_to_string(&mut text)
+                .map(|_| text)
+                .map_err(|error| format!("read classify stdout: {error}")),
+        );
+    });
+    Some(receive)
+}
+
+/// The child's output, waited for until `deadline` at most: a process the
+/// child started and left holding the pipe must not hold the brief with it.
+fn read_stdout(reader: Option<Receiver<Output>>, deadline: Instant) -> Output {
     reader
         .ok_or_else(|| "classify stdout was unavailable".to_string())?
-        .join()
-        .map_err(|_| "classify stdout reader panicked".to_string())?
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()).max(POLL))
+        .map_err(|_| "classify stdout did not close in time".to_string())?
 }
 
 /// A decided intent: the winning label and its probability, used as the
@@ -105,32 +111,52 @@ impl Verdict {
     }
 }
 
-/// The verdict of `pixel classify` run as a bounded child: the task-intent
-/// labels plus `none`, decided only by an already-warm Ollaya server on the
-/// loopback default. It never inherits the user's configured remote engine or
-/// endpoint, and never starts the local server. `none` is the only deny; every
-/// other label just steers the plan.
+/// The verdict of `pixel classify --jsonl` run as a bounded child: the
+/// task-intent labels plus `none`, decided by the engine the user configured,
+/// and only when `enabled` says the classifier is switched on. It never starts
+/// without that switch, and `none` is the only deny; every other label just
+/// steers the plan.
 ///
-/// Any failure — classify disabled, engine unreachable, timeout, a killed
-/// child, unparseable output — is `None`, and the caller's heuristics decide
-/// as they always did.
-#[cfg_attr(test, mutants::skip)] // Runtime adapter: subprocess + deadline + parse; the verdict policy is tested on `Verdict`.
-pub(crate) fn judge(typed: &str, deadline: Instant) -> Option<Verdict> {
-    let exe = match std::env::current_exe() {
-        Ok(exe) => exe,
-        Err(error) => {
-            if std::env::var_os("PIXEL_BRIEF_DEBUG").is_some() {
-                eprintln!("pixel-brief intent: current_exe: {error}");
-            }
-            return None;
-        }
-    };
-    let mut command = Command::new(exe);
-    command.args(judge_args(typed));
-    judge_with_command(command, deadline)
+/// Any failure — switched off, unreadable setting, no executable, engine
+/// unreachable, timeout, a killed child, unparseable output — is `None`, and
+/// the caller's heuristics decide as they always did.
+pub(crate) fn judge_when(
+    enabled: Result<bool, String>,
+    typed: &str,
+    deadline: Instant,
+    command: impl FnOnce() -> Option<Command>,
+) -> Option<Verdict> {
+    if !enabled.is_ok_and(|on| on) {
+        return None;
+    }
+    judge_with_command(command()?, &request(typed), deadline)
 }
 
-fn judge_with_command(mut command: Command, deadline: Instant) -> Option<Verdict> {
+#[cfg_attr(test, mutants::skip)] // Runtime adapter: the global switch and this executable; the policy is tested on `judge_when`.
+pub(crate) fn judge(typed: &str, deadline: Instant) -> Option<Verdict> {
+    judge_when(
+        crate::config_cmd::classify_enabled(),
+        typed,
+        deadline,
+        || {
+            let exe = match std::env::current_exe() {
+                Ok(exe) => exe,
+                Err(error) => {
+                    if std::env::var_os("PIXEL_BRIEF_DEBUG").is_some() {
+                        eprintln!("pixel-brief intent: current_exe: {error}");
+                    }
+                    return None;
+                }
+            };
+            let mut command = Command::new(exe);
+            command.args(["--metrics", "off", "classify", "--jsonl"]);
+            Some(command)
+        },
+    )
+}
+
+/// Run `command` with `input` as its one stdin line and read its verdict.
+fn judge_with_command(mut command: Command, input: &Value, deadline: Instant) -> Option<Verdict> {
     let debug = std::env::var_os("PIXEL_BRIEF_DEBUG").is_some();
     macro_rules! bail {
         ($why:expr) => {{
@@ -140,9 +166,9 @@ fn judge_with_command(mut command: Command, deadline: Instant) -> Option<Verdict
             return None;
         }};
     }
-    let deadline = deadline.min(Instant::now() + CLASSIFY_BUDGET);
+    let deadline = classify_deadline(Instant::now(), deadline);
     let mut child = match command
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -150,10 +176,18 @@ fn judge_with_command(mut command: Command, deadline: Instant) -> Option<Verdict
         Ok(child) => child,
         Err(e) => bail!(format!("spawn classify: {e}")),
     };
+    // A thread writes the line, so a child that never reads cannot hold the
+    // brief past its deadline; a killed child breaks the pipe and ends it.
+    if let Some(mut stdin) = child.stdin.take() {
+        let line = format!("{input}\n");
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(line.as_bytes());
+        });
+    }
     let mut reader = stdout_reader(&mut child);
     let output = loop {
         match child.try_wait() {
-            Ok(Some(_)) => match join_stdout(reader.take()) {
+            Ok(Some(_)) => match read_stdout(reader.take(), deadline) {
                 Ok(output) => break output,
                 Err(error) => bail!(error),
             },
@@ -161,13 +195,11 @@ fn judge_with_command(mut command: Command, deadline: Instant) -> Option<Verdict
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = join_stdout(reader.take());
                 bail!("classify outlived the brief deadline");
             }
             Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = join_stdout(reader.take());
                 bail!(format!("wait: {e}"));
             }
         }
@@ -178,7 +210,7 @@ fn judge_with_command(mut command: Command, deadline: Instant) -> Option<Verdict
     };
     let label = match doc["predicted"].as_str() {
         Some(label) => label.to_string(),
-        None => bail!("classify answered without a prediction"),
+        None => bail!(format!("classify answered without a prediction: {output}")),
     };
     let confidence = doc["probs"][&label].as_f64().unwrap_or(0.0);
     if debug {
@@ -192,54 +224,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn labels_should_build_exact_classifier_arguments_including_none() {
-        let args = judge_args("typed prompt");
+    fn request_should_carry_the_prompt_the_intent_labels_their_criteria_and_none() {
+        let value = request("typed prompt");
+        assert_eq!(value["text"], "typed prompt");
+        assert_eq!(value["context"], INTENT_CONTEXT);
+        let labels: Vec<&str> = value["labels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|label| label.as_str().unwrap())
+            .collect();
+        let expected: Vec<&str> = INTENTS
+            .iter()
+            .map(|kind| kind.label)
+            .chain([NONE_LABEL])
+            .collect();
+        assert_eq!(labels, expected);
+        for kind in INTENTS {
+            assert_eq!(value["criteria"][kind.label], kind.criterion);
+        }
+        assert_eq!(value["criteria"][NONE_LABEL], NONE_CRITERION);
         assert_eq!(
-            args,
-            [
-                "classify",
-                "typed prompt",
-                "--json",
-                "--context",
-                INTENT_CONTEXT,
-                "--if-warm",
-                "--engine",
-                "ollaya",
-                "--ollaya-url",
-                crate::decide_ollaya::DEFAULT_BASE,
-                "--label",
-                "bugfix",
-                "--criterion",
-                "bugfix=something that used to work or should work is broken; the prompt asks to find and fix the defect",
-                "--label",
-                "feature",
-                "--criterion",
-                "feature=add new behaviour, a command, an option or an integration that does not exist yet",
-                "--label",
-                "refactor",
-                "--criterion",
-                "refactor=restructure, rename, move or clean up existing code without changing what it does",
-                "--label",
-                "investigate",
-                "--criterion",
-                "investigate=understand how something works or why it behaves as it does before any change; no edit asked yet",
-                "--label",
-                "question",
-                "--criterion",
-                "question=a direct question to answer in prose, about the code, a tool or a concept; no change asked",
-                "--label",
-                "review",
-                "--criterion",
-                "review=review, audit or critique existing changes, a diff or a pull request",
-                "--label",
-                "ops",
-                "--criterion",
-                "ops=operate the repository or its tooling: git state, branches, installs, CI, releases, environment",
-                "--label",
-                "none",
-                "--criterion",
-                "none=not a coding task: chat, a git or release request, prose, or anything the other labels do not cover",
-            ]
+            value["criteria"].as_object().unwrap().len(),
+            INTENTS.len() + 1
         );
     }
 
@@ -271,17 +278,27 @@ mod tests {
         }
     }
 
+    /// A stand-in for `pixel classify --jsonl`: reads the request line, then
+    /// runs `script`.
+    #[cfg(unix)]
+    fn engine(script: &str) -> Command {
+        let mut command = Command::new("sh");
+        command.args(["-c", &format!("cat >/dev/null; {script}")]);
+        command
+    }
+
+    #[cfg(unix)]
+    const SECOND: Duration = Duration::from_secs(2);
+
     #[cfg(unix)]
     #[test]
     fn judge_should_parse_a_valid_subprocess_json_verdict() {
-        let mut command = Command::new("sh");
-        command.args([
-            "-c",
-            "printf '%s' '{\"predicted\":\"bugfix\",\"probs\":{\"bugfix\":0.91}}'",
-        ]);
+        let command = engine(
+            "printf '%s\\n' '{\"ok\":true,\"predicted\":\"bugfix\",\"probs\":{\"bugfix\":0.91}}'",
+        );
 
         assert_eq!(
-            judge_with_command(command, Instant::now() + Duration::from_secs(1)),
+            judge_with_command(command, &request("x"), Instant::now() + SECOND),
             Some(Verdict {
                 label: "bugfix".to_string(),
                 confidence: 0.91,
@@ -289,21 +306,112 @@ mod tests {
         );
     }
 
+    #[test]
+    fn classify_should_get_half_of_what_is_left_of_the_window_and_never_more_than_its_budget() {
+        let now = Instant::now();
+        let after = |ms: u64| now + Duration::from_millis(ms);
+        assert_eq!(classify_deadline(now, after(750)), after(375));
+        assert_eq!(classify_deadline(now, after(3_000)), now + CLASSIFY_BUDGET);
+        assert_eq!(classify_deadline(now, after(10_000)), now + CLASSIFY_BUDGET);
+        assert_eq!(classify_deadline(after(500), now), after(500));
+    }
+
     #[cfg(unix)]
     #[test]
-    fn judge_should_fall_back_when_subprocess_stdout_is_empty_or_unreadable() {
-        let mut empty = Command::new("sh");
-        empty.args(["-c", "exit 0"]);
+    fn judge_should_send_the_request_as_one_line_on_stdin() {
+        let dir = std::env::temp_dir().join(format!("pixel-intent-stdin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sink = dir.join("request.jsonl");
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            &format!(
+                "cat > '{}'; printf '%s\\n' '{{\"ok\":true,\"predicted\":\"none\",\"probs\":{{\"none\":0.8}}}}'",
+                sink.display()
+            ),
+        ]);
+        let verdict = judge_with_command(command, &request("hello there"), Instant::now() + SECOND);
+        let sent = std::fs::read_to_string(&sink).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(
-            judge_with_command(empty, Instant::now() + Duration::from_secs(1)),
-            None
+            verdict.map(|verdict| verdict.label),
+            Some("none".to_string())
         );
+        assert_eq!(sent.lines().count(), 1);
+        assert_eq!(
+            serde_json::from_str::<Value>(&sent).unwrap(),
+            request("hello there")
+        );
+    }
 
-        let mut unreadable = Command::new("sh");
-        unreadable.args(["-c", "printf '\\377'"]);
+    #[cfg(unix)]
+    #[test]
+    fn judge_should_fall_back_when_the_engine_fails_answers_badly_or_is_too_slow() {
+        for (why, script) in [
+            ("empty", "exit 0"),
+            ("unreadable", "printf '\\377'"),
+            (
+                "failed",
+                "printf '%s\\n' '{\"ok\":false,\"error\":\"no engine\"}'; exit 1",
+            ),
+            (
+                "no prediction",
+                "printf '%s\\n' '{\"ok\":false,\"error\":\"no engine\"}'",
+            ),
+        ] {
+            assert_eq!(
+                judge_with_command(engine(script), &request("x"), Instant::now() + SECOND),
+                None,
+                "{why}"
+            );
+        }
+        // Past the deadline the child is killed: no verdict, and on time.
+        let started = Instant::now();
         assert_eq!(
-            judge_with_command(unreadable, Instant::now() + Duration::from_secs(1)),
+            judge_with_command(
+                engine("sleep 5"),
+                &request("x"),
+                Instant::now() + Duration::from_millis(200)
+            ),
             None
         );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn judge_when_should_never_start_the_engine_unless_the_classifier_is_on() {
+        let answer =
+            "printf '%s\\n' '{\"ok\":true,\"predicted\":\"none\",\"probs\":{\"none\":0.97}}'";
+        let deadline = || Instant::now() + SECOND;
+        for (setting, why) in [
+            (Ok(false), "switched off"),
+            (
+                Err("classify.enabled must be true or false".to_string()),
+                "unreadable",
+            ),
+        ] {
+            let mut started = false;
+            let verdict = judge_when(setting, "x", deadline(), || {
+                started = true;
+                Some(engine(answer))
+            });
+            assert_eq!((verdict, started), (None, false), "{why}");
+        }
+        let verdict = judge_when(Ok(true), "x", deadline(), || Some(engine(answer)));
+        assert_eq!(
+            verdict,
+            Some(Verdict {
+                label: "none".to_string(),
+                confidence: 0.97,
+            })
+        );
+        assert!(verdict.unwrap().denies_brief());
+        // On, but no executable to run: the brief goes ahead.
+        assert_eq!(judge_when(Ok(true), "x", deadline(), || None), None);
     }
 }
