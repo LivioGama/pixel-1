@@ -183,7 +183,8 @@ The CLI brief remains capped at 3,900 characters. Stop-cause code excerpts are
 bounded to 18 lines. For questions asking for proof, the densest executable
 code leads, followed by complete assertion-bearing test units and remaining
 code; test units omit leading commentary and share a 3,000-byte aggregate
-budget. Oversized units are skipped.
+budget. At most two units from a test family are included, and oversized units
+are skipped. Stop-cause headings use the compact `path:a-b — code|test` form.
 
 ## Agent integration
 

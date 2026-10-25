@@ -225,26 +225,17 @@ fn the_words_of_the_question_meet_in_the_code_and_the_tests_that_pin_them_down()
     assert_eq!(
         shown,
         vec![
+            block("src/hiargs.rs:1-10 — code", &numbered(1, HIARGS)),
             block(
-                "src/hiargs.rs:1-10 — where the question's words meet (code)",
-                &numbered(1, HIARGS)
-            ),
-            block(
-                "tests/binary.rs:7-11 — where the question's words meet (test)",
+                "tests/binary.rs:7-11 — test",
                 &numbered(7, &BINARY_TESTS[6..11])
             ),
             block(
-                "tests/binary.rs:1-5 — where the question's words meet (test)",
+                "tests/binary.rs:1-5 — test",
                 &numbered(1, &BINARY_TESTS[..5])
             ),
-            block(
-                "src/summary.rs:1-12 — where the question's words meet (code)",
-                &numbered(1, SUMMARY)
-            ),
-            block(
-                "src/line_buffer.rs:1-11 — where the question's words meet (code)",
-                &numbered(1, BUFFER)
-            ),
+            block("src/summary.rs:1-12 — code", &numbered(1, SUMMARY)),
+            block("src/line_buffer.rs:1-11 — code", &numbered(1, BUFFER)),
         ]
     );
 }
@@ -254,9 +245,9 @@ fn the_tests_follow_only_when_the_question_asks_for_them() {
     assert_eq!(
         heads(&ask(&binary_repo(), WHY_NO_TESTS)),
         vec![
-            "### src/hiargs.rs:1-10 — where the question's words meet (code)",
-            "### src/summary.rs:1-12 — where the question's words meet (code)",
-            "### src/line_buffer.rs:1-11 — where the question's words meet (code)",
+            "### src/hiargs.rs:1-10 — code",
+            "### src/summary.rs:1-12 — code",
+            "### src/line_buffer.rs:1-11 — code",
         ]
     );
 }
@@ -279,7 +270,7 @@ fn a_block_is_a_head_and_numbered_lines_cut_at_two_hundred_characters_with_blank
     assert_eq!(
         shown,
         vec![block(
-            "src/glue.rs:1-5 — where the question's words meet (code)",
+            "src/glue.rs:1-5 — code",
             &[
                 "1| pub fn glue() {".to_string(),
                 "2|     // stop printing matches".to_string(),
@@ -419,7 +410,7 @@ fn a_definition_block_stays_and_every_other_ranged_block_goes() {
         "src/a.rs:1-9 — whole file (best match)",
         "src/a.rs:1-9 — foo match",
         "src/a.rs:1-9 — bar (a test of foo)",
-        "src/a.rs:10-19 — where the question's words meet (code)",
+        "src/a.rs:10-19 — code",
         "src/a.rs:1-9",
     ] {
         assert!(drops(gone), "{gone}");
@@ -1276,7 +1267,7 @@ fn a_file_gives_one_unit_and_a_file_named_after_a_group_word_gives_two() {
 }
 
 #[test]
-fn a_unit_comes_with_the_siblings_of_its_family_after_it() {
+fn a_test_family_keeps_its_anchor_and_one_complete_sibling() {
     let units = joined(&[
         unit_lines("case_alpha_1", ALL_WORDS, None),
         unit_lines("case_alpha_2", "none", None),
@@ -1287,11 +1278,7 @@ fn a_unit_comes_with_the_siblings_of_its_family_after_it() {
     let shown = ask(&tests_repo(&[("tests/cli.rs", units)]), WHY);
     assert_eq!(
         path_heads(&shown),
-        [
-            "tests/cli.rs:1-5",
-            "tests/cli.rs:6-10",
-            "tests/cli.rs:11-15"
-        ]
+        ["tests/cli.rs:1-5", "tests/cli.rs:6-10",]
     );
 }
 
@@ -1391,10 +1378,7 @@ fn a_unit_of_a_source_file_counts_and_is_headed_as_code() {
         &tests_repo(&[("src/inline.rs", unit_lines("inline_case", ALL_WORDS, None))]),
         WHY,
     );
-    assert_eq!(
-        heads(&shown),
-        ["### src/inline.rs:1-5 — where the question's words meet (code)"]
-    );
+    assert_eq!(heads(&shown), ["### src/inline.rs:1-5 — code"]);
 }
 
 /// A repository whose graph answers.
@@ -1511,13 +1495,7 @@ fn the_first_caller_of_a_small_function_that_carries_a_group_word_is_shown_with_
     let lines: Vec<String> = (30..=47)
         .map(|n| format!("{}| {}", n, pad(60)[n - 1]))
         .collect();
-    assert_eq!(
-        shown[1],
-        block(
-            "src/main.rs:30-47 — where the question's words meet (code)",
-            &lines
-        )
-    );
+    assert_eq!(shown[1], block("src/main.rs:30-47 — code", &lines));
 }
 
 #[test]

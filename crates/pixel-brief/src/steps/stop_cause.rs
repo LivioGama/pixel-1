@@ -56,7 +56,7 @@ const BRIEF_BOOST: f64 = 1.3;
 /// a unit, bytes.
 const MIN_UNIT_GROUPS: usize = 2;
 const MAX_TEST: usize = 3;
-const FAMILY: usize = 3;
+const FAMILY: usize = 2;
 const SOURCE_CAP: usize = 18;
 const TEST_BYTES: usize = 3_000;
 /// A unit in a file named after a group weighs one and a half.
@@ -736,10 +736,7 @@ pub(super) fn run(ctx: &Ctx, out: &mut Outcome) {
                 format!("{n}| {line}")
             })
             .collect();
-        Block::new(
-            format!("{path}:{a}-{b} — where the question's words meet ({kind})"),
-            body,
-        )
+        Block::new(format!("{path}:{a}-{b} — {kind}"), body)
     }));
 }
 
