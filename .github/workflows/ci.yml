@@ -26,7 +26,8 @@ on:
     #   - .agents/skills/release/: prepare.sh, which scripts/test-prepare.py
     #     runs;
     #   - .agents/skills/pixel-retro/: lead_time.py and its contract test;
-    #   - .agents/skills/ultima-arena/: ultima_arena.py and its contract test.
+    #   - .agents/skills/ultima-arena/: ultima_arena.py and its contract test;
+    #   - .agents/skills/arena/: arena.sh and its offline protocol test.
     # Every other skill is excluded: no test reads it.
     # docs/bench/** also runs CI so benchmark reports receive the required
     # green-verdict status check even though they do not change Rust code.
@@ -68,6 +69,8 @@ on:
       # test_lead_time.py, test_adherence.py:
       - ".agents/skills/pixel-retro/**"
       - ".agents/skills/ultima-arena/**"
+      # offline-protocol-test.py:
+      - ".agents/skills/arena/**"
       - "scripts/README.md"
 
 # A release-prepare pull request into main (`release-x.y.z` branch whose
@@ -254,6 +257,7 @@ jobs:
           ^\.agents/skills/release/
           ^\.agents/skills/pixel-retro/
           ^\.agents/skills/ultima-arena/
+          ^\.agents/skills/arena/
           ^eval/
           ^\.cargo/mutants\.toml$
           (^|/)Cargo\.toml$
@@ -522,6 +526,10 @@ jobs:
       - name: Verdict gate contract (failed, cancelled and applicable-skipped lanes fail)
         if: ${{ needs.changes.outputs.scripts == 'true' }}
         run: python3 scripts/test-verdict-gate.py
+
+      - name: Arena offline protocol (fixture rollout and fake herdr, no model, no Herdr)
+        if: ${{ needs.changes.outputs.scripts == 'true' }}
+        run: python3 .agents/skills/arena/offline-protocol-test.py
 
       - name: Action pin check contract (tags, short SHAs, unparsed forms refused)
         if: ${{ needs.changes.outputs.scripts == 'true' }}

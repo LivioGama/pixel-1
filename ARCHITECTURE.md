@@ -1684,7 +1684,11 @@ The allocation-budget test bounds allocations while reading request frames.
     config, action pins, verdict gate, advisory ignores, SPDX headers, clean, CI input selection, cancel-stale sweep, embedding-model pin, release symbols split, public-claims check, harness-grid dispatch input,
     reproducible release build environment, the brief-gate bench, excavation counter and live brief A/B driver self-tests with the `eval/brief-gate/` prompt set's schema check, the `eval/` agent A/B harness against fixture CLIs), the
     pixel-retro lead-time and adherence contracts
-    (`.agents/skills/pixel-retro/test_lead_time.py`, `test_adherence.py`);
+    (`.agents/skills/pixel-retro/test_lead_time.py`, `test_adherence.py`), the
+    ultima-arena `--self-test` and Arena's offline protocol test
+    (`.agents/skills/arena/offline-protocol-test.py`: a fixture Codex rollout
+    through `arena.sh receipt`, `hook_payload`, and `abort` against a fake
+    `herdr`, including the refusal of a path-shaped case name; no model, no Herdr);
   - **Record the green verdict** (the check name branch protection keys on):
     runs after every lane, even when one failed or was cancelled, because a
     skipped job passes a required check. `scripts/ci/verdict-gate.py` reads
@@ -1706,6 +1710,13 @@ The allocation-budget test bounds allocations while reading request frames.
     closed proxy so it never reaches the hub) and **Dependency policy** (`cargo deny`, then
     `scripts/ci/check-advisory-ignores.py`: `osv-scanner.toml`, which Scorecard
     reads, accepts the same advisories as `deny.toml`).
+- `site.yml` (pull requests and pushes to `main` that touch `website/**`,
+  `docs/motion/**`, `docs/examples/**`, `crates/pixel/Cargo.toml` or the
+  workflow; `ci.yml` leaves the first two out of its path filter): `hugo`
+  builds the site with the pin in `website/mise.toml`, the one `pages.yml`
+  publishes, and `motion-typecheck` runs `bun install --frozen-lockfile` and
+  `bunx @typescript/native-preview --noEmit -p .` (tsgo) in `docs/motion`.
+  `website/` holds no TypeScript. Neither job is a required check.
 - `mvp-reference.yml` runs the imported index truth test on the pinned public
   once-campfire and Pixel repositories when its sources change. The ordinary
   pixel-graph suite also exercises corruption recovery, incremental/full

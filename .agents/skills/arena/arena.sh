@@ -608,6 +608,14 @@ cmd_status() {
 
 cmd_abort() {
   local case_name=${1:-} match="$PREFIX:" pane tab label tabs=''
+  # The case name is spliced into a glob under $SCRATCH/runs that ends in an
+  # rm of the copied logins: only a catalog name may reach it ("../x" would
+  # walk out of the runs directory).
+  if [ -n "$case_name" ]; then
+    case "$case_name" in *[!a-z0-9-]*) die 'abort case must be a catalog name' ;; esac
+    catalog | awk -F '\t' -v wanted="$case_name" '$2 == wanted { found = 1 } END { exit !found }' \
+      || die "unknown abort case: $case_name"
+  fi
   if [ -z "$case_name" ] && [ -f "$SET_PID_FILE" ] && kill -0 "$(cat "$SET_PID_FILE")" 2>/dev/null; then
     say "stopping the running set (pid $(cat "$SET_PID_FILE"))"
     kill -TERM "$(cat "$SET_PID_FILE")" 2>/dev/null || true
