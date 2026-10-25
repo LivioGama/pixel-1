@@ -1553,3 +1553,31 @@ fn a_test_excerpt_keeps_setup_and_a_late_assertion() {
             .any(|line| line.contains("assert_eq!(result, beta_alpha())"))
     );
 }
+
+#[test]
+fn a_test_excerpt_does_not_treat_assertion_words_in_comments_as_assertions() {
+    let mut lines = strings(&["#[test]", "fn alpha_beta_are_applied() {"]);
+    lines.extend(vec![
+        "    // alpha beta should remain explanatory."
+            .to_string();
+        12
+    ]);
+    lines.extend(strings(&[
+        "    let result = run();",
+        "    assert_eq!(result, beta_alpha());",
+        "}",
+    ]));
+    let sources = BTreeMap::from([("tests/engine.rs".to_string(), Source::new(lines))]);
+
+    let selected = test_units(&sources, &alpha_beta_gamma());
+
+    assert_eq!(selected.len(), 1);
+    let (_, first, last) = &selected[0];
+    let excerpt = &sources["tests/engine.rs"].lines[first - 1..*last];
+    assert!(excerpt.iter().any(|line| line.contains("let result = run")));
+    assert!(
+        excerpt
+            .iter()
+            .any(|line| line.contains("assert_eq!(result, beta_alpha())"))
+    );
+}

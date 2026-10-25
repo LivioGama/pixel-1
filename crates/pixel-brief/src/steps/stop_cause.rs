@@ -534,7 +534,9 @@ fn focused_window(
                     .sum();
                 words
                     + f64::from(code && CONTROL_FLOW.is_match(text)) * max_group_weight * 2.0
-                    + f64::from(assertions && ASSERTION.is_match(text)) * max_group_weight * 3.0
+                    + f64::from(assertions && code && ASSERTION.is_match(text))
+                        * max_group_weight
+                        * 3.0
             })
             .sum::<f64>();
         if score.total_cmp(&best.2).is_gt() {
