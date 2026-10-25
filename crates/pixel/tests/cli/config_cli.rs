@@ -321,3 +321,147 @@ fn brief_parts_should_show_its_effective_value_and_reject_what_is_not_a_part_cou
         );
     }
 }
+
+fn repo_with_git(tag: &str) -> Scratch {
+    let repo = Scratch::for_test("config", tag);
+    crate::support::git(&repo, &["init", "-q"]);
+    repo
+}
+
+fn yaml(path: &Path) -> serde_json::Value {
+    serde_saphyr::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+#[test]
+fn a_known_setting_should_be_written_to_the_repository_layer_and_read_back() {
+    let home = Scratch::for_test("config", "set-home");
+    let repo = repo_with_git("set-repo");
+    let repo_file = repo.join(".pixel/config.yaml");
+
+    let text = stdout(&run(&home, &repo, &["config", "brief_parts", "5"]));
+    assert!(
+        text.contains(&format!("brief_parts: 5 — wrote {}", repo_file.display())),
+        "{text}"
+    );
+    assert!(text.contains("run `pixel setup`"), "{text}");
+    assert_eq!(yaml(&repo_file)["brief_parts"], 5, "a number, not a string");
+    assert!(!home.join(".pixel/config.yaml").exists());
+    assert_eq!(
+        stdout(&run(&home, &repo, &["config", "brief_parts"])),
+        format!("brief_parts: 5 — {}\n", repo_file.display())
+    );
+    assert!(stdout(&run(&home, &repo, &["config"])).contains("brief_parts: 5\n"));
+
+    stdout(&run(&home, &repo, &["config", "brief", "off"]));
+    assert_eq!(yaml(&repo_file)["brief"], false, "a boolean, not a string");
+    assert!(stdout(&run(&home, &repo, &["config"])).contains("brief: false"));
+}
+
+#[test]
+fn a_global_set_should_leave_the_repository_alone_and_name_a_layer_that_wins() {
+    let home = Scratch::for_test("config", "global-set-home");
+    let repo = repo_with_git("global-set-repo");
+    let repo_file = repo.join(".pixel/config.yaml");
+    stdout(&run(&home, &repo, &["config", "brief_parts", "2"]));
+
+    let text = stdout(&run(
+        &home,
+        &repo,
+        &["config", "brief_parts", "6", "--global"],
+    ));
+    let global_file = home.join(".pixel/config.yaml");
+    assert!(
+        text.contains(&format!("brief_parts: 6 — wrote {}", global_file.display())),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "note: {} sets brief_parts: 2 here and wins",
+            repo_file.display()
+        )),
+        "{text}"
+    );
+    assert_eq!(yaml(&global_file)["brief_parts"], 6);
+    assert_eq!(
+        yaml(&repo_file)["brief_parts"],
+        2,
+        "the repository layer is untouched"
+    );
+}
+
+#[test]
+fn a_value_that_is_not_valid_for_its_setting_should_be_refused_and_write_nothing() {
+    let home = Scratch::for_test("config", "invalid-home");
+    let repo = repo_with_git("invalid-repo");
+    for (key, bad, expected) in [
+        (
+            "brief_parts",
+            "0",
+            "brief_parts must be a whole number from 1 to 8",
+        ),
+        (
+            "brief_parts",
+            "9",
+            "brief_parts must be a whole number from 1 to 8",
+        ),
+        (
+            "brief_parts",
+            "many",
+            "brief_parts must be a whole number from 1 to 8",
+        ),
+        ("brief", "maybe", "brief takes on or off"),
+        (
+            "daemon_auto_start",
+            "2",
+            "daemon_auto_start takes on or off",
+        ),
+    ] {
+        let out = run(&home, &repo, &["config", key, bad]);
+        assert_eq!(out.status.code(), Some(1), "{key} {bad}: {out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stderr.contains(expected), "{key} {bad}: {stderr}");
+        assert!(out.stdout.is_empty(), "{key} {bad}");
+        assert!(!repo.join(".pixel/config.yaml").exists(), "{key} {bad}");
+        assert!(!home.join(".pixel/config.yaml").exists(), "{key} {bad}");
+    }
+}
+
+#[test]
+fn an_unknown_key_should_list_the_settings_and_never_echo_or_log_its_value() {
+    let home = Scratch::for_test("config", "unknown-home");
+    let repo = repo_with_git("unknown-repo");
+    let secret = "sk-live-0123456789abcdef0123456789abcdef";
+    for args in [
+        vec!["config", "remote_keys.openai", secret],
+        vec!["config", "--global", "remote_keys.openai", secret],
+    ] {
+        let out = run(&home, &repo, &args);
+        assert_eq!(out.status.code(), Some(1), "{out:?}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("unknown setting")
+                && stderr.contains("brief_parts")
+                && stderr.contains("daemon_auto_start"),
+            "{stderr}"
+        );
+        assert!(!stderr.contains(secret), "{stderr}");
+        assert!(!repo.join(".pixel/config.yaml").exists());
+        assert!(!home.join(".pixel/config.yaml").exists());
+    }
+    // The action log recorded the attempt, with the value masked.
+    let log = fs::read_to_string(repo.join(".pixel/actions.jsonl")).unwrap();
+    assert!(
+        log.contains("config remote_keys.openai <redacted>"),
+        "{log}"
+    );
+    assert!(!log.contains(secret), "{log}");
+}
+
+#[test]
+fn the_action_log_should_keep_the_value_of_a_setting_it_can_show() {
+    let home = Scratch::for_test("config", "logged-home");
+    let repo = repo_with_git("logged-repo");
+    stdout(&run(&home, &repo, &["config", "brief_parts", "4"]));
+    let log = fs::read_to_string(repo.join(".pixel/actions.jsonl")).unwrap();
+    assert!(log.contains("config brief_parts 4"), "{log}");
+}

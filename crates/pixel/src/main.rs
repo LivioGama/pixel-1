@@ -1001,9 +1001,23 @@ enum Command {
         cmd: HookCmd,
     },
     /// Show effective settings and paths, or edit persistent YAML configuration.
+    /// `pixel config <key> [<value>]` reads or writes one setting
+    /// (`daemon_auto_start`, `brief`, `brief_parts`); the other forms are the
+    /// subcommands below.
+    #[command(args_conflicts_with_subcommands = true)]
     Config {
         #[command(subcommand)]
         cmd: Option<ConfigCmd>,
+        /// The setting to show or change (default: the overview).
+        key: Option<String>,
+        /// The new value: `on` or `off`, or a number for `brief_parts`.
+        value: Option<String>,
+        /// Write the global `~/.pixel/config.yaml`, not the repository's.
+        #[arg(long)]
+        global: bool,
+        /// The repository (default: the current one, if any).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
     },
     /// Completion contracts, verification, task trajectories and Claude packets.
     TaskState {
@@ -3990,6 +4004,29 @@ fn operation_path(matches: &clap::ArgMatches) -> Option<PathBuf> {
         .and_then(|mut paths| paths.next().cloned())
 }
 
+/// Where the arguments of `pixel config <key> <value>` that must not be logged
+/// begin: the value of a key that is neither a setting `config` writes nor one
+/// of its subcommands. Such an attempt is refused, but a credential typed as
+/// `remote_keys.openai sk-…` would already be in the log. Only the command
+/// word counts: `search-content config x y` is a query.
+fn config_value_from(args: &[String]) -> Option<usize> {
+    let with_program: Vec<String> = std::iter::once(String::new())
+        .chain(args.iter().cloned())
+        .collect();
+    let (at, _) =
+        pixel_plugin::command_word(&with_program).filter(|(_, word)| *word == "config")?;
+    let (key_at, key) = args
+        .iter()
+        .enumerate()
+        .skip(at)
+        .find(|(_, arg)| !arg.starts_with("--"))?;
+    let known = config_cmd::is_setting(key)
+        || Cli::command()
+            .find_subcommand("config")
+            .is_some_and(|config| config.find_subcommand(key).is_some());
+    (!known).then_some(key_at + 1)
+}
+
 /// The arguments as the action log records them. An API key is a secret:
 /// the log is plain text under `.pixel/`, so every positional after
 /// `config remote-key <preset>` is masked.
@@ -4005,6 +4042,7 @@ fn logged_args(args: &[String]) -> String {
         .windows(2)
         .position(|pair| pair[0] == "config" && pair[1] == "remote-key")
         .map(|at| at + 3);
+    let config_value_from = config_value_from(args);
     // `install https://user:token@host/…` and `reference add <id>
     // https://user:token@host/… <rev>` carry the credential of a private
     // repository in its URL. Only the command word counts:
@@ -4029,7 +4067,12 @@ fn logged_args(args: &[String]) -> String {
                 format!("--var={url_name}=<redacted>")
             } else if arg.starts_with(&url_var) {
                 format!("{url_name}=<redacted>")
-            } else if secret_from.is_some_and(|from| i >= from) && !arg.starts_with("--") {
+            } else if secret_from
+                .into_iter()
+                .chain(config_value_from)
+                .any(|from| i >= from)
+                && !arg.starts_with("--")
+            {
                 "<redacted>".to_string()
             } else if source_url_from.is_some_and(|from| i >= from) {
                 pixel_plugin::redact_source(arg)
@@ -5733,8 +5776,17 @@ fn run_command(
                 hook_metrics::run_metrics_hook(provider, event);
             }
         },
-        Command::Config { cmd } => match cmd {
-            None => config_cmd::overview(Path::new(".")),
+        Command::Config {
+            cmd,
+            key,
+            value,
+            global,
+            path,
+        } => match cmd {
+            None => match key {
+                None => config_cmd::overview(Path::new(".")),
+                Some(key) => config_cmd::run_setting(&key, value.as_deref(), global, &path),
+            },
             Some(ConfigCmd::Setup) => config_cmd::setup(),
             Some(ConfigCmd::Classify { value }) => config_cmd::set_classify_enabled(value == "on"),
             Some(ConfigCmd::Metrics {
@@ -7458,6 +7510,45 @@ mod hook_prompt_tests {
             "search-content remote-key src crates",
             "the word `remote-key` in someone else's argument is a search term"
         );
+    }
+
+    #[test]
+    fn the_value_of_a_config_key_pixel_does_not_write_never_reaches_the_action_log() {
+        // `pixel config <key> <value>` is refused for a key that is not a
+        // setting, but a credential typed that way is already in argv.
+        for (argv_words, logged) in [
+            (
+                vec!["config", "remote_keys.openai", "sk-secret"],
+                "config remote_keys.openai <redacted>",
+            ),
+            (
+                vec!["config", "--global", "remote_keys.openai", "sk-secret"],
+                "config --global remote_keys.openai <redacted>",
+            ),
+            (
+                vec!["--metrics", "off", "config", "typo", "sk-secret"],
+                "--metrics off config typo <redacted>",
+            ),
+            // A setting, and the subcommands of `config`, keep their values readable.
+            (vec!["config", "brief_parts", "4"], "config brief_parts 4"),
+            (
+                vec!["config", "--global", "daemon_auto_start", "off"],
+                "config --global daemon_auto_start off",
+            ),
+            (
+                vec!["config", "metrics", "off", "--global", "."],
+                "config metrics off --global .",
+            ),
+            (vec!["config", "classify", "on"], "config classify on"),
+            (vec!["config"], "config"),
+            // Someone else's argument is a query, not a config key.
+            (
+                vec!["search-content", "config", "x", "y"],
+                "search-content config x y",
+            ),
+        ] {
+            assert_eq!(logged_args(&argv(&argv_words)), logged, "{argv_words:?}");
+        }
     }
 
     #[test]
