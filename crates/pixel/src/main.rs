@@ -55,6 +55,7 @@ mod hook_input;
 mod hook_metrics;
 mod impact_read;
 mod index_cmd;
+mod metrics_cmd;
 
 mod operation_metrics;
 mod overview_intent;
@@ -681,6 +682,18 @@ enum Command {
         /// How many of the largest indexed source files to measure.
         #[arg(long, default_value_t = audit_cmd::AUDIT_DEFAULT_TOP, value_parser = clap::value_parser!(u32).range(1..))]
         top: u32,
+        #[arg(long)]
+        json: bool,
+    },
+    /// What the prompt-submit briefs did, counted from the logs the hooks
+    /// already write: briefs delivered and declined, zero-call turns, and the
+    /// files injected against the files the agent then read. Read-only.
+    Metrics {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Window to count: `30m`, `24h`, `7d` or `all`.
+        #[arg(long, default_value = metrics_cmd::DEFAULT_SINCE)]
+        since: String,
         #[arg(long)]
         json: bool,
     },
@@ -4059,6 +4072,7 @@ const READ_ONLY_COMMANDS: &[&str] = &[
     "status",
     "coverage",
     "audit",
+    "metrics",
 ];
 
 /// Whether the parsed invocation may be executed again by the relaunch: the
@@ -5147,6 +5161,9 @@ fn run_command(
         }
         Command::Audit { path, top, json } => {
             audit_cmd::run(audit_cmd::AuditOptions { path, top, json })
+        }
+        Command::Metrics { path, since, json } => {
+            metrics_cmd::run(metrics_cmd::MetricsOptions { path, since, json })
         }
         Command::Workspace { cmd } => workspace_cmd::run(cmd),
         Command::IndexPack {
