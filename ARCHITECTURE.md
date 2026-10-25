@@ -256,14 +256,18 @@ hook entries, pi package, OpenCode and Antigravity plugins and unedited
 CI (`.github/workflows/ci.yml`) runs `cargo fmt --check`, `cargo clippy
 --workspace --all-targets -- -D warnings`, `cargo nextest run --workspace`,
 doctests once a library crate exists, an MSRV build, `cargo deny`, the SPDX and
-action-pin checks, and the website and motion builds. Four more workflows sit
+action-pin checks, and the website and motion builds. The required
+`Dependency policy (cargo-deny)` job runs the dependency gate.
+`Record the green verdict` requires all five CI jobs to succeed; failure,
+cancellation or a skipped job fails that verdict. Four more workflows sit
 beside it: `mutants.yml` (nightly, on main's cumulative unjudged diff, planned,
 sharded and judged by `scripts/ci/mutants-nightly-range.py` and
 `scripts/ci/mutants-gate.py`; mutation testing runs nowhere else), `fuzz.yml`
 (the cargo-fuzz targets of `fuzz/`: `graph_extract` over `pixel_graph::extract::rows`
 and `search_plan` against the verifier's matcher; 60 s a target on a pull request
-that touches them, weekly otherwise), `codeql.yml` (code scanning; Rust only after
-merge). No project board sync is configured. The CLI contract tests are
+that touches them, weekly otherwise), `codeql.yml` (Actions, Python,
+JavaScript/TypeScript and Rust code scanning on every PR; Rust uses
+`build-mode: none`). No project board sync is configured. The CLI contract tests are
 `crates/pixel/tests/cli`; `docs_drift` ties this file to `pixel --help` and the
 workspace.
 

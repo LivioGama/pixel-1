@@ -8,9 +8,9 @@
 #
 # OpenSSF Scorecard's SAST check reads both halves: a workflow that uses
 # `github/codeql-action/analyze`, and the code-scanning check run on each
-# recently merged pull request. Actions/Python/JavaScript scan every PR;
-# Rust runs after merge, nightly and on manual dispatch (select a branch
-# to scan it before merge). No top-level path filter or source exclusion.
+# recently merged pull request. Actions/Python/JavaScript/Rust scan every PR,
+# push to `main`, nightly and manual dispatch. No top-level path filter or
+# source exclusion.
 #
 # Every language runs with `build-mode: none`. It is the only mode CodeQL
 # supports for Rust: rust-analyzer runs the build scripts and expands the
@@ -55,8 +55,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Keep Rust off the PR critical path, including Rust-changing PRs.
-        language: ${{ fromJSON(github.event_name == 'pull_request' && '["actions","python","javascript-typescript"]' || '["rust","actions","python","javascript-typescript"]') }}
+        # Match the default-branch categories so CodeQL merge protection can
+        # compare Rust results for every pull request.
+        language: [rust, actions, python, javascript-typescript]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
