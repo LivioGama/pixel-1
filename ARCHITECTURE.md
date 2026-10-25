@@ -179,6 +179,10 @@ action-log line. `review`, `call-path`, `list-signatures` and `rename` are not
 wire ops: they refresh the graph in process and read it. Text output is cut at
 `render::STDOUT_BYTE_CAP` at a line and says so.
 
+The CLI brief remains capped at 3,900 characters. Stop-cause code excerpts are
+bounded to 18 lines, and test excerpts to 12; executable control flow and
+assertion cues rank ahead of repeated comments when a larger candidate must be shortened.
+
 ## Agent integration
 
 `pixel hook <event> --host <host> [--part K/N]` (`crates/pixel/src/hook/`) is the

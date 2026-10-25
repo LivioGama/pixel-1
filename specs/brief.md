@@ -182,15 +182,18 @@ lines), with less than 0.35 code lines, or mostly inside test units are left
 out. The best window of each file, at most five files and 5 300 bytes, is
 recentred on the lines that hold group words (a tie rounds to even), cut to
 them with two lines of context (eight at least) and snapped over a comment run
-above or an open brace below; a file named after a group word weighs 1.15 and a
-file the brief points at 1.3. The first caller of a function of at most 13
-lines whose name carries a group word is added when the graph answers
+above or an open brace below, then bounded to 18 lines with executable matches
+and control-flow lines favoured over repeated commentary; a file named after a
+group word weighs 1.15 and a file the brief points at 1.3. The first caller of
+a function of at most 13 lines whose name carries a group word is added when
+the graph answers
 (`Evidence::symbols`, `Evidence::callers`), as the lines from 14 before the
 call to 12 after it within the caller; a graph that fails adds nothing. When the
 question also says test, spec, prove, proof or cover, the best test units follow
 (a unit holds two groups; three files, one unit per file and two in a file
 named after a group word, with the siblings of its family by name, at most
-three; 12 lines and 3 000 bytes in all). Blocks are headed `path:a-b — where
+three; a 12-line window favours assertion cues, within 3 000 bytes in all).
+Blocks are headed `path:a-b — where
 the question's words meet (code|test)`, lines numbered, cut at 200 characters.
 It appends evidence but does not affect admission, then takes away every non-definition block of the pack
 (`Drop::NotDefinitions`: the label after the range contains `definition` or

@@ -807,9 +807,9 @@ fn a_window_is_recentred_on_the_weighted_centroid_of_its_group_words() {
 }
 
 #[test]
-fn a_window_is_cut_to_the_group_words_with_two_lines_around_and_grown_to_eight() {
+fn a_window_keeps_evidence_in_an_eighteen_line_cap() {
     let cut = |at: &[usize], a: usize, b: usize| trim(&lines_with_zz(40, at), a, b, &zz());
-    assert_eq!(cut(&[10, 25], 1, 30), (8, 27), "twenty lines stay");
+    assert_eq!(cut(&[10, 25], 1, 30), (8, 25), "both hits stay in the cap");
     assert_eq!(cut(&[15], 1, 30), (11, 19), "five lines grow to nine");
     assert_eq!(cut(&[2], 1, 30), (1, 8), "the start bounds the growth");
     assert_eq!(cut(&[29], 1, 30), (23, 30), "the end bounds the growth");
@@ -1502,5 +1502,54 @@ fn a_file_named_after_a_group_word_outranks_a_better_unit_of_another_file() {
     assert_eq!(
         paths(&ask(&repo, WHY)),
         ["tests/stop.rs", "tests/x1.rs", "tests/x2.rs"]
+    );
+}
+
+#[test]
+fn a_bounded_source_excerpt_keeps_the_matching_control_flow_over_comment_repetition() {
+    let mut lines = vec!["// alpha beta explanation".to_string(); 30];
+    lines[23] = "    if alpha {".to_string();
+    lines[24] = "        return beta;".to_string();
+    lines[25] = "    }".to_string();
+    let source = Source::new(lines);
+
+    let (first, last) = trim(&source, 1, 30, &alpha_beta_gamma());
+
+    assert!(first <= last && last <= source.lines.len());
+    assert!(last - first < 18, "selected {first}-{last}");
+    assert!(
+        source.lines[first - 1..last]
+            .iter()
+            .any(|line| line.contains("return beta"))
+    );
+}
+
+#[test]
+fn a_test_excerpt_keeps_setup_and_a_late_assertion() {
+    let mut lines = strings(&[
+        "#[test]",
+        "fn alpha_beta_are_applied() {",
+        "    arrange();",
+        "    prepare();",
+        "    seed();",
+        "    open();",
+    ]);
+    lines.extend(pad(6));
+    lines.push("    let result = run();".to_string());
+    lines.extend(pad(8));
+    lines.extend(strings(&["    assert_eq!(result, beta_alpha());", "}"]));
+    let sources = BTreeMap::from([("tests/engine.rs".to_string(), Source::new(lines))]);
+
+    let selected = test_units(&sources, &alpha_beta_gamma());
+
+    assert_eq!(selected.len(), 1);
+    let (_, first, last) = &selected[0];
+    assert!(last - first < 12, "selected {first}-{last}");
+    let excerpt = &sources["tests/engine.rs"].lines[first - 1..*last];
+    assert!(excerpt.iter().any(|line| line.contains("let result = run")));
+    assert!(
+        excerpt
+            .iter()
+            .any(|line| line.contains("assert_eq!(result, beta_alpha())"))
     );
 }

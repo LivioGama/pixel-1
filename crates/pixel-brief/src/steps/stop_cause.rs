@@ -58,6 +58,7 @@ const MIN_UNIT_GROUPS: usize = 2;
 const MAX_TEST: usize = 3;
 const FAMILY: usize = 3;
 const TEST_CAP: usize = 12;
+const SOURCE_CAP: usize = 18;
 const TEST_BYTES: usize = 3_000;
 /// A unit in a file named after a group weighs one and a half.
 const DEDICATED_BOOST: f64 = 1.5;
@@ -142,6 +143,13 @@ static STRINGS_AND_COMMENTS: LazyLock<Regex> = LazyLock::new(|| {
 });
 static LITERAL_OPEN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"r#*"|"""|'''|`"#).expect("the literal-open pattern is a literal")
+});
+static ASSERTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)ass.rt|expect|panic|should").expect("the assertion pattern is a literal")
+});
+static CONTROL_FLOW: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:return|throw|raise|break|continue)\b")
+        .expect("the control-flow pattern is a literal")
 });
 static DIGITS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\d+").expect("the digits pattern is a literal"));
@@ -458,8 +466,8 @@ fn recentre(source: &Source, a: usize, b: usize, groups: &[Group]) -> (usize, us
     (first, first + size - 1)
 }
 
-/// `[a, b]` cut to the lines that hold a group word with two lines around
-/// them, grown back to eight lines when it got shorter.
+/// `[a, b]` cut to a bounded window that favours executable evidence over
+/// repeated commentary.
 fn trim(source: &Source, a: usize, b: usize, groups: &[Group]) -> (usize, usize) {
     let hits: Vec<usize> = (a..=b)
         .filter(|n| {
@@ -480,7 +488,60 @@ fn trim(source: &Source, a: usize, b: usize, groups: &[Group]) -> (usize, usize)
         lo = a.max(lo.saturating_sub(1));
         hi = b.min(hi + 1);
     }
-    (lo, hi)
+    focused_window(source, lo, hi, groups, SOURCE_CAP, false)
+}
+
+/// The bounded window with the strongest word evidence in code, assertions or
+/// control flow; comments keep context without outweighing executable lines.
+fn focused_window(
+    source: &Source,
+    first: usize,
+    last: usize,
+    groups: &[Group],
+    cap: usize,
+    assertions: bool,
+) -> (usize, usize) {
+    let size = (last - first + 1).min(cap);
+    if size == last - first + 1 {
+        return (first, last);
+    }
+    let max_group_weight = groups
+        .iter()
+        .map(|group| group.weight)
+        .reduce(f64::max)
+        .unwrap_or(1.0);
+    let mut best = (first, first + size - 1, f64::NEG_INFINITY);
+    for start in first..=last + 1 - size {
+        let end = start + size - 1;
+        let score = (start..=end)
+            .map(|line| {
+                let text = &source.lower[line - 1];
+                let code = code_like(&source.lines[line - 1]);
+                let comment = is_comment(&source.lines[line - 1]);
+                let factor = if code {
+                    2.0
+                } else if comment {
+                    0.05
+                } else {
+                    0.5
+                };
+                let words: f64 = groups
+                    .iter()
+                    .filter_map(|group| {
+                        let count = group.count_in(text);
+                        (count > 0).then(|| group.weight * (1.0 + (count as f64).ln()) * factor)
+                    })
+                    .sum();
+                words
+                    + f64::from(code && CONTROL_FLOW.is_match(text)) * max_group_weight * 2.0
+                    + f64::from(assertions && ASSERTION.is_match(text)) * max_group_weight * 3.0
+            })
+            .sum::<f64>();
+        if score.total_cmp(&best.2).is_gt() {
+            best = (start, end, score);
+        }
+    }
+    (best.0, best.1)
 }
 
 fn is_comment(line: &str) -> bool {
@@ -664,6 +725,7 @@ fn source_windows(ctx: &Ctx, sources: &BTreeMap<String, Source>, groups: &[Group
         let (a, b) = recentre(source, first, last, groups);
         let (a, b) = trim(source, a, b, groups);
         let (a, b) = snap(source, a, b);
+        let (a, b) = focused_window(source, a, b, groups, SOURCE_CAP, false);
         let size = cost(source, a, b);
         if used + size > SRC_BYTES {
             continue;
@@ -819,8 +881,9 @@ fn test_units(sources: &BTreeMap<String, Source>, groups: &[Group]) -> Vec<Span>
         group.push(unit);
         group.sort_by_key(|other| other.first);
         for member in group {
-            let last = member.last.min(member.first + TEST_CAP - 1);
-            let size: usize = source.lines[member.first - 1..last]
+            let (first, last) =
+                focused_window(source, member.first, member.last, groups, TEST_CAP, true);
+            let size: usize = source.lines[first - 1..last]
                 .iter()
                 .filter(|line| !line.trim().is_empty())
                 .map(|line| line.chars().count() + 8)
@@ -829,7 +892,7 @@ fn test_units(sources: &BTreeMap<String, Source>, groups: &[Group]) -> Vec<Span>
                 continue;
             }
             used += size;
-            out.push((path.to_string(), member.first, last));
+            out.push((path.to_string(), first, last));
         }
     }
     out
