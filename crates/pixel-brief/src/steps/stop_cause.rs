@@ -462,8 +462,7 @@ fn recentre(source: &Source, a: usize, b: usize, groups: &[Group]) -> (usize, us
     (first, first + size - 1)
 }
 
-/// `[a, b]` cut to a bounded window that favours executable evidence over
-/// repeated commentary.
+/// `[a, b]` trimmed to the group evidence with a small context margin.
 fn trim(source: &Source, a: usize, b: usize, groups: &[Group]) -> (usize, usize) {
     let hits: Vec<usize> = (a..=b)
         .filter(|n| {
@@ -484,7 +483,7 @@ fn trim(source: &Source, a: usize, b: usize, groups: &[Group]) -> (usize, usize)
         lo = a.max(lo.saturating_sub(1));
         hi = b.min(hi + 1);
     }
-    focused_window(source, lo, hi, groups, SOURCE_CAP)
+    (lo, hi)
 }
 
 /// The bounded window with the strongest word evidence; comments keep context

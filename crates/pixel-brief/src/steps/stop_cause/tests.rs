@@ -807,15 +807,19 @@ fn a_window_is_recentred_on_the_weighted_centroid_of_its_group_words() {
 }
 
 #[test]
-fn a_window_keeps_evidence_in_an_eighteen_line_cap() {
+fn trim_preserves_group_context_before_the_eighteen_line_excerpt() {
     let cut = |at: &[usize], a: usize, b: usize| trim(&lines_with_zz(40, at), a, b, &zz());
-    assert_eq!(cut(&[10, 25], 1, 30), (8, 25), "both hits stay in the cap");
+    assert_eq!(cut(&[10, 25], 1, 30), (8, 27), "both hits and context stay");
     assert_eq!(cut(&[15], 1, 30), (11, 19), "five lines grow to nine");
     assert_eq!(cut(&[2], 1, 30), (1, 8), "the start bounds the growth");
     assert_eq!(cut(&[29], 1, 30), (23, 30), "the end bounds the growth");
     assert_eq!(cut(&[3], 1, 5), (1, 5), "both bounds hold");
     assert_eq!(cut(&[], 4, 20), (4, 20), "no word, no cut");
     assert_eq!(cut(&[15], 14, 16), (14, 16), "a window already inside");
+    let source = lines_with_zz(40, &[10, 25]);
+    let (first, last) = focused_window(&source, 8, 27, &zz(), SOURCE_CAP);
+    assert_eq!(last - first + 1, SOURCE_CAP);
+    assert!(first <= 10 && 25 <= last, "compacted range {first}-{last}");
 }
 
 fn snapped(raw: &[&str], a: usize, b: usize) -> (usize, usize) {
@@ -1415,24 +1419,19 @@ fn caller_discovery_uses_the_selected_window_before_excerpt_compaction() {
     );
     let sources = read_sources(&ctx).expect("source files");
     let groups = groups_of(SHORT, &sources);
-    let source = &sources["src/engine.rs"];
-    let discovery = ("src/engine.rs".to_string(), 1, source.lines.len());
-    let (first, last) = focused_window(source, 1, source.lines.len(), &groups, SOURCE_CAP);
-    assert!(!(first <= 1 && 1 <= last), "excerpt {first}-{last}");
+    let selected = source_windows(&ctx, &sources, &groups);
+    let (excerpt, discovery) = selected
+        .iter()
+        .find(|((path, _, _), _)| path == "src/engine.rs")
+        .expect("the matching source window");
+    assert!(discovery.1 <= 1 && 1 <= discovery.2);
+    assert!(!(excerpt.1 <= 1 && 1 <= excerpt.2));
     assert!(
-        small_callers(&ctx, &sources, &groups, std::slice::from_ref(&discovery))
+        small_callers(&ctx, &sources, &groups, std::slice::from_ref(discovery))
             .iter()
             .any(|(path, _, _)| path == "src/main.rs")
     );
-    assert!(
-        small_callers(
-            &ctx,
-            &sources,
-            &groups,
-            &[("src/engine.rs".into(), first, last)]
-        )
-        .is_empty()
-    );
+    assert!(small_callers(&ctx, &sources, &groups, std::slice::from_ref(excerpt)).is_empty());
 }
 
 #[test]
@@ -1569,6 +1568,7 @@ fn a_bounded_source_excerpt_keeps_the_matching_control_flow_over_comment_repetit
     let (first, last) = trim(&source, 1, 30, &alpha_beta_gamma());
 
     assert!(first <= last && last <= source.lines.len());
+    let (first, last) = focused_window(&source, first, last, &alpha_beta_gamma(), SOURCE_CAP);
     assert!(last - first < 18, "selected {first}-{last}");
     assert!(
         source.lines[first - 1..last]
