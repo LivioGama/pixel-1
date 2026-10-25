@@ -193,7 +193,13 @@ question also says test, spec, prove, proof or cover, the best test units follow
 (a unit holds two groups; three files, one unit per file and two in a file
 named after a group word, with the siblings of its family by name, at most
 three; complete units are kept within 3 000 bytes in all, and oversized units
-are skipped).
+are skipped). Test names are ranked by evidence per character; declaration
+labels and leading comments do not outweigh executable code or expected output.
+Test-family digits remain significant (`mode1` and `mode2` are separate
+families), and a numeric suffix after the family remains a sibling variant.
+The densest code anchor leads, followed by complete test evidence and remaining
+code ordered by evidence per character. Inline comments do not count as code
+evidence; quoted strings remain eligible evidence.
 Blocks are headed `path:a-b — where
 the question's words meet (code|test)`, lines numbered, cut at 200 characters.
 It appends evidence but does not affect admission, then takes away every non-definition block of the pack

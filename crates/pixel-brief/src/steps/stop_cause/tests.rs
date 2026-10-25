@@ -230,20 +230,20 @@ fn the_words_of_the_question_meet_in_the_code_and_the_tests_that_pin_them_down()
                 &numbered(1, HIARGS)
             ),
             block(
-                "src/line_buffer.rs:1-11 — where the question's words meet (code)",
-                &numbered(1, BUFFER)
-            ),
-            block(
-                "src/summary.rs:1-12 — where the question's words meet (code)",
-                &numbered(1, SUMMARY)
+                "tests/binary.rs:7-11 — where the question's words meet (test)",
+                &numbered(7, &BINARY_TESTS[6..11])
             ),
             block(
                 "tests/binary.rs:1-5 — where the question's words meet (test)",
                 &numbered(1, &BINARY_TESTS[..5])
             ),
             block(
-                "tests/binary.rs:7-11 — where the question's words meet (test)",
-                &numbered(7, &BINARY_TESTS[6..11])
+                "src/summary.rs:1-12 — where the question's words meet (code)",
+                &numbered(1, SUMMARY)
+            ),
+            block(
+                "src/line_buffer.rs:1-11 — where the question's words meet (code)",
+                &numbered(1, BUFFER)
             ),
         ]
     );
@@ -255,8 +255,8 @@ fn the_tests_follow_only_when_the_question_asks_for_them() {
         heads(&ask(&binary_repo(), WHY_NO_TESTS)),
         vec![
             "### src/hiargs.rs:1-10 — where the question's words meet (code)",
-            "### src/line_buffer.rs:1-11 — where the question's words meet (code)",
             "### src/summary.rs:1-12 — where the question's words meet (code)",
+            "### src/line_buffer.rs:1-11 — where the question's words meet (code)",
         ]
     );
 }
@@ -642,6 +642,133 @@ fn a_window_scores_each_group_by_its_weight_and_how_often_it_occurs() {
 }
 
 #[test]
+fn test_unit_scores_executable_evidence_over_repeated_commentary() {
+    let groups = alpha_beta_gamma();
+    let commentary = Source::new(strings(&[
+        "// alpha beta gamma alpha beta gamma",
+        "// alpha beta gamma alpha beta gamma",
+        "// alpha beta gamma alpha beta gamma",
+    ]));
+    let executable = source(&["    alpha();", "    beta();", "    gamma();"]);
+    let multi_line_unit = unit(1, 3, "contract");
+
+    let commentary_score = unit_score(&commentary, &multi_line_unit, &groups).1;
+    let executable_score = unit_score(&executable, &multi_line_unit, &groups).1;
+
+    assert!(
+        executable_score > commentary_score,
+        "executable evidence scored {executable_score}, commentary scored {commentary_score}"
+    );
+}
+
+#[test]
+fn test_unit_score_does_not_count_inline_comment_prose_as_code_evidence() {
+    let groups = alpha_beta_gamma();
+    let commentary = Source::new(strings(&[
+        "    run(); // alpha beta gamma alpha beta gamma",
+        "    run(); // alpha beta gamma alpha beta gamma",
+        "    run(); // alpha beta gamma alpha beta gamma",
+        "    run(); # alpha beta gamma alpha beta gamma",
+        "    run(); # alpha beta gamma alpha beta gamma",
+        "    run(); # alpha beta gamma alpha beta gamma",
+    ]));
+    let executable = source(&[
+        "    alpha();",
+        "    beta();",
+        "    gamma();",
+        "    alpha();",
+        "    beta();",
+        "    gamma();",
+    ]);
+    let unit = unit(1, 6, "contract");
+
+    let commentary_score = unit_score(&commentary, &unit, &groups).1;
+    let executable_score = unit_score(&executable, &unit, &groups).1;
+
+    assert!(
+        executable_score > commentary_score,
+        "executable evidence scored {executable_score}, inline commentary scored {commentary_score}"
+    );
+}
+
+#[test]
+fn test_unit_score_keeps_test_name_evidence_below_executable_evidence() {
+    let groups = alpha_beta_gamma();
+    let named = source(&["fn alpha_beta_gamma() {", "    run();", "}"]);
+    let executable = source(&["fn contract() {", "    alpha(); beta(); gamma();", "}"]);
+    let multi_line_unit = unit(1, 3, "contract");
+    let one_line = source(&["fn contract() { assert_eq!(alpha(), beta()); }"]);
+    let one_line_unit = unit(1, 1, "contract");
+
+    let (held, name_score) = unit_score(&named, &multi_line_unit, &groups);
+    let executable_score = unit_score(&executable, &multi_line_unit, &groups).1;
+    let (one_line_held, one_line_score) = unit_score(&one_line, &one_line_unit, &groups);
+
+    assert_eq!(held, 3);
+    assert!(name_score > 0.0 && name_score < executable_score);
+    assert_eq!(one_line_held, 2);
+    assert!(one_line_score > 0.0);
+}
+
+#[test]
+fn evidence_text_preserves_words_after_slashes_inside_single_quoted_strings() {
+    let text = evidence_text("expect(output).toBe('https://example.test/alpha/beta');");
+
+    assert!(text.contains("alpha/beta"), "got {text:?}");
+}
+
+#[test]
+fn test_families_preserve_numbers_that_distinguish_behavior_variants() {
+    assert_eq!(family_of("load_mode1_default"), "load_mode1");
+    assert_eq!(family_of("load_mode2_text"), "load_mode2");
+    assert_eq!(family_of("stop_after_binary_2"), "stop_after");
+}
+
+#[test]
+fn evidence_order_keeps_a_dense_code_anchor_then_proof_then_optional_context() {
+    let sources = BTreeMap::from([
+        (
+            "src/anchor.rs".to_string(),
+            source(&[
+                "fn process() {",
+                "    if alpha {",
+                "        return beta;",
+                "    }",
+                "}",
+            ]),
+        ),
+        (
+            "tests/cases.rs".to_string(),
+            source(&[
+                "fn test_contract() {",
+                "    assert_eq!(alpha(), beta());",
+                "}",
+            ]),
+        ),
+        (
+            "src/context.rs".to_string(),
+            Source::new(vec!["// alpha beta gamma".to_string(); 5]),
+        ),
+    ]);
+    let code = vec![
+        ("src/context.rs".to_string(), 1, 5),
+        ("src/anchor.rs".to_string(), 1, 5),
+    ];
+    let tests = vec![("tests/cases.rs".to_string(), 1, 3)];
+
+    let ordered = evidence_order(code, tests, &sources, &alpha_beta_gamma());
+
+    assert_eq!(
+        ordered,
+        [
+            ("src/anchor.rs".to_string(), 1, 5),
+            ("tests/cases.rs".to_string(), 1, 3),
+            ("src/context.rs".to_string(), 1, 5),
+        ]
+    );
+}
+
+#[test]
 fn a_window_is_thirty_lines_and_slides_one_line_at_a_time() {
     let at = |alpha: usize, beta: usize, n: usize| {
         let mut lines = pad(n);
@@ -725,7 +852,7 @@ fn a_test_unit_is_a_marked_or_test_named_function_a_case_macro_or_a_titled_case(
     assert_eq!(
         units("src/lib.rs", &lines),
         vec![
-            unit(1, 6, "marked"),
+            unit(2, 6, "marked"),
             unit(10, 12, "test_named"),
             unit(13, 15, "case_a"),
             unit(16, 18, "stops at binary"),
@@ -1047,7 +1174,7 @@ fn a_test_file_and_a_document_are_no_source_window() {
     files.extend(FILLERS);
     assert_eq!(
         paths(&ask(&repo(&files), WHY_NO_TESTS)),
-        ["src/hiargs.rs", "src/line_buffer.rs", "src/summary.rs"]
+        ["src/hiargs.rs", "src/summary.rs", "src/line_buffer.rs"]
     );
 }
 
@@ -1134,8 +1261,8 @@ fn a_file_gives_one_unit_and_a_file_named_after_a_group_word_gives_two() {
     assert_eq!(
         path_heads(&ask(&repo, WHY)),
         [
-            "tests/cli.rs:1-5",
             "tests/stop.rs:1-5",
+            "tests/cli.rs:1-5",
             "tests/stop.rs:6-10"
         ]
     );
@@ -1220,7 +1347,7 @@ fn only_the_three_best_test_files_are_shown() {
     ]);
     assert_eq!(
         paths(&ask(&repo, WHY)),
-        ["tests/b.rs", "tests/c.rs", "tests/d.rs"]
+        ["tests/d.rs", "tests/c.rs", "tests/b.rs"]
     );
 }
 
@@ -1243,12 +1370,12 @@ fn the_units_stop_at_three_thousand_bytes_and_a_smaller_one_still_fits() {
     assert_eq!(
         shown(200),
         [
+            "tests/c_stop.rs:6-10",
             "tests/a_stop.rs:1-5",
             "tests/b_stop.rs:1-5",
-            "tests/c_stop.rs:6-10"
         ]
     );
-    assert_eq!(shown(201), ["tests/a_stop.rs:1-5", "tests/b_stop.rs:1-5"]);
+    assert_eq!(shown(201), ["tests/c_stop.rs:6-10", "tests/a_stop.rs:1-5"]);
 }
 
 #[test]
@@ -1617,8 +1744,8 @@ fn a_test_excerpt_keeps_a_complete_multiline_assertion() {
         Source::new(strings(&[
             "#[test]",
             "fn alpha_beta_contract() {",
-            "    let result = run();",
-            "    let want = 12;",
+            "    let result = run(alpha());",
+            "    let want = beta();",
             "    advance();",
             "    advance();",
             "    advance();",
@@ -1638,8 +1765,16 @@ fn a_test_excerpt_keeps_a_complete_multiline_assertion() {
     assert_eq!(selected.len(), 1);
     let (_, first, last) = &selected[0];
     let excerpt = &sources["tests/contract.rs"].lines[first - 1..*last];
-    assert!(excerpt.iter().any(|line| line.contains("let result = run")));
-    assert!(excerpt.iter().any(|line| line.contains("let want = 12")));
+    assert!(
+        excerpt
+            .iter()
+            .any(|line| line.contains("let result = run(alpha())"))
+    );
+    assert!(
+        excerpt
+            .iter()
+            .any(|line| line.contains("let want = beta()"))
+    );
     for required in ["assert_eq!(", "result,", "want,", ");"] {
         assert!(
             excerpt.iter().any(|line| line.trim() == required),

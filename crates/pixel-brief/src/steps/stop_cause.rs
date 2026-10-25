@@ -140,6 +140,10 @@ static TEST_MARK: LazyLock<Regex> = LazyLock::new(|| {
 static STRINGS_AND_COMMENTS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#""(\\.|[^"\\])*"|'(\\.|[^'\\])'|//.*$"#).expect("the mask pattern is a literal")
 });
+static EVIDENCE_STRINGS_AND_COMMENTS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#""(\\.|[^"\\])*"|'(\\.|[^'\\])*'|//.*$|#.*$"#)
+        .expect("the mask pattern is a literal")
+});
 static LITERAL_OPEN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"r#*"|"""|'''|`"#).expect("the literal-open pattern is a literal")
 });
@@ -147,8 +151,6 @@ static CONTROL_FLOW: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(?:return|throw|raise|break|continue)\b")
         .expect("the control-flow pattern is a literal")
 });
-static DIGITS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\d+").expect("the digits pattern is a literal"));
 
 /// A source file: its lines, and the same lines lowercased.
 struct Source {
@@ -192,7 +194,7 @@ struct Window {
     last: usize,
 }
 
-/// A test unit of a file: 1-based inclusive lines, its comment lines included.
+/// A test unit of a file: 1-based inclusive lines, starting at its marker or declaration.
 #[derive(Debug, PartialEq, Eq)]
 struct Unit {
     first: usize,
@@ -395,12 +397,12 @@ fn units(path: &str, lines: &[String]) -> Vec<Unit> {
         let Some(name) = (1..=3).find_map(|group| caps.get(group)) else {
             continue;
         };
-        let first = (0..i)
+        let comment_first = (0..i)
             .rev()
             .take_while(|k| COMMENT_LINE.is_match(&lines[*k]))
             .last()
             .unwrap_or(i);
-        let marked = (first..=i).any(|k| TEST_MARK.is_match(&lines[k]));
+        let marked = (comment_first..=i).any(|k| TEST_MARK.is_match(&lines[k]));
         if !(in_test_file
             || marked
             || name.as_str().starts_with("test_")
@@ -411,7 +413,9 @@ fn units(path: &str, lines: &[String]) -> Vec<Unit> {
         }
         let end = closing_brace(lines, i).unwrap_or_else(|| indented_end(lines, i));
         out.push(Unit {
-            first: first + 1,
+            first: (comment_first..=i)
+                .find(|k| TEST_MARK.is_match(&lines[*k]))
+                .map_or(i + 1, |k| k + 1),
             last: end + 1,
             name: name.as_str().to_string(),
         });
@@ -421,14 +425,45 @@ fn units(path: &str, lines: &[String]) -> Vec<Unit> {
 
 /// How many groups a unit's lines hold, and what they weigh.
 fn unit_score(source: &Source, unit: &Unit, groups: &[Group]) -> (usize, f64) {
-    let lower = &source.lower[unit.first - 1..unit.last];
     let mut held = 0;
     let mut total = 0.0;
     for group in groups {
-        let count: usize = lower.iter().map(|line| group.count_in(line)).sum();
+        let mut count = 0;
+        let mut score = 0.0;
+        for line in unit.first..=unit.last {
+            let text = evidence_text(&source.lines[line - 1]).to_lowercase();
+            let original = &source.lines[line - 1];
+            let matches = group.count_in(&text);
+            if matches == 0 {
+                continue;
+            }
+            count += matches;
+            let name = DECL
+                .captures(original)
+                .and_then(|captures| (1..=3).find_map(|index| captures.get(index)))
+                .map(|name| name.as_str().to_lowercase());
+            let name_matches = name
+                .as_deref()
+                .map_or(0, |name| group.count_in(name))
+                .min(matches);
+            let body_matches = matches - name_matches;
+            let factor = if is_comment(original) {
+                0.05
+            } else if code_like(&text) {
+                2.0
+            } else {
+                0.5
+            };
+            if body_matches > 0 {
+                score += group.weight * (1.0 + (body_matches as f64).ln()) * factor;
+            }
+            if name_matches > 0 {
+                score += group.weight * (1.0 + (name_matches as f64).ln()) * 0.05;
+            }
+        }
         if count > 0 {
             held += 1;
-            total += group.weight * (1.0 + (count as f64).ln());
+            total += score;
         }
     }
     (held, total)
@@ -509,8 +544,8 @@ fn focused_window(
         let end = start + size - 1;
         let score = (start..=end)
             .map(|line| {
-                let text = &source.lower[line - 1];
-                let code = code_like(&source.lines[line - 1]);
+                let text = evidence_text(&source.lines[line - 1]).to_lowercase();
+                let code = code_like(&text);
                 let comment = is_comment(&source.lines[line - 1]);
                 let factor = if code {
                     2.0
@@ -522,11 +557,11 @@ fn focused_window(
                 let words: f64 = groups
                     .iter()
                     .filter_map(|group| {
-                        let count = group.count_in(text);
+                        let count = group.count_in(&text);
                         (count > 0).then(|| group.weight * (1.0 + (count as f64).ln()) * factor)
                     })
                     .sum();
-                words + f64::from(code && CONTROL_FLOW.is_match(text)) * max_group_weight * 2.0
+                words + f64::from(code && CONTROL_FLOW.is_match(&text)) * max_group_weight * 2.0
             })
             .sum::<f64>();
         if score.total_cmp(&best.2).is_gt() {
@@ -541,6 +576,29 @@ fn is_comment(line: &str) -> bool {
     ["//", "#", "*", "/*"]
         .iter()
         .any(|lead| line.starts_with(lead))
+}
+
+/// Remove trailing line comments while keeping quoted literals as evidence.
+fn evidence_text(line: &str) -> String {
+    if is_comment(line) {
+        return line.to_string();
+    }
+    let mut text = String::with_capacity(line.len());
+    let mut copied = 0;
+    for found in EVIDENCE_STRINGS_AND_COMMENTS.find_iter(line) {
+        if found.as_str().starts_with("//") || found.as_str().starts_with('#') {
+            text.push_str(&line[copied..found.start()]);
+            copied = line.len();
+            break;
+        }
+        text.push_str(&line[copied..found.start()]);
+        text.push_str(found.as_str());
+        copied = found.end();
+    }
+    if copied < line.len() {
+        text.push_str(&line[copied..]);
+    }
+    text
 }
 
 fn brace_balance(line: &str) -> i64 {
@@ -583,6 +641,41 @@ fn cost(source: &Source, a: usize, b: usize) -> usize {
         .sum()
 }
 
+/// How much question evidence a bounded span carries per rendered character.
+fn span_density(source: &Source, span: &Span, groups: &[Group]) -> f64 {
+    let (_, first, last) = span;
+    let max_group_weight = groups
+        .iter()
+        .map(|group| group.weight)
+        .reduce(f64::max)
+        .unwrap_or(1.0);
+    let score: f64 = (*first..=*last)
+        .map(|line| {
+            let text = evidence_text(&source.lines[line - 1]).to_lowercase();
+            let original = &source.lines[line - 1];
+            let factor = if code_like(&text) {
+                2.0
+            } else if is_comment(original) {
+                0.05
+            } else {
+                0.5
+            };
+            let words: f64 = groups
+                .iter()
+                .filter_map(|group| {
+                    let count = group.count_in(&text);
+                    (count > 0).then(|| group.weight * (1.0 + (count as f64).ln()) * factor)
+                })
+                .sum();
+            words
+                + f64::from(code_like(&text) && CONTROL_FLOW.is_match(&text))
+                    * max_group_weight
+                    * 2.0
+        })
+        .sum();
+    score / cost(source, *first, *last).max(1) as f64
+}
+
 /// Whether the file's name carries a group word.
 fn named_after(path: &str, groups: &[Group]) -> bool {
     let stem = Path::new(path)
@@ -614,16 +707,19 @@ pub(super) fn run(ctx: &Ctx, out: &mut Outcome) {
     }
     let selected = source_windows(ctx, &sources, &groups);
     let discovery: Vec<Span> = selected.iter().map(|(_, window)| window.clone()).collect();
-    let mut chosen: Vec<Span> = selected.into_iter().map(|(excerpt, _)| excerpt).collect();
-    chosen.extend(small_callers(ctx, &sources, &groups, &discovery));
-    if ASKS_TESTS.is_match(ctx.typed) {
-        chosen.extend(test_units(&sources, &groups));
-    }
+    let mut code: Vec<Span> = selected.into_iter().map(|(excerpt, _)| excerpt).collect();
+    code.extend(small_callers(ctx, &sources, &groups, &discovery));
+    let tests = if ASKS_TESTS.is_match(ctx.typed) {
+        test_units(&sources, &groups)
+    } else {
+        Vec::new()
+    };
+    let mut chosen = evidence_order(code, tests, &sources, &groups);
     if chosen.is_empty() {
         return;
     }
-    chosen.sort();
-    chosen.dedup();
+    let mut seen = BTreeSet::new();
+    chosen.retain(|span| seen.insert(span.clone()));
     out.drops.push(Drop::NotDefinitions);
     out.rescuing = true;
     out.lead.extend(chosen.iter().map(|(path, a, b)| {
@@ -645,6 +741,29 @@ pub(super) fn run(ctx: &Ctx, out: &mut Outcome) {
             body,
         )
     }));
+}
+
+/// Keep the densest executable code first, then complete proof units, then context.
+fn evidence_order(
+    mut code: Vec<Span>,
+    tests: Vec<Span>,
+    sources: &BTreeMap<String, Source>,
+    groups: &[Group],
+) -> Vec<Span> {
+    code.sort_by(|left, right| {
+        span_density(&sources[&right.0], right, groups)
+            .total_cmp(&span_density(&sources[&left.0], left, groups))
+            .then_with(|| left.cmp(right))
+    });
+    let mut ordered = Vec::with_capacity(code.len() + tests.len());
+    if !code.is_empty() {
+        ordered.push(code.remove(0));
+    }
+    ordered.extend(tests);
+    ordered.extend(code);
+    let mut seen = BTreeSet::new();
+    ordered.retain(|span| seen.insert(span.clone()));
+    ordered
 }
 
 /// The non-empty source files of the repository, by path; `None` when the
@@ -736,7 +855,13 @@ fn source_windows(
 fn test_lines(path: &str, lines: &[String]) -> Vec<usize> {
     let mut inside = vec![false; lines.len()];
     for unit in units(path, lines) {
-        inside[unit.first - 1..unit.last].fill(true);
+        let declaration = unit.first - 1;
+        let first = (0..declaration)
+            .rev()
+            .take_while(|line| COMMENT_LINE.is_match(&lines[*line]))
+            .last()
+            .unwrap_or(declaration);
+        inside[first..unit.last].fill(true);
     }
     prefix(inside.into_iter().map(usize::from))
 }
@@ -821,7 +946,11 @@ fn test_units(sources: &BTreeMap<String, Source>, groups: &[Group]) -> Vec<Span>
             }
             let (held, total) = unit_score(source, &unit, groups);
             if held >= MIN_UNIT_GROUPS {
-                scored.push((total * stem * dedicated, path, unit));
+                scored.push((
+                    total * stem * dedicated / unit_cost(source, &unit) as f64,
+                    path,
+                    unit,
+                ));
             }
         }
     }
@@ -837,7 +966,6 @@ fn test_units(sources: &BTreeMap<String, Source>, groups: &[Group]) -> Vec<Span>
     for (_, path, unit) in scored {
         let source = &sources[path];
         let family = family_of(&unit.name);
-        let norm = digits_out(&unit.name);
         let current_file_count = files.get(path).copied().unwrap_or_default();
         let room = if named_after(path, groups) { 2 } else { 1 };
         if current_file_count >= room
@@ -848,9 +976,9 @@ fn test_units(sources: &BTreeMap<String, Source>, groups: &[Group]) -> Vec<Span>
             continue;
         }
         let mut group: Vec<Unit> = Vec::new();
-        if family != norm {
+        if family != unit.name {
             group.extend(units(path, &source.lines).into_iter().filter(|other| {
-                digits_out(&other.name).starts_with(&format!("{family}_"))
+                family_of(&other.name) == family
                     && other.first != unit.first
                     && !out
                         .iter()
@@ -883,7 +1011,6 @@ fn test_units(sources: &BTreeMap<String, Source>, groups: &[Group]) -> Vec<Span>
             out.push((path.to_string(), first, last));
         }
     }
-    out.sort();
     out
 }
 
@@ -895,18 +1022,12 @@ fn unit_cost(source: &Source, unit: &Unit) -> usize {
         .sum()
 }
 
-fn digits_out(name: &str) -> String {
-    DIGITS.replace_all(name, "").into_owned()
-}
-
-/// The first two `_`-separated words of a name with three or more, else the
-/// name; digits do not count (`stop_after_binary_2` is `stop_after`).
+/// The first two `_`-separated components form a test series.
 fn family_of(name: &str) -> String {
-    let norm = digits_out(name);
-    if norm.matches('_').count() >= 2 {
-        norm.split('_').take(2).collect::<Vec<_>>().join("_")
+    if name.matches('_').count() >= 2 {
+        name.split('_').take(2).collect::<Vec<_>>().join("_")
     } else {
-        norm
+        name.to_string()
     }
 }
 
