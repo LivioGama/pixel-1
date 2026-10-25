@@ -59,7 +59,12 @@ pub const GRAPH_DB_FILE: &str = "graph.v2.db";
 /// start.
 /// 16: the `meaning` request, which an older daemon rejects as an unknown
 /// variant.
-pub const PROTOCOL_VERSION: u64 = 16;
+/// 17: a request line may carry `deadline_unix_ms`
+/// (`pixel_proto::REQUEST_DEADLINE_FIELD`), the instant its answer stops
+/// being wanted; the daemon runs nothing for a queued request past it. An
+/// older daemon ignores the member and runs the request to the end, so the
+/// CLI sends it only to a daemon that answered a ping on this version.
+pub const PROTOCOL_VERSION: u64 = 17;
 
 /// Rows a `search` returns when the request names no `limit`.
 pub const SEARCH_DEFAULT_ROWS: usize = 100;

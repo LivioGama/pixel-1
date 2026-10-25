@@ -723,3 +723,53 @@ fn an_antigravity_brief_should_leave_its_feedback_lines_under_the_conversation()
             .all(|line| line["session"] == last["session"])
     );
 }
+
+#[test]
+fn metrics_should_report_the_brief_and_turn_the_hooks_wrote() {
+    let root = indexed("metrics");
+    hook(
+        &root,
+        "prompt-submit",
+        None,
+        &prompt_payload(&root, SESSION),
+        |_| {},
+    );
+    hook(
+        &root,
+        "post-tool-use",
+        None,
+        &tool_payload(
+            &root,
+            SESSION,
+            "Read",
+            &json!({"file_path": root.join("packages/ui/handleError.ts")}),
+        ),
+        |_| {},
+    );
+    hook(&root, "stop", None, &stop_payload(&root, SESSION), |_| {});
+
+    let lines = log_lines(&root);
+    let turn = of_kind(&lines, "turn")[0];
+    let out = pixel_command()
+        .current_dir(&*root)
+        .args(["metrics", "--json", "--metrics=off"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["briefs"]["delivered"], 1, "{report}");
+    assert_eq!(report["turns"]["briefed"], 1);
+    assert_eq!(
+        report["turns"]["zero_call"], 0,
+        "one Read came before the answer"
+    );
+    assert_eq!(
+        report["files"]["injected"].as_u64(),
+        Some(turn["injected"].as_array().unwrap().len() as u64)
+    );
+    assert_eq!(report["files"]["read_or_edited"], 1);
+    assert_eq!(
+        report["files"]["injected_and_read"], 1,
+        "the Read file was injected"
+    );
+}

@@ -131,9 +131,9 @@ fn a_prompt_in_other_forms_of_the_codes_names_should_start_at_the_file_its_plain
 }
 
 #[test]
-fn a_prompt_about_something_else_should_still_get_no_brief() {
-    // The leads rank files once the gate let a prompt through; they never
-    // open the gate.
+fn a_prompt_about_something_else_should_get_no_brief_when_no_lead_reaches_a_file() {
+    // No gate closes it: nothing here names a pancake or the weather, so no
+    // lead reaches a file and there is nothing to say.
     let root = fixture("off-topic");
     for prompt in [
         "give me a pancake recipe for tonight",

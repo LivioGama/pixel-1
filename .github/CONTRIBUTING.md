@@ -7,6 +7,7 @@ without guessing. If you are an agent, treat the "Definition of done"
 checklist as the contract for your pull request.
 
 - Architecture, crate map, wire contract: [ARCHITECTURE.md](../ARCHITECTURE.md)
+- Contracts a caller can rely on (hooks, brief, classify, metrics, config, daemon wire): [specs/](../specs/README.md); `cargo test -p pixel-cli --test cli specs_drift::` holds their command index
 - Security model and vulnerability reporting: [SECURITY.md](SECURITY.md)
 - How we treat each other, and how to report a problem: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 - Where the project is heading, and what it will not do:
@@ -280,11 +281,13 @@ python3 -I scripts/bench/probe-test.py my-probe --live   # opt-in: the agent wit
   contributor needs no private data. A maintainer's local census is an optional second source, `--census-db
   <census.db>`; its prompts are never committed. The PR states the `PROBE ... | KEEP` line `probe-test` prints and
   `report.md`.
-- Shipping: register a validated probe in `crates/pixel-setup/src/bundled_probes.rs` and its explicit shipping
-  allowlist test. Registered probes are embedded in the binary and installed by `pixel setup` into
-  `~/.pixel/plugins/<name>/`; the prompt-submit brief runs it (see ARCHITECTURE.md, "Agent integration").
-  `pixel plugin disable <name>` switches one off, `enable` back on. CI runs `probe-test.py --check-all` on every
-  directory of `probes/`; experimental directories are not automatically installed.
+- Shipping: a validated probe ships as a Rust step in `crates/pixel/src/execution_brief/steps/<name>.rs`, registered
+  by one name in `steps.rs`, and `python3 -I scripts/bench/step-parity.py <name>` shows it covers what the script
+  did (see `.agents/skills/probe/SKILL.md`, step 8). The script stays in `probes/<name>/` as its oracle. The
+  fourteen scripts registered in `crates/pixel-setup/src/bundled_probes.rs` are embedded in the binary and installed
+  by `pixel setup` into `~/.pixel/plugins/<name>/`; the brief skips the installed script of a name that has a step.
+  `pixel plugin disable <name>` switches a probe or a step off, `enable` back on. CI runs `probe-test.py
+  --check-all` on every directory of `probes/`; experimental directories are not automatically installed.
 
 ## Mutation testing
 

@@ -55,7 +55,13 @@ serde_json = "1"
 serde-saphyr = "2.0"
 yaml-edit = { version = "0.3.2", default-features = false }
 regex = "1.13"
+# The workspace-overview brief step reads manifests (execution_brief/steps/).
+toml_edit = "0.25.15"
 ignore = "0.4.33"
+# The config-registry and error-origin brief steps read Python syntax the way
+# `ast` does (same grammar as pixel-graph; execution_brief/steps/).
+tree-sitter = "0.27"
+tree-sitter-python = "0.25"
 libc = "0.2"
 ureq = { version = "3", default-features = false, features = ["json", "rustls"] }
 tar = "0.4"
@@ -65,7 +71,6 @@ xxhash-rust = { workspace = true }
 [dev-dependencies]
 # Tests read `website/data/agents.toml` and the workspace `Cargo.toml`
 # (tests/cli/docs_drift.rs).
-toml_edit = "0.25.15"
 tempfile = "3"
 # The hook guarantees are checked over generated payloads
 # (tests/cli/hook_guarantees_cli.rs, task_hook::tests).

@@ -22,7 +22,11 @@ pub(crate) const DAEMON_AUTO_START_FEATURE: &str = "daemon_auto_start";
 /// Its environment opt-out: `0`, `false` or `off`.
 pub(crate) const DAEMON_AUTO_START_ENV: &str = "PIXEL_DAEMON_AUTO_START";
 
-use pixel_setup::config::{BRIEF_PARTS_KEY, BRIEF_PARTS_MAX};
+use pixel_setup::config::{BRIEF_PARTS_KEY, BRIEF_PARTS_MAX, EDIT_HOOKS_KEY};
+
+/// Environment switch of the edit hooks: `1`, `true` or `on` turns them on.
+/// Unlike the opt-out features they are off unless something says otherwise.
+pub(crate) const EDIT_HOOKS_ENV: &str = "PIXEL_EDIT_HOOKS";
 
 /// The environment overrides and YAML switches exposed in the overview.
 const FEATURES: &[(&str, &str)] = &[
@@ -62,6 +66,25 @@ fn feature_resolution(root: Option<&Path>, key: &str, env: &str) -> (bool, Strin
     (value.unwrap_or(true), source)
 }
 
+/// The edit hooks switch and where it comes from: the environment, the first
+/// layer that sets a boolean, else off.
+fn edit_hooks_resolution(root: Option<&Path>) -> (bool, String) {
+    if let Ok(value) = std::env::var(EDIT_HOOKS_ENV) {
+        return (
+            matches!(value.as_str(), "1" | "true" | "on"),
+            EDIT_HOOKS_ENV.into(),
+        );
+    }
+    let (value, source) = resolved(root, EDIT_HOOKS_KEY);
+    (value.unwrap_or(false), source)
+}
+
+/// Whether the edit hooks run: off unless `edit_hooks` or `PIXEL_EDIT_HOOKS`
+/// turns them on.
+pub fn edit_hooks_on(root: Option<&Path>) -> bool {
+    edit_hooks_resolution(root).0
+}
+
 pub fn ensure_template(root: Option<&Path>) -> Result<PathBuf, String> {
     let directory = if let Some(root) = root {
         root.join(".pixel")
@@ -76,7 +99,7 @@ pub fn ensure_template(root: Option<&Path>) -> Result<PathBuf, String> {
 
 fn validate(path: &Path) -> Result<(), String> {
     let doc = crate::config_file::load(path)?;
-    for (key, _) in FEATURES {
+    for key in FEATURES.iter().map(|(key, _)| *key).chain([EDIT_HOOKS_KEY]) {
         if doc.get(key).is_some_and(|v| !v.is_boolean()) {
             return Err(format!("{}: {key} must be true or false", path.display()));
         }
@@ -171,6 +194,8 @@ pub fn overview(path: &Path) -> Result<(), String> {
         let (enabled, source) = feature_resolution(root.as_deref(), key, env);
         println!("{key}: {enabled} ({source})");
     }
+    let (edit_hooks, source) = edit_hooks_resolution(root.as_deref());
+    println!("{EDIT_HOOKS_KEY}: {edit_hooks} ({source})");
     println!("{BRIEF_PARTS_KEY}: {}", brief_parts(root.as_deref()));
     println!("classify.enabled: {} (global)", classify_enabled()?);
     println!(
@@ -1079,6 +1104,144 @@ pub fn run_remote_key(
     }
 }
 
+/// A flat key of `config.yaml` that `pixel config <key> <value>` writes. Keys
+/// holding a credential (`remote_keys.*`) are not here on purpose: they have
+/// `remote-key`, whose value can come from stdin and is masked in the log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Setting {
+    /// `true` or `false` in the file, `on` or `off` on the command line; the
+    /// environment variable overrides the file.
+    Switch(&'static str),
+    /// A switch that is off unless the file or the environment (`1`, `true`
+    /// or `on`) turns it on.
+    OptIn(&'static str),
+    /// A whole number of hooks, `1..=BRIEF_PARTS_MAX`.
+    BriefParts,
+}
+
+fn setting_of(key: &str) -> Option<Setting> {
+    if key == BRIEF_PARTS_KEY {
+        return Some(Setting::BriefParts);
+    }
+    if key == EDIT_HOOKS_KEY {
+        return Some(Setting::OptIn(EDIT_HOOKS_ENV));
+    }
+    FEATURES
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, env)| Setting::Switch(env))
+}
+
+/// The keys `pixel config <key> <value>` writes.
+fn setting_keys() -> impl Iterator<Item = &'static str> {
+    FEATURES
+        .iter()
+        .map(|(name, _)| *name)
+        .chain([EDIT_HOOKS_KEY, BRIEF_PARTS_KEY])
+}
+
+/// Whether `key` is a setting `pixel config <key> <value>` writes, so its
+/// value may appear in the action log.
+pub(crate) fn is_setting(key: &str) -> bool {
+    setting_of(key).is_some()
+}
+
+/// The value as the file stores it. The message names the key and the rule,
+/// never the value: a mistyped credential must not travel in an error.
+fn parse_setting(key: &str, setting: Setting, raw: &str) -> Result<Value, String> {
+    match setting {
+        Setting::Switch(_) | Setting::OptIn(_) => match raw {
+            "on" | "true" => Ok(json!(true)),
+            "off" | "false" => Ok(json!(false)),
+            _ => Err(format!("{key} takes on or off")),
+        },
+        Setting::BriefParts => raw
+            .parse::<u8>()
+            .ok()
+            .filter(|parts| (1..=BRIEF_PARTS_MAX).contains(parts))
+            .map(|parts| json!(parts))
+            .ok_or_else(|| format!("{key} must be a whole number from 1 to {BRIEF_PARTS_MAX}")),
+    }
+}
+
+fn on_off(on: bool) -> &'static str {
+    if on { "on" } else { "off" }
+}
+
+/// What `value` reads as to a person.
+fn shown(value: &Value) -> String {
+    value
+        .as_bool()
+        .map_or_else(|| value.to_string(), |on| on_off(on).to_owned())
+}
+
+/// The value in force for `key` and where it comes from: the environment
+/// variable, the first layer that sets it, or the default.
+fn effective(root: Option<&Path>, key: &str, setting: Setting) -> (String, String) {
+    match setting {
+        Setting::Switch(env) => {
+            let (on, source) = feature_resolution(root, key, env);
+            (on_off(on).to_owned(), source)
+        }
+        Setting::OptIn(_) => {
+            let (on, source) = edit_hooks_resolution(root);
+            (on_off(on).to_owned(), source)
+        }
+        Setting::BriefParts => {
+            let source = layers(root)
+                .find(|path| read_config_doc(path).is_some_and(|doc| doc.get(key).is_some()))
+                .map_or_else(|| "default".to_owned(), |path| path.display().to_string());
+            (brief_parts(root).to_string(), source)
+        }
+    }
+}
+
+/// `pixel config <key> [<value>] [--global]`: without a value, the value in
+/// force and its source; with one, validate it and write it to the
+/// repository's `config.yaml`, or the global one.
+pub fn run_setting(
+    key: &str,
+    value: Option<&str>,
+    global: bool,
+    path: &Path,
+) -> Result<(), String> {
+    let setting = setting_of(key).ok_or_else(|| {
+        format!(
+            "unknown setting {key:?}; the settings are {} (a credential has `pixel config remote-key`)",
+            setting_keys().collect::<Vec<_>>().join(", ")
+        )
+    })?;
+    let root = crate::discover_root(path).ok();
+    let Some(raw) = value else {
+        let (current, source) = effective(root.as_deref(), key, setting);
+        println!("{key}: {current} — {source}");
+        return Ok(());
+    };
+    let stored = parse_setting(key, setting, raw)?;
+    let target = if global {
+        global_config_path().ok_or("no HOME for the global config")?
+    } else {
+        confined_repo_config(
+            root.as_deref()
+                .ok_or("no repository root here — pass --global or run inside a repo")?,
+        )?
+    };
+    write_doc(&target, |doc| doc[key] = stored.clone())?;
+    let written = shown(&stored);
+    println!("{key}: {written} — wrote {}", target.display());
+    let (current, source) = effective(root.as_deref(), key, setting);
+    if current != written {
+        println!("note: {source} sets {key}: {current} here and wins");
+    }
+    if setting == Setting::BriefParts {
+        println!("note: run `pixel setup` so the registered hooks carry the new count");
+    }
+    if setting == Setting::OptIn(EDIT_HOOKS_ENV) {
+        println!("note: run `pixel setup` so the edit hooks are registered or removed");
+    }
+    Ok(())
+}
+
 /// `pixel config metrics [on|off] [--global]`: without a value, report the
 /// effective setting and the layer that set it; with a value, persist it to
 /// the chosen layer.
@@ -1150,6 +1313,78 @@ fn run_metrics_with(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_the_settings_pixel_writes_are_settings() {
+        assert_eq!(
+            setting_keys().collect::<Vec<_>>(),
+            ["daemon_auto_start", "brief", "edit_hooks", "brief_parts"]
+        );
+        assert_eq!(
+            setting_of("daemon_auto_start"),
+            Some(Setting::Switch("PIXEL_DAEMON_AUTO_START"))
+        );
+        assert_eq!(setting_of("brief"), Some(Setting::Switch("PIXEL_BRIEF")));
+        assert_eq!(
+            setting_of("edit_hooks"),
+            Some(Setting::OptIn("PIXEL_EDIT_HOOKS"))
+        );
+        assert_eq!(setting_of("brief_parts"), Some(Setting::BriefParts));
+        for not_a_setting in ["remote_keys.openai", "classify", "metrics", "", "BRIEF"] {
+            assert_eq!(setting_of(not_a_setting), None, "{not_a_setting}");
+            assert!(!is_setting(not_a_setting));
+        }
+    }
+
+    #[test]
+    fn a_switch_takes_on_off_true_or_false_and_stores_a_boolean() {
+        let switch = Setting::Switch("X");
+        for (raw, stored) in [
+            ("on", true),
+            ("true", true),
+            ("off", false),
+            ("false", false),
+        ] {
+            assert_eq!(
+                parse_setting("brief", switch, raw),
+                Ok(json!(stored)),
+                "{raw}"
+            );
+        }
+        for bad in ["", "yes", "1", "ON", "sk-secret-value"] {
+            let error = parse_setting("brief", switch, bad).unwrap_err();
+            assert_eq!(error, "brief takes on or off");
+            assert!(
+                !error.contains(bad) || bad.is_empty(),
+                "the value is never echoed"
+            );
+        }
+    }
+
+    #[test]
+    fn brief_parts_takes_one_to_the_maximum_and_stores_a_number() {
+        let parts = Setting::BriefParts;
+        for count in 1..=BRIEF_PARTS_MAX {
+            assert_eq!(
+                parse_setting("brief_parts", parts, &count.to_string()),
+                Ok(json!(count))
+            );
+        }
+        for bad in ["0", "9", "256", "-1", "2.5", "many", ""] {
+            assert_eq!(
+                parse_setting("brief_parts", parts, bad),
+                Err("brief_parts must be a whole number from 1 to 8".to_owned()),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stored_value_reads_back_the_way_it_was_typed() {
+        assert_eq!(shown(&json!(true)), "on");
+        assert_eq!(shown(&json!(false)), "off");
+        assert_eq!(shown(&json!(5)), "5");
+    }
+
     #[test]
     fn the_header_hint_matches_the_input_mode() {
         let _lock = crate::ENV_LOCK.lock().unwrap();
@@ -1934,6 +2169,53 @@ mod tests {
             assert!(!err.contains("secret-invalid"));
             assert_eq!(std::fs::read_to_string(path).unwrap(), contents);
         }
+    }
+
+    #[test]
+    fn edit_hooks_should_be_off_until_the_environment_or_a_layer_turns_them_on() {
+        let _lock = crate::ENV_LOCK.lock().unwrap();
+        let home = HomeGuard::set();
+        let saved = home_env();
+        point_home(&home.0);
+        let repo = home.0.join("repo");
+        let global = home.0.join(".pixel/config.yaml");
+        let local = repo.join(".pixel/config.yaml");
+        let previous = std::env::var_os(EDIT_HOOKS_ENV);
+        // SAFETY: ENV_LOCK is held; restored below.
+        unsafe { std::env::remove_var(EDIT_HOOKS_ENV) };
+        write(&global, "{}");
+        write(&local, "{}");
+        assert_eq!(
+            edit_hooks_resolution(Some(&repo)),
+            (false, "default".into())
+        );
+        run_setting("edit_hooks", Some("on"), true, &repo).unwrap();
+        assert_eq!(
+            edit_hooks_resolution(Some(&repo)),
+            (true, global.display().to_string())
+        );
+        write(&local, "edit_hooks: false\n");
+        assert!(!edit_hooks_on(Some(&repo)), "the nearest layer wins");
+        for (value, on) in [
+            ("1", true),
+            ("on", true),
+            ("0", false),
+            ("off", false),
+            ("yes", false),
+        ] {
+            // SAFETY: ENV_LOCK is held; restored below.
+            unsafe { std::env::set_var(EDIT_HOOKS_ENV, value) };
+            assert_eq!(edit_hooks_on(Some(&repo)), on, "{value}");
+        }
+        assert!(run_setting("edit_hooks", Some("maybe"), true, &repo).is_err());
+        // SAFETY: ENV_LOCK is held.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var(EDIT_HOOKS_ENV, value),
+                None => std::env::remove_var(EDIT_HOOKS_ENV),
+            }
+        }
+        restore_home(saved);
     }
 
     #[test]

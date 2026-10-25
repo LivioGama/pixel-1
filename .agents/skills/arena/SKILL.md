@@ -160,3 +160,7 @@ nowhere else. Keep a prompt's contract intact when adapting it.
    `What constraints did the commit that introduced the execution brief record, and which files changed with it?`
 8. `architecture` — explain ownership boundaries and source handoffs between modules.
    `Which modules own retrieval, rendering, and host context, and where are the handoffs between them?`
+
+## Offline test
+
+`python3 .agents/skills/arena/offline-protocol-test.py` checks the hook payload, the receipt built from a fixture rollout and `abort` (including its refusal of a path-shaped case name) with a fake `herdr`: no model, no Herdr, no login. CI runs it with the other script contracts.

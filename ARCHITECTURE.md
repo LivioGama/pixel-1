@@ -8,6 +8,8 @@ should read before touching more than one crate.
 For what Pixel does and why, read `README.md`. For per-turn project rules,
 read `AGENTS.md`. For the actors, trust boundaries and threats across these
 crates, read [docs/threat-model.md](docs/threat-model.md).
+For what callers can rely on (hooks, the brief, classify, metrics, config,
+the daemon wire), read the contracts in [specs/](specs/README.md).
 
 ## One-screen summary
 
@@ -38,11 +40,11 @@ MCP server. `pixel setup` registers no MCP server with any agent.
 
 | Crate | Role | Depends on (pixel crates) |
 | --- | --- | --- |
-| `pixel-cli` (bin `pixel`, in `crates/pixel`) | Command-line surface. Parses argv with clap, talks to the daemon or runs the service in-process, prints text or JSON. Also hosts the hook entry point under `run-hook` (`task-event`, `metrics`). | every library crate except `pixel-context` (reached through the daemon), `pixel-ultraflow`, `pixel-session` (reached through the daemon and the ranker), `pixel-bench` and the imported `mvp-store` and `mvp-index` (of the imported crates it reads mvp-model only, for the brief's French prompts: see the dependency rule below) |
+| `pixel-cli` (bin `pixel`, in `crates/pixel`) | Command-line surface. Parses argv with clap, talks to the daemon or runs the service in-process, prints text or JSON. Also hosts the hook entry point under `run-hook` (`task-event`, `metrics`). | every library crate except `pixel-context` (reached through the daemon), `pixel-ultraflow`, `pixel-session` (reached through the daemon and the ranker), `pixel-bench` and the imported `mvp-store` (of the imported crates it reads mvp-model only, for the brief's French prompts: see the dependency rule below) |
 | `pixel-proto` | The shared contract crate: `Envelope`, `PixelError` and `ErrorCode`, `Epistemics`, `SnapshotInfo`, `Budget`, `Warning`, and the `Op` request enum. No I/O, no business logic. Every other crate that speaks the wire format depends on it, and it depends on nothing internal. | none |
 | `pixel-daemon` | Transport-agnostic `Service` (`api.rs`) and the Unix-socket NDJSON daemon with filesystem watching (`daemon.rs`). Dispatches each `Op` to the right library, attaches snapshot and epistemics metadata, and is the one place a retrieval envelope is built. Also hosts the recall daemon service. | index, graph, context, rank, proto, ops, facts, session, recall, git |
 | `pixel-index` | Sparse n-gram (trigram) text index: gram extraction, window weighting, posting-list algebra, git-anchored base and delta shards, working-tree overlay, query planner, verification, and the `gitsync` helpers that read HEAD, branch, and porcelain status. | git |
-| `pixel-graph` | Code graph: tree-sitter extraction of symbols, imports, and call sites per file; import resolution; tiered call resolution with an epistemic envelope; and the analyses `impact`, `trace`, `process`, `cluster`, `changes`, `targets`. `store` owns the SQLite schema. `mvp_adapter` reads the imported pixel-mvp index (`refresh` brings it up to date under a state directory, through git) and returns what its rules decide at each Rust site in this graph's rows: proven calls as `exact` edges, references as `probable`, the rest as `unresolved_calls` rows, and each Rust import's resolved file, on this graph's own symbols (rows with no symbol here, Rust test code, are dropped and counted); the Rust source switch, on by default for a Cargo crate, writes them in ("Indexes and freshness"). `mvp_adapter::ruby` pairs pixel-mvp's Ruby sites with this graph's (kind, file, line and the name written; then, within one enclosing symbol, in line order) and plans the hybrid of ADR-0037 there: pixel-mvp's targets where it resolves a site, this graph's own edge where it abstains or has no such site. `shadow` builds this graph and the adapter's rows in a scratch directory and counts what each links alone (`pixel graph-shadow`); `shadow::ruby` counts the Ruby merge instead: the edges both hold, this graph's kept and replaced, pixel-mvp's added, for calls, routes, associations and other references (`pixel graph-shadow --lang ruby`). | git, index, mvp-index, mvp-model, mvp-store |
+| `pixel-graph` | Code graph: tree-sitter extraction of symbols, imports, and call sites per file; import resolution; tiered call resolution with an epistemic envelope; and the analyses `impact`, `trace`, `process`, `cluster`, `changes`, `targets`. `store` owns the SQLite schema. `mvp_index` is pixel-mvp's indexer for Ruby and Rust, owned here like `mvp-model` (`src/mvp_index/ORIGIN.md`): `tree` scans the work tree through git (tracked and untracked files, the commit and the dirty flag a generation names), `link::plan` diffs it against the stored generation, `extract` parses the planned files with tree-sitter into symbols and edges, and `link::link` decides every site of the generation again under each language's rules: an edge only where the rule proves its target, every other site kept unresolved. It writes nothing; its caller hands the rows to `mvp-store`. Its `git_index` (pixel-mvp's copy of git's index, ADR-0039 there) is placed by `mvp_adapter`'s refresh under `.pixel/.pixel-mvp/` (`base` `.pixel`, as `Writer::open` gets it), and the scan reads its stat cache (`scan_discovered_in`); git's own index is never written. It spawns `git` itself, outside `pixel-git`'s `GitRunner`, through its own `bounded` module: every command is killed after `GIT_TIMEOUT` (120 s) or once its stdout passes `GIT_MAX_OUTPUT` (64 MiB), the same bounds as `GitRunner`'s default timeout and enumeration cap, and the error names the command and the bound it hit. `mvp_adapter` runs it, and reads the imported pixel-mvp index (`refresh` brings it up to date under a state directory, through git) and returns what its rules decide at each Rust site in this graph's rows: proven calls as `exact` edges, references as `probable`, the rest as `unresolved_calls` rows, and each Rust import's resolved file, on this graph's own symbols (rows with no symbol here, Rust test code, are dropped and counted); the Rust source switch, on by default for a Cargo crate, writes them in ("Indexes and freshness"). `mvp_adapter::ruby` pairs pixel-mvp's Ruby sites with this graph's (kind, file, line and the name written; then, within one enclosing symbol, in line order) and plans the hybrid of ADR-0037 there: pixel-mvp's targets where it resolves a site, this graph's own edge where it abstains or has no such site. `shadow` builds this graph and the adapter's rows in a scratch directory and counts what each links alone (`pixel graph-shadow`); `shadow::ruby` counts the Ruby merge instead: the edges both hold, this graph's kept and replaced, pixel-mvp's added, for calls, routes, associations and other references (`pixel graph-shadow --lang ruby`). | git, index, mvp-model, mvp-store |
 | `pixel-facts` | History-wide fact and diff ingest, search, lifecycle, and rescue discovery. Owns `history.db`: commit metadata, diff text, and contentless FTS5 trigram indexes over the diffs and paths. Demand-driven: the daemon never ingests at startup, and `status` and `doctor` never create the db — the first history query runs a bounded catch-up (`PIXEL_FACTS_QUERY_BUDGET_MS`, default 3 s) and spawns the low-priority keep-fresh loop that never blocks queries. The daemon `history`, `dig-history` and `lifecycle` ops take `read_only: true` (protocol 15), under which an absent db answers `unavailable` and a stale one answers from existing rows — ingest and catch-up are skipped; the prompt hook sends only this form. Bounded: diff text is kept for the last 365 days (`PIXEL_HISTORY_WINDOW_DAYS`, `0` for all) within 256 MiB of used pages (`PIXEL_HISTORY_BUDGET_MB`), newest first; older diffs are evicted, metadata never is. `build-index --history` remains the explicit full build. Backs `excavate`, `lifecycle`, `history-search` and `rescue` discovery (`resolve` is the graph's concept index). | git |
 | `pixel-rank` | Fusion core for `targets` and ranked `search`: task text and signal inputs in, closed prioritized P0/P1/P2 file list out. The scoring is pure; `compute_signals` gathers the activity channel itself (git log churn when facts have none, and a failed or capped scan is reported as unavailable rather than as an empty map) and takes the session and error-sink channels from its caller — the daemon feeds neither of those. Also hosts `regions`: the pure symbol-level regions analysis for `scope-task --regions` (P0 symbols + call/import edges in, regions manifest out — line ranges, conservative conflict pairs, merge-order layers, shared files). | graph, git, session |
 | `pixel-context` | Semantic compression of code-context items: layered renderings that fit a token budget instead of raw source dumps. | none |
@@ -58,9 +60,8 @@ MCP server. `pixel setup` registers no MCP server with any agent.
 | `pixel-bench` | Criterion and opt-in gungraun benches (wire, cosine, sparse grams), plus a real-source corpus builder (latency, NDCG relevance). Not shipped. | index (dev: daemon, graph, proto, recall) |
 | `mvp-model` | Owned here, originally copied from pixel-mvp at a recorded commit (`crates/mvp-model/ORIGIN.md`, ADR-0035 there): the row types of pixel-mvp's index (files, symbols, edges with a target or none, provenance) and the `Graph` read trait. Pure: no I/O, enforced by its own `clippy.toml`. Sources and tests are maintained here; see `docs/mvp-handover.md`. | none |
 | `mvp-store` | Owned here like `mvp-model`: pixel-mvp's graph store, one SQLite file (`graph.db`) in a `.pixel-mvp/` state directory under the root it is given, with one writer behind a lock, one generation published per transaction, and a damaged or foreign file refused and rebuilt. `pixel-graph`'s `mvp_adapter` refreshes and reads it. | mvp-model |
-| `mvp-index` | Owned here like `mvp-model`: pixel-mvp's indexer for Ruby and Rust. `tree` scans the work tree through git (tracked and untracked files, the commit and the dirty flag a generation names), `link::plan` diffs it against the stored generation, `extract` parses the planned files with tree-sitter into symbols and edges, and `link::link` decides every site of the generation again under each language's rules: an edge only where the rule proves its target, every other site kept unresolved. It writes nothing; its caller hands the rows to `mvp-store`. Its `git_index` (pixel-mvp's copy of git's index, ADR-0039 there) is placed by `mvp_adapter`'s refresh under `.pixel/.pixel-mvp/` (`base` `.pixel`, as `Writer::open` gets it), and the scan reads its stat cache (`scan_discovered_in`); git's own index is never written. It spawns `git` itself, outside `pixel-git`'s `GitRunner`, through its own `bounded` module: every command is killed after `GIT_TIMEOUT` (120 s) or once its stdout passes `GIT_MAX_OUTPUT` (64 MiB), the same bounds as `GitRunner`'s default timeout and enumeration cap, and the error names the command and the bound it hit. `pixel-graph`'s `mvp_adapter` runs it. | mvp-model |
 
-Dependency rule: `pixel-proto` and `pixel-git` are leaves (so are `pixel-context` and `pixel-release`; `pixel-session`, `pixel-actionlog` and `pixel-plugin` depend on `pixel-git` only). The owned `mvp-*` foundations depend on each other and on third-party crates only, never on a `pixel-*` crate, preserving an independent index boundary; `pixel-graph` depends on them for the index (through `mvp_adapter`), and `pixel-cli` on `mvp-model` alone for the French-prompt rules and the plain-word terms of the brief (through `execution_brief/french.rs` and `execution_brief/words.rs`); `crates/pixel/tests/cli/vendored_boundary.rs` names both readers and what each may read. `crates/mvp-lexicon/` is data, not a crate: pixel-mvp's French lexicon (`fr-en.tsv`), owned here with its provenance in `ORIGIN.md`, compiled into the brief. Its `generate.py` maintains the lemma data; CI
+Dependency rule: `pixel-proto` and `pixel-git` are leaves (so are `pixel-context` and `pixel-release`; `pixel-session`, `pixel-actionlog` and `pixel-plugin` depend on `pixel-git` only). The owned `mvp-*` foundations depend on each other and on third-party crates only, never on a `pixel-*` crate, preserving an independent index boundary; `pixel-graph` depends on them for the index and holds pixel-mvp's indexer as its own `mvp_index` module (both read through `mvp_adapter`), and `pixel-cli` on `mvp-model` alone for the French-prompt rules and the plain-word terms of the brief (through `execution_brief/french.rs` and `execution_brief/words.rs`); `crates/pixel/tests/cli/vendored_boundary.rs` names both readers and what each may read. `crates/mvp-lexicon/` is data, not a crate: pixel-mvp's French lexicon (`fr-en.tsv`), owned here with its provenance in `ORIGIN.md`, compiled into the brief. Its `generate.py` maintains the lemma data; CI
 reproduces the TSV with `test_generate.py` without the experimental checkout. `pixel-daemon` is
 the integration point and is the only library crate allowed to depend on
 almost everything. The CLI depends on the daemon plus whatever it needs for
@@ -82,6 +83,7 @@ ARCHITECTURE, CONTRIBUTING, `docs/manual-setup.md`, the site's `website/content/
 | `pixel search-like-rg` | Native-output literal file search for automatic routing; unsupported inputs execute the original rg/grep command without modification |
 | `pixel run-recipe` | Compile and execute one bounded deterministic retrieval recipe |
 | `pixel search-meaning` | Semantic code search: embed a natural-language question ("how is authentication handled?") and rank files by fusing semantic and BM25 lexical ranks over symbol chunks (tree-sitter symbols with their doc comments, windows for unparsed files); tests, configuration/data and docs are weighted below code unless the question names them. |
+| `pixel search-history` | Search commit messages, paths and diffs through the history index (`pixel-facts`, the `history` op): `--facet message\|path\|diff\|all`, `--limit` (default and ceiling 200), `--json` for the ranked `candidates` (abbreviated oid, date, subject, kind, path, snippet) with the index state. The first query builds the index (`history.db`); `--read-only` answers from it as it stands and exits 1 with `facts index absent or not built` instead of creating it. The `pixel-git` plugin repository also publishes this word, but the core builds it in |
 | `pixel scope-task` | Sniper target list: task description in, closed prioritized file list out (P0 = start here, P1 = likely, P2 = droppable). `--read-only` instead returns a typed deterministic fact envelope only from a compatible running daemon; it never starts a daemon, builds/refreshes indexes, or writes the targets manifest. `--regions` also writes `.pixel/regions.json` beside `targets.json`: symbol line ranges + context reference, conservative conflict pairs with reasons, merge-order layers from the condensed call graph, and declared shared files — evidence for orchestration, never an action recommendation. |
 | `pixel brief` | Print the bounded `[PIXEL:BRIEF]` evidence context for a code-related prompt in an indexed repository; optional `[path]` selects the repository, and no applicable brief prints nothing. |
 | `pixel execution-brief` | Build a task-specific ordered retrieval route from scope-task evidence: one populated first command, one retry for an empty or irrelevant result, a bounded native fallback, a maximum 40-line read, and minimal validation. |
@@ -107,9 +109,10 @@ ARCHITECTURE, CONTRIBUTING, `docs/manual-setup.md`, the site's `website/content/
 | `pixel status` | Index + graph freshness status |
 | `pixel coverage` | Per-language index coverage: files on disk vs files indexed, with unrecognized extensions surfaced — the "what did the index miss?" answer |
 | `pixel audit` | What an agent reads to learn what the largest source files contain: each whole file against its `list-signatures` outline in tokens (bytes / 4, floored), the total and the per-file median, files changed since indexing or with no signatures left out and counted, then per-language coverage. Builds the graph on a first run only; local, read-only, sends nothing |
+| `pixel metrics` | What the prompt-submit briefs did, counted from `.pixel/brief-decisions.jsonl` and `.pixel/brief-feedback.jsonl` over `--since` (`30m`, `24h` default, `7d`, `all`): briefs delivered (bytes > 0) and declined by gate, briefed and unbriefed turns with their zero-call rate and calls per turn, and the files injected against the files the agent then read or edited (pooled precision and recall). Local and read-only: it creates no file and estimates no tokens or time. `--json` carries `epistemics` (`lower_bound` when a log holds exactly its line cap and may have dropped lines of the window; `basis` names both logs) and `snapshot` (log sizes and lines in the window); a rate with nothing to divide by is `null` |
 | `pixel prepare-repo` | Make a repository ready for agent work: index, graph, and warm daemon |
 | `pixel daemon` | Manage the per-root background daemon |
-| `pixel classify` | Zero-shot decision over a bounded label set. Engines: `remote` (default; an OpenAI-compatible chat completion — `--remote-preset openrouter\|ollama\|local\|deepseek\|opencode-go\|openai\|jev\|clef-ollama\|clef-cloudflare` picks the endpoint and key variable, `--remote-model` the model; probabilities are verbalized, renormalized to sum 1; `openai` instead speaks OpenAI's `/v1/decisions` wire (gpt-6-luna: a choice question built from labels and criteria, `answers[0].probabilities` are renormalized into the distribution); `jev` instead serves TypeSafe's hosted Jev decision model over its `/v1/systemone` wire with native calibrated probabilities, disclosed in `snapshot.basis`; `clef-ollama` and `clef-cloudflare` (`decide_clef.rs`) serve Cloudflare's Clef-flash decision model over the same typed wire — through Ollama's `/v1/systemone` (`http://127.0.0.1:11434`, model `clef-flash`, no key locally, `OLLAMA_API_KEY` for a remote host) or Workers AI's REST `ai/run/@cf/cloudflare/<model>` (`CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_AUTH_TOKEN`, account from `CLOUDFLARE_ACCOUNT_ID` or a stored base ending `/accounts/<id>`), with `snapshot.provider` naming the preset and the basis disclosed) or `ollaya` (`--engine ollaya --ollaya-url …`: a local Ollaya decision daemon's native typed-choice readout, TypeSafe-compatible `/v1/systemone`, with calibrated confidence disclosed in the snapshot). Remote keys resolve in disclosure order: the preset's env var, then `pixel config remote-key <preset>`, then an Infisical project when `INFISICAL_TOKEN` and `PIXEL_INFISICAL_PROJECT_ID` are set (self-hosted via `PIXEL_INFISICAL_URL`; read once per invocation, never stored in the Pixel config). Without `--engine` the stored preference decides (`pixel config classify-engine local\|remote\|jev\|clef-ollama\|clef-cloudflare\|auto`, or `pixel config remote-preset <preset> [--model --base]` for the provider, model and endpoint; `pixel setup` proposes Local/Remote/OpenAI/Jev/Clef-flash with each option's accuracy — OpenAI takes the platform key and runs the Decisions wire; Jev takes an OpenCode Go or TypeSafe key and offers that source's model pair; Clef-flash asks for an Ollama or a Cloudflare host), probing the local daemon and falling back to remote. Model-engine output discloses `snapshot.deterministic=false` and `snapshot.provider`; a `--history` accept instead names the verified-history tier with `snapshot.deterministic=true` and no provider, since a verified match is not a model output. `--context` keeps shared framing out of the state. State, context and criteria are capped separately with disclosure. Without `--label`, the local engine answers the default question battery (Ollaya's `triage` preset: `choice`/`score`/`noul` typed answers) instead of a single decision — the remote engine still requires labels. No pixel daemon; `--jsonl` serves one decision per stdin line. `--task-intent` judges the text with the built-in coding-task labels (bugfix, feature, refactor, investigate, question, review, ops) and adds the fitting pixel ops (`next:` / `next_ops`); `--if-warm` answers only from a local engine already listening — never starts it, never falls back to remote — and otherwise exits 1 with empty stdout. `--debug` asks every configured engine (local, the remote chat preset and Jev) the same labeled spec in parallel and reports each one's probabilities or its error row; `--remote-model` and `PIXEL_REMOTE_*` reach only the selected preset's lane, so a Jev lane beside another preset resolves Jev's own key, base and model. The legacy/manual Claude prompt hook asks the same `--task-intent` question itself (local daemon warm, `classify.enabled` on, 300 ms cap) and adds the verdict to the `[PIXEL:TASK_RUNTIME v1]` packet as a classifier claim |
+| `pixel classify` | Zero-shot decision over a bounded label set. Engines: `remote` (an OpenAI-compatible chat completion — `--remote-preset openrouter\|ollama\|local\|deepseek\|opencode-go\|openai\|jev\|clef-ollama\|clef-cloudflare` picks the endpoint and key variable, `--remote-model` the model; probabilities are verbalized, renormalized to sum 1; `openai` instead speaks OpenAI's `/v1/decisions` wire (gpt-6-luna: a choice question built from labels and criteria, `answers[0].probabilities` are renormalized into the distribution); `jev` instead serves TypeSafe's hosted Jev decision model over its `/v1/systemone` wire with native calibrated probabilities, disclosed in `snapshot.basis`; `clef-ollama` and `clef-cloudflare` (`decide_clef.rs`) serve Cloudflare's Clef-flash decision model over the same typed wire — through Ollama's `/v1/systemone` (`http://127.0.0.1:11434`, model `clef-flash`, no key locally, `OLLAMA_API_KEY` for a remote host) or Workers AI's REST `ai/run/@cf/cloudflare/<model>` (`CLOUDFLARE_API_TOKEN` or `CLOUDFLARE_AUTH_TOKEN`, account from `CLOUDFLARE_ACCOUNT_ID` or a stored base ending `/accounts/<id>`), with `snapshot.provider` naming the preset and the basis disclosed) or `ollaya` (`--engine ollaya --ollaya-url …`: a local Ollaya decision daemon's native typed-choice readout, TypeSafe-compatible `/v1/systemone`, with calibrated confidence disclosed in the snapshot). Remote keys resolve in disclosure order: the preset's env var, then `pixel config remote-key <preset>`, then an Infisical project when `INFISICAL_TOKEN` and `PIXEL_INFISICAL_PROJECT_ID` are set (self-hosted via `PIXEL_INFISICAL_URL`; read once per invocation, never stored in the Pixel config). Without `--engine` the stored preference decides (`pixel config classify-engine local\|remote\|jev\|clef-ollama\|clef-cloudflare\|auto`, or `pixel config remote-preset <preset> [--model --base]` for the provider, model and endpoint; `pixel setup` proposes Local/Remote/OpenAI/Jev/Clef-flash with each option's accuracy — OpenAI takes the platform key and runs the Decisions wire; Jev takes an OpenCode Go or TypeSafe key and offers that source's model pair; Clef-flash asks for an Ollama or a Cloudflare host), probing the local daemon and falling back to remote. Model-engine output discloses `snapshot.deterministic=false` and `snapshot.provider`; a `--history` accept instead names the verified-history tier with `snapshot.deterministic=true` and no provider, since a verified match is not a model output. `--context` keeps shared framing out of the state. State, context and criteria are capped separately with disclosure. Without `--label`, the local engine answers the default question battery (Ollaya's `triage` preset: `choice`/`score`/`noul` typed answers) instead of a single decision — the remote engine still requires labels. No pixel daemon; `--jsonl` serves one decision per stdin line. `--task-intent` judges the text with the built-in coding-task labels (bugfix, feature, refactor, investigate, question, review, ops) and adds the fitting pixel ops (`next:` / `next_ops`); `--if-warm` answers only from a local engine already listening — never starts it, never falls back to remote — and otherwise exits 1 with empty stdout. `--debug` asks every configured engine (local, the remote chat preset and Jev) the same labeled spec in parallel and reports each one's probabilities or its error row; `--remote-model` and `PIXEL_REMOTE_*` reach only the selected preset's lane, so a Jev lane beside another preset resolves Jev's own key, base and model. The legacy/manual Claude prompt hook asks the same `--task-intent` question itself (local daemon warm, `classify.enabled` on, 300 ms cap) and adds the verdict to the `[PIXEL:TASK_RUNTIME v1]` packet as a classifier claim |
 | `pixel classify-eval` | Offline go/no-go evaluation of the verified-history retrieval tier against frozen baselines. Reports per-label precision/recall, macro scores, confusion matrix, accepted-coverage vs error curves with Wilson confidence intervals, and system metrics (fallback rate, model calls avoided, measured tier and modeled end-to-end latency, storage, error rate). The evaluation never calls a model, so the fallback path is modeled from the `--model-error-rate`/`--model-latency-ms` assumptions and disclosed as such in the report's `epistemics`/`snapshot` envelope. A pre-registered error bound and minimum useful coverage determine the verdict, and a tier that meets those bounds is still held to no-go when the strongest frozen baseline already answers with lower error at equal or better coverage |
 | `pixel classify-history` | Manage the verified-history store: `list`, `add`, `remove`, `correct`, `clear`. Only human/independently verified labels are stored; model predictions cannot self-certify |
 | `pixel review-gate` | Deterministic pre-review: `what-changed` plus the mechanical rules — credential-shaped added lines, and changed symbols whose callers were not themselves changed — each finding carrying its witness; the caps it fired ride the epistemics envelope |
@@ -120,8 +123,8 @@ ARCHITECTURE, CONTRIBUTING, `docs/manual-setup.md`, the site's `website/content/
 | `pixel check-release` | Check that a release tag is consistent with the tree before anything is built or published: crates/pixel/Cargo.toml carries the version, Cargo.lock is fresh for every workspace member, CHANGELOG.md has the `## [x.y.z]` heading and an empty Unreleased section. |
 | `pixel self-update` | Rebuild the binary, stop the daemon, copy the new binary to the install path (staged beside it, checked for length and an ELF/Mach-O header, fsynced, renamed over it, then the directory fsynced; a symlinked install path is refused), and optionally restart the daemon. |
 | `pixel doctor` | Health check: install state, daemon, index/graph/facts freshness |
-| `pixel run-hook` | Hook entry points `task-event` and `metrics`, invoked by Claude Code, Codex, Devin, Gemini CLI and Antigravity registrations; a verb it does not know (one an earlier release registered) prints an error on stderr and exits 0 |
-| `pixel config` | Show effective settings and their sources; `setup` offers guided terminal configuration (also offered on interactive global install); `classify on\|off` controls the global classify kill switch (disabled by default); `classify-engine` stores the engine preference (`local\|remote\|jev\|clef-ollama\|clef-cloudflare\|auto`), `remote-preset <preset> [--model --base]` the provider it runs, `remote-key <preset>` its key. Global `~/.pixel/config.yaml`, repository `.pixel/config.yaml`; YAML only. |
+| `pixel run-hook` | Hook entry points `task-event`, `metrics` and, only when `edit_hooks` is on, `edit-event`, invoked by Claude Code, Codex, Devin, Gemini CLI and Antigravity registrations (`edit-event`: Claude Code, Codex and Devin); a verb it does not know (one an earlier release registered) prints an error on stderr and exits 0 |
+| `pixel config` | Show effective settings and their sources; `setup` offers guided terminal configuration (also offered on interactive global install); `classify on\|off` controls the global classify kill switch (disabled by default); `classify-engine` stores the engine preference (`local\|remote\|jev\|clef-ollama\|clef-cloudflare\|auto`), `remote-preset <preset> [--model --base]` the provider it runs, `remote-key <preset>` its key. Global `~/.pixel/config.yaml`, repository `.pixel/config.yaml`; YAML only. `pixel config <key> [<value>] [--global]` reads or writes one of the flat settings `daemon_auto_start`, `brief`, `edit_hooks` (`on\|off`, stored as a YAML boolean; `edit_hooks` is the one that is off unless set, or `PIXEL_EDIT_HOOKS=1`) and `brief_parts` (`1` to `BRIEF_PARTS_MAX`, stored as a number) in the repository's `.pixel/config.yaml` (or the global one with `--global`); the value is validated before anything is written, a key that is not a setting (a credential key such as `remote_keys.openai` among them) is refused with the list of settings, and in that case `logged_args` writes the value as `<redacted>` in the action log. |
 | `pixel task-state` | Begin, contract, prepare, verify, review, finish, status, events, route, replay, evaluate, cancel and recover a durable task; show retains the Claude packet interface |
 | `pixel plan` | Deterministic todo list generation from code analysis; emits blocking verification gates (auth session, env keys, provider keys, real DB state) detected in the plan's file set; persists findings in `.pixel/plan.json` so `--status`/`--done N`/`--undone N`/`--prune` track execution state across re-plans without the daemon |
 | `pixel prompts` | Read the central per-user prompt store (`~/.local/share/pixel/prompts/<project-id>.jsonl`, one file per project, project-id the xxh3 of the canonical root) grouped by project: the root, the record count and the last `--limit` decisions; `--json` emits the grouping as a structure |
@@ -141,11 +144,12 @@ Per repository, under `.pixel/` (git-ignored):
 | `.pixel-mvp/` (`graph.db` + journals, `index.lock`, `.gitignore`, `checked`, `git-index.<key>`) | `mvp-store`, through `pixel-graph`'s `mvp_adapter` | pixel-mvp's index of the Rust and Ruby files, written when the graph's root holds a `Cargo.toml` and the Rust source switch is not `PIXEL_GRAPH_SOURCE_RUST=v1`, or when `PIXEL_GRAPH_SOURCE_RUBY=hybrid` (see "Indexes and freshness"), and refreshed by every graph build and update; rebuildable, one writer at a time behind `index.lock`, a damaged or foreign `graph.db` rebuilt. `checked` stamps the files a whole-file check passed (`mvp_store::checked`): readers skip that check while the stamp holds, the writer only while the check behind it is under a day old (`TRUSTED_FOR`), and a failed run forgets it. Opened only after `pixel_git::sidecar::check`. |
 | `history.db` (+ `-wal`, `-shm`, `history.db.lock`) | `pixel-facts` | SQLite: commit facts, diff text, lifecycle, FTS5 trigram indexes. Populated by `pixel build-index --history` or the daemon ingest thread on the first history query; capped by the window and budget above, with `auto_vacuum = INCREMENTAL` so an eviction shrinks the file. Schema version `FACTS_SCHEMA_VERSION` (3) in `PRAGMA user_version`: another version is rebuilt, except 2 (`UPGRADES_IN_PLACE_FROM`), whose dates are repaired in place. |
 | `code-vectors/` (`manifest.json`, `seg-*.vec`, `lock`) | `pixel-recall` | `search-meaning` chunk vectors, keyed by the xxh3-128 hash of the chunk text seeded with the model id, embedder revision and `CHUNKER_VERSION`; stored as the model's `f32`s. Written only when the search root carries `base.shard` and is not `$HOME`, never by the daemon's semantic fallback. `flock` on `lock` (shared to read, exclusive to write), segments immutable, the manifest replaced by rename; rewritten with the live rows once unreachable ones exceed a quarter of them. |
-| `actions.jsonl` | `pixel-actionlog` | One line per invocation, with the route and phase timings of each request it served (`serve`). Each writer checks the size when it starts and every `ROTATE_CHECK_EVERY` (50) events after: past `MAX_LOG_BYTES` (5 MiB) the file is replaced by its last `MAX_KEPT_LINES` (5 000) lines. |
-| `brief-decisions.jsonl` | CLI `brief` (`execution_brief/decision_log.rs`) | One JSON line per prompt the prompt-submit brief judged, or declined for being about nothing: time, signal (`strong`, `weak`, `prose`), gate (`open`, `closed`, `denied`, `unjudged`, `declined`) and its reason, the gate's tier (`high`, `low`, `off`), score and model source, the best file and the features the score read, the intent judge's verdict, ops, bytes (and whether it carried the search receipt and answer excerpts, with the excerpt bytes, and for a region pack its bytes, hook parts, symbols, located blocks and whether the text search stood in for a stale graph) and milliseconds spent, whether the packet was cut short (`cut`: the chain lost evidence to the window or the op cap; a hook's probes running past the window on their `PROBE_FLOOR` after a complete chain is not a cut, and a probe its deadline ended is that probe's `timeout`), the window it was given (`deadline_ms`) and the milliseconds of each stage (`stages`: `search_ms`, `rank_ms`, `render_ms`, `probe_ms`, `null` for a stage that did not run), the evidence route (`daemon` or `local`) and what the daemon start the prompt gave came to (`launched`, `running`, `skipped: …`, `launch failed`), the task text and its SHA-256 (credential shapes masked and cut at 600 characters; when the prompt contains only a pasted block, this can include the bounded excerpt used as its plain-language task). The last 500 lines, mode 0600, never creates `.pixel/`; `PIXEL_BRIEF_LOG=0\|false\|off` writes nothing. `pixel brief --json` prints the same record beside the brief. |
-| `brief-feedback.jsonl` | CLI `run-hook task-event` (`execution_brief/feedback.rs`) | What the agent read after the brief, per host session (the id is stored as 16 hex digits of its SHA-256). `prompt`: one line per prompt the brief saw, with the brief's bytes, gate and kind, the repository paths it injected (best first, at most 32) and the SHA-256 of the typed text that joins it to `brief-decisions.jsonl`. `part`: the bytes each prompt-submit hook part printed to the host, and whether the part gave up waiting for the brief (`late`), so a brief that never arrived is told from an empty one. `tool`: one line per `PostToolUse` or `PostToolUseFailure` with the tool name, whether it changed a file, and the repository files it named (the `file_path`, `path` or `notebook_path` of its input and the existing files among the words of its shell command; a file outside the repository, a link out of it or a credential-shaped path is never named). `stop`, and with it a `turn` line that closes the prompt: injected, read and edited paths, their overlap and the tool calls before the first answer. Paths and counts only, never prompt, command or output text. The last 1,500 lines, mode 0600, written through `decision_log::append_with` (never through a link, never creates `.pixel/`); `PIXEL_BRIEF_LOG=0\|false\|off` writes nothing. `scripts/bench/brief-feedback-summary.py` turns the `turn` lines into the zero-call rate and the injected-versus-read precision and recall. |
+| `actions.jsonl` | `pixel-actionlog` | One line per core or plugin invocation (hooks, the standalone `brief` and the native search fallback write none, see "partial usage observation" below), with the route and phase timings of each request it served (`serve`). Each writer checks the size when it starts and every `ROTATE_CHECK_EVERY` (50) events after: past `MAX_LOG_BYTES` (5 MiB) the file is replaced by its last `MAX_KEPT_LINES` (5 000) lines. |
+| `brief-decisions.jsonl` | CLI `brief` (`execution_brief/decision_log.rs`) | One JSON line per prompt the prompt-submit brief judged, or declined for being about nothing: time, signal (`strong`, `weak`, `prose`), gate (`open`, `closed`, `denied`, `unjudged`, `declined`) and its reason, the gate's tier (`high`, `low`, `off`), score and model source, the best file and the features the score read, the intent judge's verdict, ops, bytes (and whether it carried the search receipt and answer excerpts, with the excerpt bytes, and for a region pack its bytes, hook parts, symbols, located blocks and whether the text search stood in for a stale graph) and milliseconds spent, whether the packet was cut short (`cut`: the chain lost evidence to the window or the op cap; a hook's probes running past the window on their `PROBE_FLOOR` after a complete chain is not a cut, and a probe its deadline ended is that probe's `timeout`), the window it was given (`deadline_ms`) and the milliseconds of each stage (`stages`: `search_ms`, `rank_ms`, `render_ms`, `probe_ms`, `null` for a stage that did not run), the evidence route (`daemon` or `local`) and what the daemon start the prompt gave came to (`launched`, `running`, `skipped: …`, `launch failed`), the task text and its SHA-256 (credential shapes masked and cut at 600 characters; when the prompt contains only a pasted block, this can include the bounded excerpt used as its plain-language task). The last 500 lines, mode 0600, never creates `.pixel/`; `PIXEL_BRIEF_LOG=0\|false\|off` writes nothing. `pixel brief --json` prints the same record beside the brief; `pixel metrics` counts the delivered (`bytes` > 0) and declined lines. |
+| `brief-feedback.jsonl` | CLI `run-hook task-event` (`execution_brief/feedback.rs`) | What the agent read after the brief, per host session (the id is stored as 16 hex digits of its SHA-256). `prompt`: one line per prompt the brief saw, with the brief's bytes, gate and kind, the repository paths it injected (best first, at most 32) and the SHA-256 of the typed text that joins it to `brief-decisions.jsonl`. `part`: the bytes each prompt-submit hook part printed to the host, and whether the part gave up waiting for the brief (`late`), so a brief that never arrived is told from an empty one. `tool`: one line per `PostToolUse` or `PostToolUseFailure` with the tool name, whether it changed a file, and the repository files it named (the `file_path`, `path` or `notebook_path` of its input and the existing files among the words of its shell command; a file outside the repository, a link out of it or a credential-shaped path is never named). `stop`, and with it a `turn` line that closes the prompt: injected, read and edited paths, their overlap and the tool calls before the first answer. Paths and counts only, never prompt, command or output text. The last 1,500 lines, mode 0600, written through `decision_log::append_with` (never through a link, never creates `.pixel/`); `PIXEL_BRIEF_LOG=0\|false\|off` writes nothing. `scripts/bench/brief-feedback-summary.py` and `pixel metrics` turn the `turn` lines into the zero-call rate and the injected-versus-read precision and recall. |
 | `brief-sessions/<session>.json` | CLI `run-hook task-event` (`execution_brief/sent.rs`) | The line ranges the region packs already sent to one host session, so the next pack leaves them out and spends its room on source the session has not got. The name is the first 16 hex digits of the SHA-256 of the host's session id; the file holds keys only: per range the first 16 hex digits of the SHA-256 of the path, its first and last line and when it was sent. A key older than 24 hours is forgotten (every write also deletes session files nobody has written for a day), at most 1,000 are kept, and `SessionStart` with source `compact` or `clear` deletes the file (a `resume` keeps it: the context is the same). Written atomically with mode 0600 in a 0700 directory, never through a link (`.pixel` or `brief-sessions` as a symbolic link is refused), and never creates `.pixel/`. `PIXEL_BRIEF_DEDUPE=0\|false\|off` sends everything again. |
 | `brief-parts/<session>-<prompt>.txt` | CLI `run-hook task-event --part` (`brief_parts.rs`) | The whole prompt-submit brief of one prompt, stored by part 1 of a brief split over several hooks and read by parts 2 to N (see "Agent integration"). The name is the first 16 hex digits of the SHA-256 of the host's session id, a dash and the SHA-256 of the prompt, so no host text reaches a file name. Written atomically with mode 0600 (`pixel_git::nofollow::write_replace`), never through a link (`.pixel` or `brief-parts` as a symbolic link is refused); an empty file means the prompt got no brief, so the other parts do not wait. Part 1 deletes the entry before it computes the brief, leaves an empty `.done` file with the same stem once its own output is written, and every part-1 write deletes the entries older than one hour. |
+| `edit-hooks/<session>.json` | CLI `run-hook edit-event` (`edit_hook.rs`, `SESSION_DIR`) | What the edit hooks remember about one host session (the name is the first 16 hex digits of the SHA-256 of its id): the cards already sent (once per declaration change) and the callers in other files a card named that are still on the old signature, each with its file's content hash at card time. Written atomically with mode 0600 (`pixel_git::nofollow::write_replace`), never through a link (`.pixel` or `edit-hooks` as a symbolic link is refused); at most 256 KiB is read back, and every write deletes the files older than 24 hours. Only exists while `edit_hooks` is on. |
 | `reconcile-conflict.json` | `pixel-ops` | Conflict marker `reconcile` writes and clears (no hook reads it). |
 | `calls.json` | CLI | Circuit breaker counters for repeated identical calls. |
 | `task-runtime.json` | CLI `task-state show` and Claude hooks | Existing bounded Claude context packets; independent of completion evidence. |
@@ -394,6 +398,29 @@ Two version numbers exist and must not be conflated:
   Bump it when an older daemon process could not safely serve a newer CLI.
   The CLI pings first and compares.
 
+A request line may carry one more top-level member beside the op,
+`deadline_unix_ms` (`pixel_proto::REQUEST_DEADLINE_FIELD`, built by
+`pixel_proto::request_line`, read by `pixel_proto::request_deadline_unix_ms`):
+the wall-clock instant, in milliseconds since the Unix epoch, after which its
+answer is worth nothing. The brief fixes one such instant for the whole hook
+and sends it with every daemon request it makes (`Live::ask`), so the daemon's
+queue, its readers and the client's own socket timeout all end at the same
+moment rather than each starting a timeout of its own. The connection thread
+hands the instant to the loop with the request (`Reply`); whoever takes the
+request off a queue, the writer (`run_writer`) or a reader (`serve_read`),
+asks `Reply::expired` first and answers `repository is busy: the request's
+deadline passed before it started` (`BUSY_REPOSITORY`) without running
+anything, so a request that sat behind a long job costs the next one nothing.
+Nothing is interrupted once it runs: the ops are millisecond-scale and bound
+their own work. The daemon does not run brief probes (they run in the calling
+process, `execution_brief/probes.rs`), so there is no daemon-to-probe hand-off.
+`PROTOCOL_VERSION` 17 carries the member: an older daemon ignores it and
+would run every stale request, so the CLI sends it only to a daemon whose ping
+answered 17. An older client talking to this daemon sends no member and
+behaves as before; a client on 17 meeting a daemon on another version
+shuts down an older one, leaves a newer one alone and reads locally (the
+brief) or in process (a command), and a hook exits 0 whichever route it took.
+
 The envelope:
 
 ```json
@@ -515,7 +542,10 @@ exits 2, without running anything; any other name keeps clap's error. That table
 repositories `pixel-git`, `pixel-flow`, `pixel-recall`, `pixel-telemetry` and
 `pixel-utilities` to their repository. The core builds in none of them but
 `check-release` (the release workflow runs it before any plugin could be
-installed), so the hint is reached for the other 29. The core keeps what other commands read:
+installed) and `search-history` (the brief's next step names it, and a
+`pixel-git` plugin no longer has to be installed to run it; both are
+`pixel_plugin::stays_in_core`, so clap answers them before any plugin lookup),
+so the hint is reached for the other 28. The core keeps what other commands read:
 `workspace.json` for `--workspace`, the flow store for `plan`,
 and the library crates (`pixel-ops`, `pixel-facts`, …) the
 plugins link at a pinned revision. The flow libraries (`pixel-flow`,
@@ -986,6 +1016,20 @@ registers no hook or guard there, and `crates/pixel/tests/cli/docs_drift.rs`
 that. `repo.task-hook-observations` is the one `repo.*` check of `pixel
 doctor`.
 
+The edit hooks are off unless `edit_hooks` is on (`pixel config edit_hooks on`,
+or `PIXEL_EDIT_HOOKS=1` for the hook alone), and `pixel setup` registers them
+only when the global `~/.pixel/config.yaml` says so (`pixel_setup::config::edit_hooks`):
+with the switch off it writes exactly what it wrote before, and a setup run
+after the switch goes off removes them. Each is a `PreToolUse` or `PostToolUse`
+entry without a matcher beside the `task-event` one (`routing::EDIT_HOOK_EVENTS`),
+because each host names its edit tools differently and `edit-event` ignores any
+other tool. They end in `|| true` like every hook command, and doctor judges them
+against the switch: `install.claude-hooks` is red when the switch is on and
+they are missing, yellow when it is off and they remain, and the Codex hook check
+is red when the switch is on and they are missing. Recognition, the stacked-hook check and
+`pixel setup --remove` count them with the task-event entries. Gemini CLI,
+Antigravity, Pi and OpenCode have no edit hooks.
+
 `pixel run-hook` exposes task lifecycle and metrics entry
 points. `task-event` is registered for Claude Code, Codex, Devin, Gemini CLI
 and Antigravity; the metrics relay is registered for Claude Code, Codex and
@@ -1000,6 +1044,8 @@ runs both entry points from Pi's extension events:
 | `session_start`, `session_compact` (Pi, `pixel-brief.ts`) | `pixel run-hook task-event --provider pi --event session-start` | Payload `{session_id, cwd, source, brief_only: true}`; `source` is `clear` for a new session, `compact` after a compaction and `startup` otherwise. It may start the repository's daemon and, for `clear` and `compact`, forgets what the brief already sent. |
 | `tool_result` of a bash call that ran `pixel` (Pi, `pixel-brief.ts`) | `pixel run-hook metrics --provider pi` | Claude-shaped payload (`tool_name`, `tool_input.command`, `tool_response`, `cwd`, `session_id`). Relays the finalized Pixel metrics line as `systemMessage`, whether or not the bash result already holds the box, as Codex does; the package shows it to the user only and never rewrites the tool result. |
 | `PostToolUse` (Claude Code, matching `Bash`) | `pixel run-hook metrics --provider claude` | Relays the finalized Pixel metrics line to Claude's `systemMessage` after a shell call. |
+| `PreToolUse` (Claude Code, Codex, Devin; only with `edit_hooks` on) | `pixel run-hook edit-event --provider <host> --event pre-edit` | Payload `{tool_name, tool_input, cwd, session_id}`; `pixel_setup::edit_input::targets` reduces the edit tool (`Edit`, `MultiEdit`, `Write`, `apply_patch`, ...) to repository files and, when the call determines it, their new content. Another tool, a path outside the repository or behind a link, a stale or missing graph (`impact_read::open_fresh`; nothing is built or repaired) or a read past `DEADLINE` (1 s) prints nothing. Otherwise the stored declarations of each file are compared with the ones extracted from the new content; a changed header (`shape`) or a removed declaration that has `Calls` callers outside itself gets a `[PIXEL:EDIT]` card (at most 1.2 KB: up to 8 proved callers, up to 4 name matches), sent once per declaration change per session, as `hookSpecificOutput.additionalContext`. |
+| `PostToolUse` (Claude Code, Codex, Devin; only with `edit_hooks` on) | `pixel run-hook edit-event --provider <host> --event post-edit` | The same payload. Emits one `[PIXEL:STALE-CALLERS]` note (at most 1.2 KB) when the declarations a card named, now written to the file, still have callers in other files whose content hash is unchanged; a caller file written since, or a declaration whose header did not change after all, leaves the set. Said once per declaration. No Stop block. |
 | `PostToolUse` (Codex) | `pixel run-hook metrics --provider codex` | Relays the finalized Pixel metrics line through Codex's documented `systemMessage` only when its exact identity header appears in this tool result and uniquely matches a command/cwd record. Missing or ambiguous evidence stays silent. |
 | `PostToolUse` (Antigravity, `pixel-guard` in the IDE and CLI Pixel plugins) | `pixel run-hook metrics --provider antigravity` | Matches a finalized metric to the tool call, stores it in that conversation's artifact directory keyed by `stepIdx`, and returns `{}` as required by Antigravity. |
 | `PostInvocation` (Antigravity, `pixel-guard` in the IDE and CLI Pixel plugins) | `pixel run-hook metrics --provider antigravity --event post-invocation` | Consumes matching pending metrics for the same `conversationId` and `artifactDirectoryPath`, injects each as one `ephemeralMessage`, and clears the stored record. |
@@ -1063,9 +1109,10 @@ keep one hook too.
   run no ledger, so one prompt is one ledger event.
 - **Fails open.** Claude Code blocks the user's prompt when a
   `UserPromptSubmit` hook exits 2, which is what an older `pixel` does on the
-  unknown `--part`. Every prompt-submit command `pixel setup` writes ends in
-  ` || true` (`routing::FAIL_OPEN`; both hosts run hook commands in a shell:
-  Codex as `<shell> -lc`), recognition strips it so entries with and without
+  unknown `--part`; exit 2 also refuses a `PreToolUse` call, holds a `Stop`
+  and blocks a Gemini turn. Every hook command `pixel setup` writes ends in
+  ` || true` (`routing::fail_open`, `routing::FAIL_OPEN`; every host runs hook
+  commands in a shell: Codex as `<shell> -lc`), recognition strips it so entries with and without
   it are the same hook to install, doctor and uninstall, and `main` exits 0
   with the clap error on stderr for any `run-hook` argument it cannot parse.
 - **Slicing** (`split`) is deterministic and cuts at line boundaries: a part
@@ -1109,18 +1156,32 @@ long untagged paste:
 - **code-shaped** (`Signal::Strong`: a backticked name, `snake_case`,
   `camelCase`, a path or a source file): the chain below, no model.
 - **weakly code-shaped** (`Weak`: a code word or a code-question opener): the
-  same chain, with the intent judge (`pixel classify --if-warm`, only when
-  its local server is already listening) free to refuse it (`none`, 0.5 or
-  more), and the relevance gate below applied to it too
-  (`ENFORCE_GATE_ON_WEAK`). The probes are its retriever, so the concept
+  same chain, with the intent judge (below) free to refuse it, and the
+  relevance score below ranking it. The probes are its retriever, so the concept
   search runs only when they found no file.
 - **plain language** (`Prose`: two or more content words, not a request made
   only of `OPS_WORDS` — git, a pull request or an issue, a release, a deploy,
   a steer of the agent's run such as `go next` or `stop` — not an
   acknowledgement): the intent judge, the relevance probe and the meaning
-  search run at once on the deadline, and only the gate decides whether the
-  repository is the subject. A plural acronym is one keyword (`PRs` is
+  search run at once on the deadline; the score ranks the prompt and never
+  closes it, only the judge or a probe that failed or did not answer does. A plural acronym is one keyword (`PRs` is
   `prs`, not the Rust extension `rs`).
+
+The **intent judge** (`execution_brief/intent.rs`) is off unless the global
+classifier switch is on (`classify.enabled`, `pixel config classify on`, off by
+default); switched off, no process starts. Switched on, it runs `pixel
+--metrics off classify --jsonl` as a child of the brief, so the engine is the one
+`pixel config` chose, local or remote (and a remote one sends the typed prompt
+to its provider), asks one decision (the typed prompt, the task-intent labels
+and criteria, and `none`) and reads the winning label and its probability. The
+child gets half of what is left of the brief's window, at most
+`CLASSIFY_BUDGET` (1.5 s), and runs beside the relevance probe and the meaning
+search. A `none` at 0.5 or more ends the brief of a weak or plain-language
+prompt (gate `denied`, reason `judge: none (0.93)`, no probe runs); any other
+label only steers the plan (`bugfix`, `refactor` and `review` run `impact`).
+Switched off, unreadable, failed, killed or unconfident, the judge has no
+verdict and the brief goes ahead: it never closes one. Code-shaped prompts do
+not ask it.
 
 A prompt with nothing typed but a `<pasted_content>` block has no shape of its
 own, and the paste is someone else's text. It is judged on the head of the
@@ -1178,16 +1239,22 @@ calibrated out of fold at 5 and 10 % of the off-topic rows
 (`scripts/bench/research-gate/results/gate-model.json`, whose SHA-256
 `gate_model.rs` cites and a test checks, with `gate_reference.py` as the
 executable definition the parity test holds the Rust score to). It does not
-apply without a code graph or without a keyword to weigh: such a plain prompt
-gets no brief, and a weak one keeps its pre-gate brief when only the graph is
-missing.
+apply without a code graph (the prompt keeps its pre-gate brief) or without a
+keyword to weigh (an off-tier maybe, below).
 
 - **high** tier: the full brief below, with
   `confidence: high — n/m key terms covered; start with the first file`.
 - **low** tier: a compact brief, at most three `path:line — text` files within
   700 bytes, no kind route and no search, and
   `confidence: low — possibly related; verify before relying on it`.
-- **off**, a probe that cannot answer, or no answer in time: nothing. The
+- **off**: the prompt is still briefed, as a maybe (`Admission::Ranked`, gate
+  `open`, reason `off topic: score …`, the tier `off` and the score logged):
+  the low tier's compact shape and `confidence: low` line, no directive. A score
+  never closes a brief. One co-file that holds three or more keywords and half
+  of the informative ones (`admitted_by_coverage`) opens it in full, and a tour,
+  a review or a walkthrough is admitted by its kind (below).
+- **a probe that cannot answer, or no answer in time**: nothing
+  (`relevance: …`, gate `closed`). The
   fused leads of the `meaning` op (daemon only, resident vectors,
   `unavailable` while they build) join the co-files by reciprocal rank in
   the first `files:` of either brief.
@@ -1204,10 +1271,17 @@ excerpts or the kind's seed, and a brief whose `meaning` op answered is
 unchanged.
 
 The chain runs at most six ops under one deadline, 3 s for a hook (`brief_window_ms` in
-`.pixel/config.yaml` or `PIXEL_BRIEF_WINDOW_MS`, clamped to 250 ms to 4.5 s so it ends before the 6 s hook
+`.pixel/config.yaml` or `PIXEL_BRIEF_WINDOW_MS`, clamped to 250 ms to 4.5 s so it ends before the hook
 decision and the host's 10 s kill; 750 ms for the `brief` command, never more than 1 s since OpenCode's plugin cuts it off at 1.2 s). Parts 2 to N
-wait for part 1 as long as part 1 may take (the 6 s hook decision bound). A kind-admitted brief whose window ended before its pack
-renders the best files as a `confidence: low` lead instead of nothing. The ops are the two probes of
+wait for part 1 as long as part 1 may take (the hook decision bound, `DECISION_TIMEOUT`: 8 s, 6 s for Pi). A kind-admitted brief whose window ended before its pack
+renders the best files as a `confidence: low` lead instead of nothing. A hook fixes one answer
+deadline when it has read its payload (`hook_input::fix_answer_by`, read back by
+`answer_by`): the host's decision window less `PRINT_RESERVE` (1 s), so 5 s for Pi and
+7 s for the other hosts. The window (`Pending::deadline`) and the probes' deadline
+(`probe_deadline`, which the 1.2 s floor and the 5 s ceiling already bounded) both end at or
+before it, and the daemon requests carry the same instant (see "Daemon and wire contract"), so no
+stage starts a bound the others do not know about. The `brief` command has no such deadline and
+keeps its own. The ops are the two probes of
 a Weak or Prose prompt, `search-content -F -l` on the first anchor,
 `find-symbol` to resolve a uid, `impact <uid>` only
 for change or caller intent, `find-code` when nothing found a file, then
@@ -1365,7 +1439,8 @@ adds the matching tests by name with `path:line`, the first lines of the best
 eight and, when a manifest vouches for a runner (`pytest`, `vitest`, `jest`,
 `cargo test`, `go test`), the command that runs only them. The blocks join the
 pack after the symbols' own and ahead of nothing but the graph facts; a block
-over lines a definition already shows is dropped, and a pack of locator blocks
+over lines a definition already shows is dropped, as is any block over lines a
+better-ranked block of the pack shows (`assemble` skips it), and a pack of locator blocks
 alone ends on the directive. Quoted tokens that read as credentials are
 masked, and a credential-shaped path never reaches the searches' rows
 (`.env*` files stay out of the brief). A locator spends no brief operation,
@@ -1387,8 +1462,9 @@ fusion of the meaning leads and the relevance co-files as a third, boosting only
 those lists already name gains its reciprocal rank, and a file only the session
 names does not enter, so an unrelated dirty file never displaces a lead. A
 short follow-up (`is_follow_up`: at most ten words that ask for a change or
-lean on what came before) that the gate would have closed is let through
-instead, when the session has files: the files are the brief
+lean on what came before) that the score put off topic is briefed on the
+session's files instead of its own words, when the session has files: the files
+are the brief
 (`Admission::Context`, gate `open`, reason `context: …`, rendered as a low-tier
 maybe) and the off-topic leads of its words are dropped. The lift is checked
 before the relevance probe's outcome (`refusal_lifting`), so a probe that
@@ -1424,9 +1500,9 @@ cue of how the whole is put together needs a noun for the whole) and `Review`
 (a review cue beside a change noun: "review the latest commit", "is this PR
 safe to merge"), read from the words, with no model, and ahead of a judge's
 verdict; the walkthrough phrases ("walk me through", "what happens when",
-"end to end") route to `Flow` with or without a symbol. The relevance gate
-closes these prompts because they are not phrased in the repository's words,
-so `admitted_by_kind` lets a tour and a review through (`Admission::Kind`, logged
+"end to end") route to `Flow` with or without a symbol. The relevance score
+puts these prompts off topic because they are not phrased in the repository's words,
+so `admitted_by_kind` admits a tour and a review by kind (`Admission::Kind`, logged
 as gate `open` with reason `kind: overview`) and a walkthrough only when it
 shares two words with a file the graph knows by its symbols. Their packs are
 the evidence itself, built from three reads added to `Evidence`:
@@ -1630,6 +1706,26 @@ and the Rust test both run. Each run (name, milliseconds, bytes, outcome) is a `
 `.pixel/brief-decisions.jsonl`. `scripts/bench/probe-equivalence.py` checks the native brief against the reference chain
 `scripts/bench/probe-chain.py` on the census questions.
 
+A probe can also be a *step*: the same rule written in Rust in `crates/pixel/src/execution_brief/steps/<name>.rs` and
+listed by name in the `register!` call of `steps.rs` (`steps::ALL`). `probes::apply_staged` runs the due steps in the
+brief's own process, beside the due scripts and in the same scoped threads, under the `when_kinds` / `skip_kinds` /
+`when_prompt` / `when_gate_closed`, `budget_ms` and `mode` the step declares (`Step::spec` builds the same `ProbeSpec`
+a manifest does). A step returns the text a script would print (`### header` blocks and `drop:` / `first:` lines),
+so `merge` stays one specification. Its `steps::Ctx` hands it the prompt, the brief and the tracked files (one `git
+ls-files -z` shared by every step of the brief) and reads a regular file without following a link; it shares the
+process, so it stops itself at `Ctx::timed_out` and an answer that comes after its limit is dropped (`timeout`). A
+step takes the place of the user-tier script of its name, which is not started (a repository's trusted probe of the
+same name is another plugin and still runs); `pixel plugin disable <name>` switches the step off; each run is
+logged under the step's name like a script's. While `pixel setup` still installs the script of a ported probe, the
+host skips it. A step whose probe manifest says `stage = "post"` is listed in `register_post!` (`steps::POST`)
+instead: it runs after the others, one by one, on the brief they produced (`prune-noise`, which only shrinks it), only
+where its probe is installed in `~/.pixel/plugins/` (`pixel setup` does not install `prune-noise`), and
+`Ctx::kind` gives it the question kind the stage settled on. The string rules the steps share, spelled as Python
+spells them so a step prints its script's bytes (`splitlines`, `universal_newlines`, `re.escape`, character slices,
+`subwords`, the two stems, `Path.suffix`), live once in `steps/text.rs`; reciprocal-rank and BM25 terms come from
+`pixel-rank` (`reciprocal_rank`, `bm25_idf`, `BM25_K1`, `BM25_B`). `scripts/bench/step-parity.py <name>` judges the script and the step with `probe-test.py` on the same
+baseline briefs and compares what each merged into them.
+
 ## Testing and gates
 
 The `pixel-bench` wire benchmark calls the production bounded reader and compares
@@ -1680,10 +1776,24 @@ The allocation-budget test bounds allocations while reading request frames.
     release prepare, Homebrew formula and Linux
     bottles, release SBOM, homebrew-core formula,
     nightly diff checkpoints, coverage selection, mutants
-    config, action pins, advisory ignores, SPDX headers, clean, CI input selection, cancel-stale sweep, embedding-model pin, release symbols split, public-claims check, harness-grid dispatch input,
+    config, action pins, verdict gate, advisory ignores, SPDX headers, clean, CI input selection, cancel-stale sweep, embedding-model pin, release symbols split, public-claims check, harness-grid dispatch input,
     reproducible release build environment, the brief-gate bench, excavation counter and live brief A/B driver self-tests with the `eval/brief-gate/` prompt set's schema check, the `eval/` agent A/B harness against fixture CLIs), the
     pixel-retro lead-time and adherence contracts
-    (`.agents/skills/pixel-retro/test_lead_time.py`, `test_adherence.py`);
+    (`.agents/skills/pixel-retro/test_lead_time.py`, `test_adherence.py`), the
+    ultima-arena `--self-test` and Arena's offline protocol test
+    (`.agents/skills/arena/offline-protocol-test.py`: a fixture Codex rollout
+    through `arena.sh receipt`, `hook_payload`, and `abort` against a fake
+    `herdr`, including the refusal of a path-shaped case name; no model, no Herdr);
+  - **Record the green verdict** (the check name branch protection keys on):
+    runs after every lane, even when one failed or was cancelled, because a
+    skipped job passes a required check. `scripts/ci/verdict-gate.py` reads
+    `toJSON(needs)` and fails on any `failure` or `cancelled` lane, and on a
+    `skipped` lane unless the classifier's flag for it (`installer`,
+    `rust-source`, `deps`) is not `true`; Test + Format, `scope` and `changes`
+    must succeed, and an unmapped lane fails closed. On success it saves the
+    tree-and-day marker the skip guard restores. Only a release-prepare run
+    or a duplicate tree skips the job. `scripts/test-verdict-gate.py` also
+    checks that the job's `needs` list and the script's lane table agree.
   - **Lint**: `cargo clippy --all-targets` with warnings denied, then
     `cargo check` of the two reduced feature lanes (`--no-default-features`,
     `model2vec` only);
@@ -1695,6 +1805,13 @@ The allocation-budget test bounds allocations while reading request frames.
     closed proxy so it never reaches the hub) and **Dependency policy** (`cargo deny`, then
     `scripts/ci/check-advisory-ignores.py`: `osv-scanner.toml`, which Scorecard
     reads, accepts the same advisories as `deny.toml`).
+- `site.yml` (pull requests and pushes to `main` that touch `website/**`,
+  `docs/motion/**`, `docs/examples/**`, `crates/pixel/Cargo.toml` or the
+  workflow; `ci.yml` leaves the first two out of its path filter): `hugo`
+  builds the site with the pin in `website/mise.toml`, the one `pages.yml`
+  publishes, and `motion-typecheck` runs `bun install --frozen-lockfile` and
+  `bunx @typescript/native-preview --noEmit -p .` (tsgo) in `docs/motion`.
+  `website/` holds no TypeScript. Neither job is a required check.
 - `mvp-reference.yml` runs the imported index truth test on the pinned public
   once-campfire and Pixel repositories when its sources change. The ordinary
   pixel-graph suite also exercises corruption recovery, incremental/full

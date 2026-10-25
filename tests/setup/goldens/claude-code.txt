@@ -10,7 +10,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook metrics --provider claude",
+            "command": "'{PIXEL_BIN}' run-hook metrics --provider claude || true",
             "timeout": 10,
             "type": "command"
           }
@@ -20,7 +20,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event post-tool-use",
+            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event post-tool-use || true",
             "timeout": 10,
             "type": "command"
           }
@@ -31,7 +31,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event tool-failure",
+            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event tool-failure || true",
             "timeout": 10,
             "type": "command"
           }
@@ -42,7 +42,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event pre-tool-use",
+            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event pre-tool-use || true",
             "timeout": 10,
             "type": "command"
           }
@@ -53,7 +53,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event session-end",
+            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event session-end || true",
             "timeout": 3,
             "type": "command"
           }
@@ -64,7 +64,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event session-start",
+            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event session-start || true",
             "timeout": 10,
             "type": "command"
           }
@@ -75,7 +75,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event stop",
+            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event stop || true",
             "timeout": 10,
             "type": "command"
           }
@@ -86,7 +86,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event subagent-start",
+            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event subagent-start || true",
             "timeout": 10,
             "type": "command"
           }
@@ -97,7 +97,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event subagent-stop",
+            "command": "'{PIXEL_BIN}' run-hook task-event --provider claude --event subagent-stop || true",
             "timeout": 10,
             "type": "command"
           }

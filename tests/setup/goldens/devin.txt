@@ -10,7 +10,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook task-event --provider devin --event post-tool-use",
+            "command": "'{PIXEL_BIN}' run-hook task-event --provider devin --event post-tool-use || true",
             "timeout": 10,
             "type": "command"
           }
@@ -21,7 +21,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook task-event --provider devin --event pre-tool-use",
+            "command": "'{PIXEL_BIN}' run-hook task-event --provider devin --event pre-tool-use || true",
             "timeout": 10,
             "type": "command"
           }
@@ -32,7 +32,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook task-event --provider devin --event session-end",
+            "command": "'{PIXEL_BIN}' run-hook task-event --provider devin --event session-end || true",
             "timeout": 3,
             "type": "command"
           }
@@ -43,7 +43,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook task-event --provider devin --event session-start",
+            "command": "'{PIXEL_BIN}' run-hook task-event --provider devin --event session-start || true",
             "timeout": 10,
             "type": "command"
           }
@@ -54,7 +54,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook task-event --provider devin --event stop",
+            "command": "'{PIXEL_BIN}' run-hook task-event --provider devin --event stop || true",
             "timeout": 10,
             "type": "command"
           }

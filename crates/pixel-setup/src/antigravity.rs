@@ -248,10 +248,10 @@ pub fn install_gemini_brief(home: &Path, exe: &Path, dry_run: bool) -> Result<In
             path: path.clone(),
             reason: "settings.json `hooks` is not an object".into(),
         })?;
-    let command = format!(
+    let command = crate::routing::fail_open(&format!(
         "{} run-hook task-event --provider gemini --event prompt-submit",
         crate::routing::quoted_executable(exe)
-    );
+    ));
     let groups = hooks
         .entry("BeforeAgent")
         .or_insert_with(|| json!([]))
@@ -349,7 +349,7 @@ pub fn install_antigravity_brief(home: &Path, exe: &Path, dry_run: bool) -> Resu
         "enabled": true,
         "PreInvocation": [{
             "type": "command",
-            "command": format!("{} run-hook task-event --provider antigravity --event prompt-submit", crate::routing::quoted_executable(exe)),
+            "command": crate::routing::fail_open(&format!("{} run-hook task-event --provider antigravity --event prompt-submit", crate::routing::quoted_executable(exe))),
             "timeout": 10
         }]
     });
@@ -479,13 +479,13 @@ fn antigravity_metrics_plugin_hooks(exe: &Path) -> Value {
                 "matcher": "*",
                 "hooks": [{
                     "type": "command",
-                    "command": command,
+                    "command": crate::routing::fail_open(&command),
                     "timeout": 10
                 }]
             }],
             "PostInvocation": [{
                 "type": "command",
-                "command": format!("{command} --event post-invocation"),
+                "command": crate::routing::fail_open(&format!("{command} --event post-invocation")),
                 "timeout": 10
             }]
         }
@@ -849,7 +849,7 @@ mod tests {
         assert_eq!(
             hooks["pixel-brief"]["PreInvocation"][0]["command"],
             format!(
-                "{} run-hook task-event --provider antigravity --event prompt-submit",
+                "{} run-hook task-event --provider antigravity --event prompt-submit || true",
                 crate::routing::quoted_executable(&exe)
             )
         );
@@ -909,12 +909,12 @@ mod tests {
         let expected = json!({"pixel-guard": {"enabled": true, "PostToolUse": [{
             "matcher": "*", "hooks": [{
                 "type": "command",
-                "command": "'/opt/pixel tools/pixel' run-hook metrics --provider antigravity",
+                "command": "'/opt/pixel tools/pixel' run-hook metrics --provider antigravity || true",
                 "timeout": 10
             }]
         }], "PostInvocation": [{
             "type": "command",
-            "command": "'/opt/pixel tools/pixel' run-hook metrics --provider antigravity --event post-invocation",
+            "command": "'/opt/pixel tools/pixel' run-hook metrics --provider antigravity --event post-invocation || true",
             "timeout": 10
         }]}});
         for dir in [plugin_dir(home), cli_plugin_dir(home)] {
@@ -1056,7 +1056,7 @@ mod tests {
         );
         assert_eq!(
             groups[1]["hooks"][0]["command"],
-            "'/opt/pixel'\\''s tools/pixel' run-hook task-event --provider gemini --event prompt-submit"
+            "'/opt/pixel'\\''s tools/pixel' run-hook task-event --provider gemini --event prompt-submit || true"
         );
     }
 

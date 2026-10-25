@@ -47,6 +47,7 @@ mod decide_infisical;
 mod decide_jev;
 mod decide_ollaya;
 mod decide_remote;
+mod edit_hook;
 mod evaluate_cmd;
 mod execution_brief;
 mod graph_shadow_cmd;
@@ -55,6 +56,7 @@ mod hook_input;
 mod hook_metrics;
 mod impact_read;
 mod index_cmd;
+mod metrics_cmd;
 
 mod operation_metrics;
 mod overview_intent;
@@ -311,6 +313,27 @@ enum Command {
         // Help text built from the ceiling constant: `max_files_help`.
         #[arg(long, help = max_files_help())]
         max_files: Option<usize>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Search commit messages, paths and diffs through the history index.
+    /// The index is built on the first query; `--read-only` answers from it as
+    /// it stands and never builds it.
+    SearchHistory {
+        /// Words to look for; a "double quoted phrase" stays whole.
+        query: String,
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// What to search: `message`, `path`, `diff` or `all` (default).
+        #[arg(long, value_parser = ["message", "path", "diff", "all"])]
+        facet: Option<String>,
+        /// Hits to return (default and ceiling: 200).
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Answer from the history index as it stands: never ingest, never
+        /// create it. An absent index is an error.
+        #[arg(long)]
+        read_only: bool,
         #[arg(long)]
         json: bool,
     },
@@ -684,6 +707,18 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// What the prompt-submit briefs did, counted from the logs the hooks
+    /// already write: briefs delivered and declined, zero-call turns, and the
+    /// files injected against the files the agent then read. Read-only.
+    Metrics {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Window to count: `30m`, `24h`, `7d` or `all`.
+        #[arg(long, default_value = metrics_cmd::DEFAULT_SINCE)]
+        since: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Make a repository ready for agent work: index, graph, and warm daemon.
     PrepareRepo {
         #[arg(default_value = ".")]
@@ -988,9 +1023,23 @@ enum Command {
         cmd: HookCmd,
     },
     /// Show effective settings and paths, or edit persistent YAML configuration.
+    /// `pixel config <key> [<value>]` reads or writes one setting
+    /// (`daemon_auto_start`, `brief`, `edit_hooks`, `brief_parts`); the other forms are the
+    /// subcommands below.
+    #[command(args_conflicts_with_subcommands = true)]
     Config {
         #[command(subcommand)]
         cmd: Option<ConfigCmd>,
+        /// The setting to show or change (default: the overview).
+        key: Option<String>,
+        /// The new value: `on` or `off`, or a number for `brief_parts`.
+        value: Option<String>,
+        /// Write the global `~/.pixel/config.yaml`, not the repository's.
+        #[arg(long)]
+        global: bool,
+        /// The repository (default: the current one, if any).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
     },
     /// Completion contracts, verification, task trajectories and Claude packets.
     TaskState {
@@ -1177,6 +1226,15 @@ enum HookCmd {
         #[arg(long, value_name = "K/N")]
         part: Option<brief_parts::BriefPart>,
     },
+    /// The optional edit hooks (`pre-edit`, `post-edit`), registered by
+    /// `pixel setup` only when `edit_hooks` is on: the callers a change to a
+    /// declaration strands, before and after the agent writes the file.
+    EditEvent {
+        #[arg(long, value_enum)]
+        provider: task_hook::TaskProvider,
+        #[arg(long, value_enum)]
+        event: edit_hook::EditEvent,
+    },
     /// Relay finalized 🟩 metrics lines through a provider's hook contract.
     Metrics {
         /// Provider whose hook-response contract to emit under.
@@ -1289,7 +1347,17 @@ enum DaemonCmd {
 
 /// One NDJSON round trip on an open stream.
 fn roundtrip(stream: &mut UnixStream, req: &Request) -> Option<Response> {
-    let mut line = serde_json::to_string(req).ok()?;
+    roundtrip_by(stream, req, None)
+}
+
+/// [`roundtrip`] for a request whose answer is worth nothing after
+/// `deadline_unix_ms`: the daemon runs nothing for it once that has passed.
+fn roundtrip_by(
+    stream: &mut UnixStream,
+    req: &Request,
+    deadline_unix_ms: Option<u64>,
+) -> Option<Response> {
+    let mut line = pixel_proto::request_line(req, deadline_unix_ms).ok()?;
     line.push('\n');
     stream.write_all(line.as_bytes()).ok()?;
     stream.flush().ok()?;
@@ -2084,6 +2152,50 @@ fn finish_graph_cmd(
     } else {
         print_data(&data, false)
     }
+}
+
+/// `pixel search-history` as text: one line per hit (short oid, date,
+/// subject, kind), then its path and the first lines of its snippet.
+fn history_text(data: &Value) -> String {
+    const SNIPPET_LINES: usize = 6;
+    let text = |hit: &Value, key: &str| {
+        hit.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_owned()
+    };
+    let mut out = String::new();
+    for hit in data
+        .get("candidates")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let (oid, at) = (text(hit, "oid"), text(hit, "at"));
+        out.push_str(&format!(
+            "{} {} {} [{}]\n",
+            oid.chars().take(10).collect::<String>(),
+            at.get(..10).unwrap_or(&at),
+            text(hit, "subject"),
+            text(hit, "kind"),
+        ));
+        if let Some(path) = hit.get("path").and_then(Value::as_str) {
+            out.push_str(&format!("    {path}\n"));
+        }
+        for line in hit
+            .get("snippet")
+            .and_then(Value::as_str)
+            .into_iter()
+            .flat_map(str::lines)
+            .take(SNIPPET_LINES)
+        {
+            out.push_str(&format!("    {line}\n"));
+        }
+    }
+    if out.is_empty() {
+        out.push_str("no commits match\n");
+    }
+    out
 }
 
 fn symbol_line(s: &Value) -> String {
@@ -3977,6 +4089,28 @@ fn operation_path(matches: &clap::ArgMatches) -> Option<PathBuf> {
         .and_then(|mut paths| paths.next().cloned())
 }
 
+/// Where the arguments of `pixel config <key> <value>` that must not be logged
+/// begin: the value of a key that is neither a setting `config` writes nor one
+/// of its subcommands. Such an attempt is refused, but a credential typed as
+/// `remote_keys.openai sk-…` would already be in the log. Only the command
+/// word counts: `search-content config x y` is a query.
+fn config_value_from(args: &[String]) -> Option<usize> {
+    let with_program: Vec<String> = std::iter::once(String::new())
+        .chain(args.iter().cloned())
+        .collect();
+    let (at, _) =
+        pixel_plugin::command_word(&with_program).filter(|(_, word)| *word == "config")?;
+    let (key_at, key) = args
+        .iter()
+        .enumerate()
+        .skip(at)
+        .find(|(_, arg)| !arg.starts_with("--"))?;
+    // `has_subcommand` reads the derive's names, never the whole `Cli` tree,
+    // which overflows a 2 MiB test thread in a debug build.
+    let known = config_cmd::is_setting(key) || <ConfigCmd as clap::Subcommand>::has_subcommand(key);
+    (!known).then_some(key_at + 1)
+}
+
 /// The arguments as the action log records them. An API key is a secret:
 /// the log is plain text under `.pixel/`, so every positional after
 /// `config remote-key <preset>` is masked.
@@ -3992,6 +4126,7 @@ fn logged_args(args: &[String]) -> String {
         .windows(2)
         .position(|pair| pair[0] == "config" && pair[1] == "remote-key")
         .map(|at| at + 3);
+    let config_value_from = config_value_from(args);
     // `install https://user:token@host/…` and `reference add <id>
     // https://user:token@host/… <rev>` carry the credential of a private
     // repository in its URL. Only the command word counts:
@@ -4016,7 +4151,12 @@ fn logged_args(args: &[String]) -> String {
                 format!("--var={url_name}=<redacted>")
             } else if arg.starts_with(&url_var) {
                 format!("{url_name}=<redacted>")
-            } else if secret_from.is_some_and(|from| i >= from) && !arg.starts_with("--") {
+            } else if secret_from
+                .into_iter()
+                .chain(config_value_from)
+                .any(|from| i >= from)
+                && !arg.starts_with("--")
+            {
                 "<redacted>".to_string()
             } else if source_url_from.is_some_and(|from| i >= from) {
                 pixel_plugin::redact_source(arg)
@@ -4043,6 +4183,7 @@ const READ_ONLY_COMMANDS: &[&str] = &[
     "search-content",
     "search-like-rg",
     "search-meaning",
+    "search-history",
     "find-code",
     "find-symbol",
     "list-signatures",
@@ -4059,6 +4200,7 @@ const READ_ONLY_COMMANDS: &[&str] = &[
     "status",
     "coverage",
     "audit",
+    "metrics",
 ];
 
 /// Whether the parsed invocation may be executed again by the relaunch: the
@@ -4508,6 +4650,31 @@ fn run_command(
             max_files,
             json,
         } => run_ask(question, path, limit, max_files, json),
+        Command::SearchHistory {
+            query,
+            path,
+            facet,
+            limit,
+            read_only,
+            json,
+        } => {
+            let data = execute(
+                &path,
+                Request::History {
+                    query,
+                    facet,
+                    limit,
+                    read_only,
+                },
+                false,
+            )?;
+            // Not `finish_graph_cmd`: its `candidates` are ambiguous symbol uids.
+            if json {
+                return print_data(&data, true);
+            }
+            operation_metrics::observe(&data);
+            write_stdout(&history_text(&data))
+        }
         Command::ScopeTask {
             task,
             path,
@@ -5148,6 +5315,9 @@ fn run_command(
         Command::Audit { path, top, json } => {
             audit_cmd::run(audit_cmd::AuditOptions { path, top, json })
         }
+        Command::Metrics { path, since, json } => {
+            metrics_cmd::run(metrics_cmd::MetricsOptions { path, since, json })
+        }
         Command::Workspace { cmd } => workspace_cmd::run(cmd),
         Command::IndexPack {
             out,
@@ -5712,12 +5882,22 @@ fn run_command(
                 event,
                 part,
             } => task_hook::run(provider, event, part),
+            HookCmd::EditEvent { provider, event } => edit_hook::run(provider, event),
             HookCmd::Metrics { provider, event } => {
                 hook_metrics::run_metrics_hook(provider, event);
             }
         },
-        Command::Config { cmd } => match cmd {
-            None => config_cmd::overview(Path::new(".")),
+        Command::Config {
+            cmd,
+            key,
+            value,
+            global,
+            path,
+        } => match cmd {
+            None => match key {
+                None => config_cmd::overview(Path::new(".")),
+                Some(key) => config_cmd::run_setting(&key, value.as_deref(), global, &path),
+            },
             Some(ConfigCmd::Setup) => config_cmd::setup(),
             Some(ConfigCmd::Classify { value }) => config_cmd::set_classify_enabled(value == "on"),
             Some(ConfigCmd::Metrics {
@@ -7316,7 +7496,8 @@ mod prompt_asset_parity {
 
 #[cfg(test)]
 mod hook_prompt_tests {
-    use super::{bounded_result_note, is_developer_build, logged_args};
+    use super::{bounded_result_note, history_text, is_developer_build, logged_args};
+    use serde_json::json;
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(ToString::to_string).collect()
@@ -7441,6 +7622,66 @@ mod hook_prompt_tests {
             "search-content remote-key src crates",
             "the word `remote-key` in someone else's argument is a search term"
         );
+    }
+
+    #[test]
+    fn the_value_of_a_config_key_pixel_does_not_write_never_reaches_the_action_log() {
+        // `pixel config <key> <value>` is refused for a key that is not a
+        // setting, but a credential typed that way is already in argv.
+        for (argv_words, logged) in [
+            (
+                vec!["config", "remote_keys.openai", "sk-secret"],
+                "config remote_keys.openai <redacted>",
+            ),
+            (
+                vec!["config", "--global", "remote_keys.openai", "sk-secret"],
+                "config --global remote_keys.openai <redacted>",
+            ),
+            (
+                vec!["--metrics", "off", "config", "typo", "sk-secret"],
+                "--metrics off config typo <redacted>",
+            ),
+            // A setting, and the subcommands of `config`, keep their values readable.
+            (vec!["config", "brief_parts", "4"], "config brief_parts 4"),
+            (
+                vec!["config", "--global", "daemon_auto_start", "off"],
+                "config --global daemon_auto_start off",
+            ),
+            (
+                vec!["config", "metrics", "off", "--global", "."],
+                "config metrics off --global .",
+            ),
+            (vec!["config", "classify", "on"], "config classify on"),
+            (vec!["config"], "config"),
+            // Someone else's argument is a query, not a config key.
+            (
+                vec!["search-content", "config", "x", "y"],
+                "search-content config x y",
+            ),
+        ] {
+            assert_eq!(logged_args(&argv(&argv_words)), logged, "{argv_words:?}");
+        }
+    }
+
+    #[test]
+    fn history_text_prints_each_hit_with_its_path_and_six_snippet_lines_at_most() {
+        let data = json!({"candidates": [
+            {"oid": "0123456789abcdef", "at": "2026-10-25T05:29:06+01:00", "subject": "tune limits",
+             "kind": "diff", "path": "a.rs", "snippet": "1\n2\n3\n4\n5\n6\n7\n"},
+            {"oid": "abc", "at": "x", "subject": "s", "kind": "message", "path": null, "snippet": null},
+        ]});
+        assert_eq!(
+            history_text(&data),
+            concat!(
+                "0123456789 2026-10-25 tune limits [diff]\n",
+                "    a.rs\n",
+                "    1\n    2\n    3\n    4\n    5\n    6\n",
+                "abc x s [message]\n",
+            )
+        );
+        for none in [json!({"candidates": []}), json!({})] {
+            assert_eq!(history_text(&none), "no commits match\n");
+        }
     }
 
     #[test]

@@ -8,7 +8,7 @@
   "pixel-guard": {
     "PostInvocation": [
       {
-        "command": "'{PIXEL_BIN}' run-hook metrics --provider antigravity --event post-invocation",
+        "command": "'{PIXEL_BIN}' run-hook metrics --provider antigravity --event post-invocation || true",
         "timeout": 10,
         "type": "command"
       }
@@ -17,7 +17,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook metrics --provider antigravity",
+            "command": "'{PIXEL_BIN}' run-hook metrics --provider antigravity || true",
             "timeout": 10,
             "type": "command"
           }

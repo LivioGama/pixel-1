@@ -91,11 +91,13 @@ impl Available {
     }
 }
 
-/// Whether the core binary keeps `command` although a plugin repository
-/// publishes it too (`check-release`: the release workflow runs it before any
-/// plugin could be installed). Text that names it needs no plugin.
+/// Whether the core binary builds `command` in although a plugin repository
+/// publishes it too: `check-release` (the release workflow runs it before any
+/// plugin could be installed) and `search-history` (the brief's next step
+/// names it, so it must run without a plugin). Text that names one needs no
+/// plugin, and clap answers it before any plugin is looked up.
 pub fn stays_in_core(command: &str) -> bool {
-    command == "check-release"
+    matches!(command, "check-release" | "search-history")
 }
 
 /// The repository that publishes `command`, when it is a moved one.
@@ -196,8 +198,10 @@ mod tests {
         assert_eq!(repo_of("who-wrote"), Some("pixel-git"));
         assert_eq!(repo_of("web-search"), Some("pixel-utilities"));
         assert_eq!(repo_of("search-content"), None);
-        assert!(stays_in_core("check-release"));
-        assert!(!stays_in_core("web-search") && !stays_in_core(""));
+        assert!(stays_in_core("check-release") && stays_in_core("search-history"));
+        assert!(
+            !stays_in_core("dig-history") && !stays_in_core("web-search") && !stays_in_core("")
+        );
         assert_eq!(
             install_command("pixel-git"),
             "pixel install github:Pixel-CLI/pixel-git"

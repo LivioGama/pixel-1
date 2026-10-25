@@ -10,7 +10,7 @@
       {
         "hooks": [
           {
-            "command": "'{PIXEL_BIN}' run-hook task-event --provider gemini --event prompt-submit",
+            "command": "'{PIXEL_BIN}' run-hook task-event --provider gemini --event prompt-submit || true",
             "name": "pixel-brief",
             "timeout": 10000,
             "type": "command"

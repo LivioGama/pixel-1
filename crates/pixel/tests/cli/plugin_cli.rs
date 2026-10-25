@@ -368,7 +368,7 @@ fn install_reports_a_bad_source_and_keeps_the_credentials_of_a_url_out_of_the_lo
 }
 
 /// The moved commands the core no longer builds in: the only names the
-/// moved-command hint is for. Only `check-release` was kept in the binary.
+/// moved-command hint is for. Only `check-release` and `search-history` were kept in the binary.
 fn unbuilt_moved() -> Vec<(&'static str, &'static str)> {
     let built_in = super::support::built_in_commands();
     pixel_plugin::MOVED_COMMANDS
@@ -452,16 +452,37 @@ fn a_moved_command_that_is_still_built_in_runs_instead_of_hinting() {
 }
 
 #[test]
-fn check_release_is_the_only_moved_command_the_core_still_builds_in() {
+fn an_installed_git_plugin_should_not_shadow_the_core_search_history_but_still_serve_its_other_words()
+ {
+    let world = World::new("plugin-beside-core");
+    let source = world.source("git", "commands = [\"search-history\", \"who-wrote\"]");
+    ok(&world.pixel(&["install", source.to_str().unwrap()]));
+
+    // The plugin's script would print `args=search-history …` and exit 0.
+    let core = world.pixel(&["search-history", "anything", "--read-only"]);
+    assert_eq!(core.status.code(), Some(1), "{core:?}");
+    assert_eq!(stdout(&core), "", "the core answered, not the plugin");
+    assert_eq!(stderr(&core), "pixel: facts index absent or not built\n");
+
+    let plugin = world.pixel(&["who-wrote", "a.rs"]);
+    assert!(
+        ok(&plugin).starts_with("args=who-wrote a.rs\n"),
+        "the plugin still serves the words the core does not build: {plugin:?}"
+    );
+}
+
+#[test]
+fn check_release_and_search_history_are_the_only_moved_commands_the_core_still_builds_in() {
     let built_in = super::support::built_in_commands();
     let still_built_in: Vec<&str> = pixel_plugin::MOVED_COMMANDS
         .iter()
         .map(|(name, _)| *name)
         .filter(|name| built_in.contains(*name))
         .collect();
-    assert_eq!(still_built_in, ["check-release"]);
+    assert_eq!(still_built_in, ["search-history", "check-release"]);
     assert!(pixel_plugin::stays_in_core("check-release"));
-    assert_eq!(unbuilt_moved().len(), 29, "30 moved, one kept");
+    assert!(pixel_plugin::stays_in_core("search-history"));
+    assert_eq!(unbuilt_moved().len(), 28, "30 moved, two kept");
     assert_eq!(pixel_plugin::MOVED_COMMANDS.len(), 30);
 }
 
