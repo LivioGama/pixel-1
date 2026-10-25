@@ -21,7 +21,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError, mpsc};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
 use notify::{RecursiveMode, Watcher};
@@ -238,9 +238,54 @@ fn probe_ping(stream: &mut UnixStream) -> bool {
     serde_json::from_str::<Response>(&reply).is_ok_and(|r| r.ok)
 }
 
+/// Where one request's answer goes, and the instant it stops being wanted:
+/// the request line's `deadline_unix_ms`. Whoever takes the request off a
+/// queue asks [`Reply::expired`] first and runs nothing for an answer nobody
+/// waits for, so a request that sat behind a long job costs the next one
+/// nothing.
+pub(crate) struct Reply {
+    to: mpsc::Sender<Response>,
+    deadline: Option<SystemTime>,
+}
+
+impl Reply {
+    fn new(to: mpsc::Sender<Response>, deadline_unix_ms: Option<u64>) -> Self {
+        Self {
+            to,
+            deadline: deadline_unix_ms.map(|ms| UNIX_EPOCH + Duration::from_millis(ms)),
+        }
+    }
+
+    /// Send the answer; `false` when the client has gone.
+    pub(crate) fn send(&self, response: Response) -> bool {
+        self.to.send(response).is_ok()
+    }
+
+    /// The deadline has passed.
+    pub(crate) fn expired(&self) -> bool {
+        self.deadline.is_some_and(|at| SystemTime::now() >= at)
+    }
+}
+
+impl From<mpsc::Sender<Response>> for Reply {
+    /// A reply with no deadline.
+    fn from(to: mpsc::Sender<Response>) -> Self {
+        Self::new(to, None)
+    }
+}
+
+/// The answer to a request whose deadline passed before anything ran for it.
+/// Worded as a busy repository, the code a caller already retries or skips.
+pub(crate) fn expired_response(op: &str) -> Response {
+    failure_response(
+        op,
+        "repository is busy: the request's deadline passed before it started",
+    )
+}
+
 enum Msg {
     /// One request a connection thread read, and where its answer goes.
-    Request(Request, mpsc::Sender<Response>),
+    Request(Request, Reply),
     /// The listener failed; the loop exits as it did on an accept error.
     AcceptFailed,
     Fs(notify::Event),
@@ -255,7 +300,7 @@ enum Msg {
     /// answer, so the loop exits.
     WriterGone,
     /// A read a replica could not answer: the writer serves it.
-    Requeue(Request, mpsc::Sender<Response>),
+    Requeue(Request, Reply),
 }
 
 /// What the loop hands the writer, in the order it decided it. The writer
@@ -264,7 +309,7 @@ enum Msg {
 enum Job {
     /// A watcher batch.
     Apply(Vec<(PathBuf, bool)>),
-    Serve(Request, mpsc::Sender<Response>),
+    Serve(Request, Reply),
     GitMoved,
     WatcherError(String),
     WatchReady(WatchReport),
@@ -336,6 +381,15 @@ pub trait Corpus {
     /// Root that keys the socket path and is watched by default.
     fn root(&self) -> &Path;
     fn handle(&mut self, req: Request) -> Response;
+    /// [`Corpus::handle`] for a request whose answer is worth nothing after
+    /// `deadline_unix_ms` (the request line's `deadline_unix_ms`, see
+    /// `pixel_proto::deadline`). A corpus that queues the request runs
+    /// nothing for it once the instant has passed; the default has no queue
+    /// and answers at once.
+    fn handle_by(&mut self, req: Request, deadline_unix_ms: Option<u64>) -> Response {
+        let _ = deadline_unix_ms;
+        self.handle(req)
+    }
     /// The answer to `ping`, when it is the same for the whole life of the
     /// corpus: the loop then answers `ping` itself, ahead of the writer's
     /// queue, so a liveness probe never waits behind a long request
@@ -840,7 +894,12 @@ fn run_writer(service: &mut dyn Corpus, jobs: &mpsc::Receiver<Job>, busy: &Busy)
             Job::Apply(batch) => service.apply_changes(&batch),
             Job::Serve(req, reply) => {
                 // The client may have gone: its answer has nowhere to go.
-                let _ = reply.send(answer(service, req));
+                let response = if reply.expired() {
+                    expired_response(req.op_name())
+                } else {
+                    answer(service, req, None)
+                };
+                let _ = reply.send(response);
             }
             Job::GitMoved => service.git_moved(),
             Job::WatcherError(error) => service.watcher_error(&error),
@@ -892,7 +951,7 @@ impl Queued {
 
     /// Serve `req`: on a reader when it is a read the writer's queue may be
     /// skipped for ([`Busy::reader_may_take`]), on the writer otherwise.
-    fn route(&mut self, readers: &Readers, req: Request, reply: mpsc::Sender<Response>) {
+    fn route(&mut self, readers: &Readers, req: Request, reply: Reply) {
         if self.busy.reader_may_take(&req) {
             if let Some((req, reply)) = readers.offer(req, reply) {
                 self.serve(req, reply);
@@ -903,7 +962,7 @@ impl Queued {
     }
 
     /// Queue `req` without waiting: the writer sends the answer to `reply`.
-    fn serve(&mut self, req: Request, reply: mpsc::Sender<Response>) {
+    fn serve(&mut self, req: Request, reply: Reply) {
         self.send(Job::Serve(req, reply));
     }
 }
@@ -919,7 +978,7 @@ impl Corpus for Queued {
     fn handle(&mut self, req: Request) -> Response {
         let op = req.op_name();
         let (reply, answer) = mpsc::channel();
-        self.serve(req, reply);
+        self.serve(req, reply.into());
         answer
             .recv()
             .unwrap_or_else(|_| failure_response(op, "daemon writer stopped"))
@@ -1295,8 +1354,13 @@ impl Corpus for Forward {
     }
 
     fn handle(&mut self, req: Request) -> Response {
+        self.handle_by(req, None)
+    }
+
+    fn handle_by(&mut self, req: Request, deadline_unix_ms: Option<u64>) -> Response {
         let op = req.op_name();
         let (reply, answer) = mpsc::channel();
+        let reply = Reply::new(reply, deadline_unix_ms);
         if self.tx.send(Msg::Request(req, reply)).is_err() {
             return failure_response(op, "daemon is shutting down");
         }
@@ -1573,7 +1637,8 @@ fn handle_conn(service: &mut dyn Corpus, stream: UnixStream, shutdown: &mut bool
         let (resp, is_shutdown) = match serde_json::from_str::<Request>(trimmed) {
             Ok(req) => {
                 let is_shutdown = matches!(req, Request::Shutdown);
-                (answer(service, req), is_shutdown)
+                let wanted_until = pixel_proto::request_deadline_unix_ms(trimmed);
+                (answer(service, req, wanted_until), is_shutdown)
             }
             Err(e) => (
                 failure_response("error", format!("bad request: {e}")),
@@ -1603,16 +1668,17 @@ fn handle_conn(service: &mut dyn Corpus, stream: UnixStream, shutdown: &mut bool
 /// naming it, instead of unwinding out of the loop and taking the daemon
 /// down; the locks it held recover on their next acquisition
 /// ([`crate::api::RecoverLock`]).
-fn answer(service: &mut dyn Corpus, req: Request) -> Response {
+fn answer(service: &mut dyn Corpus, req: Request, deadline_unix_ms: Option<u64>) -> Response {
     let op = req.op_name();
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| service.handle(req))).unwrap_or_else(
-        |payload| {
-            failure_response(
-                op,
-                format!("request panicked: {}", panic_message(payload.as_ref())),
-            )
-        },
-    )
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        service.handle_by(req, deadline_unix_ms)
+    }))
+    .unwrap_or_else(|payload| {
+        failure_response(
+            op,
+            format!("request panicked: {}", panic_message(payload.as_ref())),
+        )
+    })
 }
 
 /// The text a panic was raised with (`panic!("...")` carries a `&str`, a
@@ -1969,9 +2035,7 @@ mod tests {
             panic!("the connection's request must reach the loop");
         };
         assert_eq!(req, Request::Ping);
-        reply
-            .send(Response::success("ping", serde_json::json!({"pong": true})))
-            .unwrap();
+        assert!(reply.send(Response::success("ping", serde_json::json!({"pong": true}))));
         client
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
@@ -2531,6 +2595,144 @@ mod tests {
             ),
             ReadResult::TooLong
         ));
+    }
+
+    /// A corpus that counts the symbol lookups it runs and, on a lookup of
+    /// `hold`, waits for the test to release it: a writer with a long job.
+    struct DeadlineCorpus {
+        root: PathBuf,
+        ran: Arc<AtomicUsize>,
+        started: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    }
+
+    impl Corpus for DeadlineCorpus {
+        fn root(&self) -> &Path {
+            &self.root
+        }
+        fn handle(&mut self, req: Request) -> Response {
+            if let Request::Symbol { name, .. } = &req {
+                self.ran.fetch_add(1, Ordering::SeqCst);
+                if name == "hold" {
+                    let _ = self.started.send(());
+                    let _ = self.release.recv_timeout(Duration::from_secs(10));
+                }
+            }
+            Response::success(req.op_name(), serde_json::json!({}))
+        }
+        fn apply_change(&mut self, _abs: &Path, _removed: bool) {}
+    }
+
+    fn symbol(name: &str) -> Request {
+        Request::Symbol {
+            name: name.into(),
+            stale_ok: false,
+        }
+    }
+
+    /// One request line on a new connection and its answer.
+    fn ask_line(sock: &Path, line: &str) -> serde_json::Value {
+        let mut stream = UnixStream::connect(sock).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+        let mut reply = String::new();
+        BufReader::new(stream).read_line(&mut reply).unwrap();
+        serde_json::from_str(&reply).unwrap()
+    }
+
+    fn unix_ms_in(offset: Duration, past: bool) -> u64 {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let at = if past { now - offset } else { now + offset };
+        u64::try_from(at.as_millis()).unwrap()
+    }
+
+    /// A request whose deadline passed before the writer took it up runs
+    /// nothing and is told so; the same request with no deadline, or with one
+    /// still ahead, runs as before.
+    #[test]
+    fn a_request_past_its_deadline_should_run_nothing() {
+        let root = scratch_root("deadline-past");
+        let sock = socket_path(&root);
+        let ran = Arc::new(AtomicUsize::new(0));
+        let (started, _seen) = mpsc::channel();
+        let (_release, release) = mpsc::channel();
+        let corpus = DeadlineCorpus {
+            root: root.clone(),
+            ran: Arc::clone(&ran),
+            started,
+            release,
+        };
+        let daemon = std::thread::spawn(move || run_corpus(corpus));
+        wait_until("socket to answer", Duration::from_secs(10), || ping(&sock));
+
+        let line =
+            |deadline: Option<u64>| pixel_proto::request_line(&symbol("a"), deadline).unwrap();
+        let late = ask_line(&sock, &line(Some(unix_ms_in(Duration::from_secs(5), true))));
+        assert_eq!(late["ok"], false, "{late}");
+        assert_eq!(late["error"]["code"], "BUSY_REPOSITORY", "{late}");
+        assert_eq!(ran.load(Ordering::SeqCst), 0, "an expired request ran");
+
+        assert_eq!(ask_line(&sock, &line(None))["ok"], true);
+        let ahead = ask_line(
+            &sock,
+            &line(Some(unix_ms_in(Duration::from_secs(60), false))),
+        );
+        assert_eq!(ahead["ok"], true, "{ahead}");
+        assert_eq!(ran.load(Ordering::SeqCst), 2);
+
+        shutdown(&sock).unwrap();
+        daemon.join().unwrap().unwrap();
+    }
+
+    /// The case the deadline is for: a request queued behind a long job
+    /// whose deadline passes while it waits is dropped when the writer comes
+    /// to it, so the job after it starts at once instead of running an answer
+    /// nobody is reading.
+    #[test]
+    fn a_request_that_expired_in_the_queue_should_not_run_when_the_writer_frees_up() {
+        let root = scratch_root("deadline-queued");
+        let sock = socket_path(&root);
+        let ran = Arc::new(AtomicUsize::new(0));
+        let (started, running) = mpsc::channel();
+        let (release, held) = mpsc::channel();
+        let corpus = DeadlineCorpus {
+            root: root.clone(),
+            ran: Arc::clone(&ran),
+            started,
+            release: held,
+        };
+        let daemon = std::thread::spawn(move || run_corpus(corpus));
+        wait_until("socket to answer", Duration::from_secs(10), || ping(&sock));
+
+        let hold_sock = sock.clone();
+        let long = std::thread::spawn(move || {
+            ask_line(
+                &hold_sock,
+                &pixel_proto::request_line(&symbol("hold"), None).unwrap(),
+            )
+        });
+        running.recv_timeout(Duration::from_secs(10)).unwrap();
+        let queued_sock = sock.clone();
+        let deadline = unix_ms_in(Duration::from_millis(100), false);
+        let queued = std::thread::spawn(move || {
+            ask_line(
+                &queued_sock,
+                &pixel_proto::request_line(&symbol("queued"), Some(deadline)).unwrap(),
+            )
+        });
+        // The queued request's deadline passes while the writer holds the long one.
+        std::thread::sleep(Duration::from_millis(400));
+        release.send(()).unwrap();
+
+        assert_eq!(long.join().unwrap()["ok"], true);
+        let queued = queued.join().unwrap();
+        assert_eq!(queued["error"]["code"], "BUSY_REPOSITORY", "{queued}");
+        assert_eq!(ran.load(Ordering::SeqCst), 1, "only the long job ran");
+
+        shutdown(&sock).unwrap();
+        daemon.join().unwrap().unwrap();
     }
 
     #[test]
@@ -3489,7 +3691,7 @@ mod tests {
         queued.watcher_error("lost");
         queued.watch_ready(&STUB_REPORT);
         queued.sweep();
-        queued.serve(Request::Ping, reply);
+        queued.serve(Request::Ping, reply.into());
         drop(queued);
 
         let log = Arc::new(std::sync::Mutex::new(Vec::new()));

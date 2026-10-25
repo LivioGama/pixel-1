@@ -87,7 +87,7 @@ wire contract"). In `crates/pixel-daemon/src/daemon.rs`: `MAX_REQUEST_LINE`
 (64 KiB), `CONNECTION_DEADLINE` (5 s per connection), a 1 s read timeout,
 `MAX_REQUESTS_PER_CONN` (64), `IDLE_TIMEOUT` (30 min). The socket file is
 set to 0600 after `bind`; on Linux the fallback directory is set to 0700.
-`PROTOCOL_VERSION` (`pixel_daemon::api`, 16) is compared by the CLI's
+`PROTOCOL_VERSION` (`pixel_daemon::api`, 17) is compared by the CLI's
 `classify_ping`: an older daemon is shut down and replaced, a newer one is
 left alone and the command runs in process. One writer serves requests in
 arrival order; while it is busy, read replicas answer the read-plane ops,

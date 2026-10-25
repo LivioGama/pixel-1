@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use pixel_daemon::Request;
 use pixel_daemon::relevance::{keyword_df, relevance_on, row_weight};
@@ -101,7 +101,7 @@ impl Live {
     fn ask(&self, request: &Request, deadline: Instant) -> Result<Value, String> {
         let mut stream = connect(&self.root, deadline)
             .ok_or_else(|| "no daemon answered within the window".to_string())?;
-        let response = crate::roundtrip(&mut stream, request)
+        let response = crate::roundtrip_by(&mut stream, request, Some(unix_ms_at(deadline)))
             .ok_or_else(|| "the daemon did not answer within the window".to_string())?;
         if response.ok
             && response
@@ -797,6 +797,17 @@ impl Evidence for Live {
         }
         Ok(head)
     }
+}
+
+/// `deadline` as wall-clock milliseconds since the Unix epoch, the form a
+/// request carries to the daemon (`pixel_proto::REQUEST_DEADLINE_FIELD`): the
+/// daemon stops at the very instant this process does.
+fn unix_ms_at(deadline: Instant) -> u64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let at = now + deadline.saturating_duration_since(Instant::now());
+    u64::try_from(at.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// A connection to the repository's daemon socket whose reads and writes give
@@ -1631,7 +1642,20 @@ mod tests {
             }
         }
 
+        /// The requests as the op alone: the deadline member every request
+        /// carries is a separate fact (`deadline_requests`).
         fn requests(&self) -> Vec<Value> {
+            let mut seen = self.deadline_requests();
+            for request in &mut seen {
+                if let Value::Object(members) = request {
+                    members.remove(pixel_proto::REQUEST_DEADLINE_FIELD);
+                }
+            }
+            seen
+        }
+
+        /// The requests exactly as they arrived.
+        fn deadline_requests(&self) -> Vec<Value> {
             self.seen.lock().unwrap().clone()
         }
     }
@@ -1923,8 +1947,50 @@ mod tests {
             let _older = FakeDaemon::start(&root, pixel_daemon::api::PROTOCOL_VERSION - 1);
             assert!(!daemon_serves(&root, deadline));
         }
+        {
+            // A newer daemon is left alone and the brief reads locally: the
+            // version it does not know is never sent a request.
+            let newer = FakeDaemon::start(&root, pixel_daemon::api::PROTOCOL_VERSION + 1);
+            assert!(!daemon_serves(&root, deadline));
+            assert_eq!(open(&root, deadline).route(), "local");
+            assert!(
+                newer
+                    .requests()
+                    .iter()
+                    .all(|request| request["op"] == "ping"),
+                "only the ping reached a daemon on another version"
+            );
+        }
         assert!(!daemon_serves(&root, Instant::now()));
         let _ = std::fs::remove_file(pixel_daemon::socket_path(&root));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Every daemon request of a brief names the one instant the brief stops
+    /// at, as wall-clock milliseconds, so the daemon stops there too instead
+    /// of running a request the brief has already given up on.
+    #[test]
+    fn a_daemon_request_should_carry_the_briefs_deadline() {
+        let root = scratch("deadline-member");
+        let daemon = FakeDaemon::start(&root, pixel_daemon::api::PROTOCOL_VERSION);
+        let live = Live::new(&root, Route::Daemon);
+        let before = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let deadline = Instant::now() + WINDOW;
+        live.symbols("go", deadline).unwrap();
+        let after = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let requests = daemon.deadline_requests();
+        let sent = requests
+            .iter()
+            .find(|request| request["op"] == "symbol")
+            .and_then(|request| request[pixel_proto::REQUEST_DEADLINE_FIELD].as_u64())
+            .expect("the symbol request names a deadline");
+        let window = WINDOW.as_millis();
+        let (earliest, latest) = (before.as_millis() + window, after.as_millis() + window);
+        assert!(
+            (earliest..=latest).contains(&u128::from(sent)),
+            "{sent} ms is not {window} ms after the call ({earliest}..={latest})"
+        );
+        drop(daemon);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

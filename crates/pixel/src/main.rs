@@ -1337,7 +1337,17 @@ enum DaemonCmd {
 
 /// One NDJSON round trip on an open stream.
 fn roundtrip(stream: &mut UnixStream, req: &Request) -> Option<Response> {
-    let mut line = serde_json::to_string(req).ok()?;
+    roundtrip_by(stream, req, None)
+}
+
+/// [`roundtrip`] for a request whose answer is worth nothing after
+/// `deadline_unix_ms`: the daemon runs nothing for it once that has passed.
+fn roundtrip_by(
+    stream: &mut UnixStream,
+    req: &Request,
+    deadline_unix_ms: Option<u64>,
+) -> Option<Response> {
+    let mut line = pixel_proto::request_line(req, deadline_unix_ms).ok()?;
     line.push('\n');
     stream.write_all(line.as_bytes()).ok()?;
     stream.flush().ok()?;

@@ -11,6 +11,7 @@
 //! one; this crate depends on nothing pixel-internal.
 
 pub mod budget;
+pub mod deadline;
 pub mod envelope;
 pub mod epistemics;
 pub mod error;
@@ -25,6 +26,7 @@ pub mod snapshot;
 pub mod warning;
 
 pub use budget::{Budget, BudgetInfo};
+pub use deadline::{REQUEST_DEADLINE_FIELD, request_deadline_unix_ms, request_line};
 pub use envelope::{ENVELOPE_PROTOCOL_VERSION, Envelope};
 pub use epistemics::Epistemics;
 pub use error::{ErrorCode, PixelError};

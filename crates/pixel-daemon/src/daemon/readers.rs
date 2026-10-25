@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex, PoisonError, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use super::{Msg, panic_message};
+use super::{Msg, Reply, expired_response, panic_message};
 use crate::api::{Request, Response, failure_response};
 use crate::plane::replica_may_answer;
 
@@ -100,12 +100,12 @@ impl Busy {
 }
 
 /// A read no reader took, handed back for the writer.
-pub(super) type Returned = (Request, mpsc::Sender<Response>);
+pub(super) type Returned = (Request, Reply);
 
 /// One read handed to a reader, and where its answer goes.
 struct ReadJob {
     req: Request,
-    reply: mpsc::Sender<Response>,
+    reply: Reply,
 }
 
 /// The reader threads and their shared queue. At most `READERS` reads run
@@ -159,7 +159,7 @@ impl Readers {
     }
 
     /// Queue `req` for the readers; `Some` gives it back when there are none.
-    pub(super) fn offer(&self, req: Request, reply: mpsc::Sender<Response>) -> Option<Returned> {
+    pub(super) fn offer(&self, req: Request, reply: Reply) -> Option<Returned> {
         let Some(jobs) = &self.jobs else {
             return Some((req, reply));
         };
@@ -188,6 +188,10 @@ fn serve_read(
     busy: &Busy,
 ) {
     let op = job.req.op_name();
+    if job.reply.expired() {
+        let _ = job.reply.send(expired_response(op));
+        return;
+    }
     let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         replica.read(&job.req, &|| busy.behind())
     }));
@@ -325,7 +329,7 @@ mod tests {
                         limit: None,
                         stale_ok: false,
                     },
-                    reply
+                    reply.into()
                 )
                 .is_none()
         );
@@ -339,13 +343,13 @@ mod tests {
 
         for _ in 0..READERS + 1 {
             let (reply, answer) = mpsc::channel();
-            assert!(readers.offer(search(), reply).is_none());
+            assert!(readers.offer(search(), reply.into()).is_none());
             let answered = answer.recv_timeout(Duration::from_secs(5)).unwrap();
             assert_eq!(answered.result.unwrap()["from"], "replica");
         }
 
         let (reply, _answer) = mpsc::channel();
-        assert!(readers.offer(Request::Status {}, reply).is_none());
+        assert!(readers.offer(Request::Status {}, reply.into()).is_none());
         let Ok(Msg::Requeue(req, _reply)) = loop_rx.recv_timeout(Duration::from_secs(5)) else {
             panic!("a request the replica cannot answer goes back to the loop");
         };
@@ -362,11 +366,11 @@ mod tests {
         let mut held = Vec::new();
         for _ in 0..READERS {
             let (reply, answer) = mpsc::channel();
-            assert!(readers.offer(targets(), reply).is_none());
+            assert!(readers.offer(targets(), reply.into()).is_none());
             held.push(answer);
         }
         let (reply, answer) = mpsc::channel();
-        assert!(readers.offer(search(), reply).is_none());
+        assert!(readers.offer(search(), reply.into()).is_none());
         assert!(
             answer.recv_timeout(Duration::from_millis(200)).is_err(),
             "a third read ran with both readers busy"
@@ -384,10 +388,33 @@ mod tests {
         }
     }
 
+    /// A read whose deadline passed while it waited for a reader is refused
+    /// without asking the replica: a replica that would answer it ("from
+    /// replica") is never consulted.
+    #[test]
+    fn a_read_past_its_deadline_should_not_reach_the_replica() {
+        let (_release_tx, release_rx) = mpsc::channel();
+        let release = Arc::new(Mutex::new(release_rx));
+        let (readers, loop_rx) = pool(&release);
+        let (to, answer) = mpsc::channel();
+        let expired = Reply::new(to, Some(1));
+        assert!(readers.offer(search(), expired).is_none());
+        let refused = answer.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(!refused.ok);
+        assert_eq!(
+            refused.error.map(|e| e.code),
+            Some(pixel_proto::ErrorCode::BusyRepository)
+        );
+        assert!(
+            loop_rx.try_recv().is_err(),
+            "an expired read is not handed to the writer"
+        );
+    }
+
     #[test]
     fn no_readers_give_every_read_back() {
         let (reply, _answer) = mpsc::channel();
-        assert!(Readers::none().offer(search(), reply).is_some());
+        assert!(Readers::none().offer(search(), reply.into()).is_some());
     }
 
     /// Reads skip the queue only behind a busy writer with no watcher batch
@@ -509,7 +536,7 @@ mod tests {
         let (readers, _loop_rx) = pool_over(&release, &busy);
         let ask = || {
             let (reply, answer) = mpsc::channel();
-            assert!(readers.offer(symbol(true), reply).is_none());
+            assert!(readers.offer(symbol(true), reply.into()).is_none());
             answer
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap()

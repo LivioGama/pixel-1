@@ -396,6 +396,29 @@ Two version numbers exist and must not be conflated:
   Bump it when an older daemon process could not safely serve a newer CLI.
   The CLI pings first and compares.
 
+A request line may carry one more top-level member beside the op,
+`deadline_unix_ms` (`pixel_proto::REQUEST_DEADLINE_FIELD`, built by
+`pixel_proto::request_line`, read by `pixel_proto::request_deadline_unix_ms`):
+the wall-clock instant, in milliseconds since the Unix epoch, after which its
+answer is worth nothing. The brief fixes one such instant for the whole hook
+and sends it with every daemon request it makes (`Live::ask`), so the daemon's
+queue, its readers and the client's own socket timeout all end at the same
+moment rather than each starting a timeout of its own. The connection thread
+hands the instant to the loop with the request (`Reply`); whoever takes the
+request off a queue, the writer (`run_writer`) or a reader (`serve_read`),
+asks `Reply::expired` first and answers `repository is busy: the request's
+deadline passed before it started` (`BUSY_REPOSITORY`) without running
+anything, so a request that sat behind a long job costs the next one nothing.
+Nothing is interrupted once it runs: the ops are millisecond-scale and bound
+their own work. The daemon does not run brief probes (they run in the calling
+process, `execution_brief/probes.rs`), so there is no daemon-to-probe hand-off.
+`PROTOCOL_VERSION` 17 carries the member: an older daemon ignores it and
+would run every stale request, so the CLI sends it only to a daemon whose ping
+answered 17. An older client talking to this daemon sends no member and
+behaves as before; a client on 17 meeting a daemon on another version
+shuts down an older one, leaves a newer one alone and reads locally (the
+brief) or in process (a command), and a hook exits 0 whichever route it took.
+
 The envelope:
 
 ```json
