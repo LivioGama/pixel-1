@@ -165,8 +165,7 @@ fn a_literal_setting_call_is_quoted_without_inferring_its_effect() {
     let secret = ask(&repo, "where is the secret setting configured");
     assert!(
         secret[0].contains("2| <masked>") && secret[0].contains("3| <masked>"),
-        "{}",
-        secret[0]
+        "secret setting candidate lines must remain masked"
     );
 }
 

@@ -66,7 +66,11 @@ fn the_file_should_be_named_by_the_hashed_session_and_owner_only() {
     save(dir.path(), "host-session", &sample()).unwrap();
     let path = file_for(dir.path(), "host-session");
     let name = path.file_name().unwrap().to_string_lossy().into_owned();
-    assert_eq!(name.len(), 16 + ".json".len(), "{name}");
+    assert_eq!(
+        name.len(),
+        16 + ".json".len(),
+        "session filename should contain a 16-digit hash and JSON suffix"
+    );
     assert!(!name.contains("host-session"));
     assert_eq!(
         fs::metadata(&path).unwrap().permissions().mode() & 0o777,
