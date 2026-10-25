@@ -180,8 +180,8 @@ wire ops: they refresh the graph in process and read it. Text output is cut at
 `render::STDOUT_BYTE_CAP` at a line and says so.
 
 The CLI brief remains capped at 3,900 characters. Stop-cause code excerpts are
-bounded to 18 lines, and test excerpts to 12; executable control flow and
-assertion cues rank ahead of repeated comments when a larger candidate must be shortened.
+bounded to 18 lines; test units stay complete within a 3,000-byte aggregate
+budget, and oversized units are skipped.
 
 ## Agent integration
 

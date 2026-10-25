@@ -192,7 +192,8 @@ call to 12 after it within the caller; a graph that fails adds nothing. When the
 question also says test, spec, prove, proof or cover, the best test units follow
 (a unit holds two groups; three files, one unit per file and two in a file
 named after a group word, with the siblings of its family by name, at most
-three; a 12-line window favours assertion cues, within 3 000 bytes in all).
+three; complete units are kept within 3 000 bytes in all, and oversized units
+are skipped).
 Blocks are headed `path:a-b — where
 the question's words meet (code|test)`, lines numbered, cut at 200 characters.
 It appends evidence but does not affect admission, then takes away every non-definition block of the pack

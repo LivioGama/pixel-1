@@ -1186,12 +1186,12 @@ fn a_family_takes_one_slot_of_a_dedicated_file_and_leaves_the_other_to_another_f
 }
 
 #[test]
-fn a_unit_is_cut_at_twelve_lines() {
+fn a_unit_is_kept_whole_within_the_test_byte_budget() {
     let mut unit = unit_lines("long_case", ALL_WORDS, None);
     unit.splice(3..3, vec!["    g();".to_string(); 15]);
     let shown = ask(&tests_repo(&[("tests/cli.rs", unit)]), WHY);
-    assert_eq!(path_heads(&shown), ["tests/cli.rs:1-12"]);
-    assert_eq!(shown[0].lines().count(), 13, "the head and twelve lines");
+    assert_eq!(path_heads(&shown), ["tests/cli.rs:1-20"]);
+    assert_eq!(shown[0].lines().count(), 21, "the head and complete unit");
 }
 
 #[test]
@@ -1383,6 +1383,59 @@ fn the_first_caller_of_a_small_function_that_carries_a_group_word_is_shown_with_
 }
 
 #[test]
+fn caller_discovery_uses_the_selected_window_before_excerpt_compaction() {
+    let mut engine = strings(&["pub fn stop_print_match() -> bool {", "    false"]);
+    engine.extend(vec!["    work();".to_string(); 10]);
+    engine.push("}".to_string());
+    engine.extend(vec!["    if stop { print_match(); }".to_string(); 16]);
+    engine.push("    other();".to_string());
+    let repo = repo_of(&with_fillers(
+        vec![
+            ("src/engine.rs".to_string(), engine),
+            ("src/main.rs".to_string(), pad(60)),
+        ],
+        4,
+    ));
+    let graph = Graph {
+        repo,
+        symbols: vec![symbol("src/engine.rs", "stop_print_match", 1, 13)],
+        callers: BTreeMap::from([(
+            "src/engine.rs#stop_print_match".to_string(),
+            vec![call("src/main.rs", "run", 40)],
+        )]),
+    };
+    let near = Vec::new();
+    let ctx = Ctx::new(
+        SHORT,
+        QuestionKind::Bugfix,
+        Steps::default(),
+        &near,
+        &graph,
+        Instant::now() + Duration::from_secs(20),
+    );
+    let sources = read_sources(&ctx).expect("source files");
+    let groups = groups_of(SHORT, &sources);
+    let source = &sources["src/engine.rs"];
+    let discovery = ("src/engine.rs".to_string(), 1, source.lines.len());
+    let (first, last) = focused_window(source, 1, source.lines.len(), &groups, SOURCE_CAP);
+    assert!(!(first <= 1 && 1 <= last), "excerpt {first}-{last}");
+    assert!(
+        small_callers(&ctx, &sources, &groups, std::slice::from_ref(&discovery))
+            .iter()
+            .any(|(path, _, _)| path == "src/main.rs")
+    );
+    assert!(
+        small_callers(
+            &ctx,
+            &sources,
+            &groups,
+            &[("src/engine.rs".into(), first, last)]
+        )
+        .is_empty()
+    );
+}
+
+#[test]
 fn a_caller_is_cut_to_fourteen_lines_before_the_call_and_twelve_after_within_its_span() {
     let at = |site: u64| {
         let graph = caller_graph(vec![call("src/main.rs", "run_one", site)], 60);
@@ -1544,8 +1597,11 @@ fn a_test_excerpt_keeps_setup_and_a_late_assertion() {
 
     assert_eq!(selected.len(), 1);
     let (_, first, last) = &selected[0];
-    assert!(last - first < 12, "selected {first}-{last}");
+    assert_eq!((*first, *last), (1, 23));
     let excerpt = &sources["tests/engine.rs"].lines[first - 1..*last];
+    for setup in ["arrange();", "prepare();", "seed();", "open();"] {
+        assert!(excerpt.iter().any(|line| line.contains(setup)));
+    }
     assert!(excerpt.iter().any(|line| line.contains("let result = run")));
     assert!(
         excerpt
@@ -1555,29 +1611,63 @@ fn a_test_excerpt_keeps_setup_and_a_late_assertion() {
 }
 
 #[test]
-fn a_test_excerpt_does_not_treat_assertion_words_in_comments_as_assertions() {
-    let mut lines = strings(&["#[test]", "fn alpha_beta_are_applied() {"]);
-    lines.extend(vec![
-        "    // alpha beta should remain explanatory."
-            .to_string();
-        12
-    ]);
-    lines.extend(strings(&[
-        "    let result = run();",
-        "    assert_eq!(result, beta_alpha());",
-        "}",
-    ]));
-    let sources = BTreeMap::from([("tests/engine.rs".to_string(), Source::new(lines))]);
+fn a_test_excerpt_keeps_a_complete_multiline_assertion() {
+    let sources = BTreeMap::from([(
+        "tests/contract.rs".to_string(),
+        Source::new(strings(&[
+            "#[test]",
+            "fn alpha_beta_contract() {",
+            "    let result = run();",
+            "    let want = 12;",
+            "    advance();",
+            "    advance();",
+            "    advance();",
+            "    advance();",
+            "    advance();",
+            "    advance();",
+            "    assert_eq!(",
+            "        result,",
+            "        want,",
+            "    );",
+            "}",
+        ])),
+    )]);
 
     let selected = test_units(&sources, &alpha_beta_gamma());
 
     assert_eq!(selected.len(), 1);
     let (_, first, last) = &selected[0];
-    let excerpt = &sources["tests/engine.rs"].lines[first - 1..*last];
+    let excerpt = &sources["tests/contract.rs"].lines[first - 1..*last];
     assert!(excerpt.iter().any(|line| line.contains("let result = run")));
-    assert!(
-        excerpt
-            .iter()
-            .any(|line| line.contains("assert_eq!(result, beta_alpha())"))
-    );
+    assert!(excerpt.iter().any(|line| line.contains("let want = 12")));
+    for required in ["assert_eq!(", "result,", "want,", ");"] {
+        assert!(
+            excerpt.iter().any(|line| line.trim() == required),
+            "selected {first}-{last} without assertion line {required:?}: {excerpt:?}"
+        );
+    }
+}
+
+#[test]
+fn an_oversized_test_unit_is_skipped_for_a_smaller_complete_unit() {
+    let mut oversized = strings(&["#[test]", "fn alpha_beta_large() {"]);
+    oversized.push(format!("    // {}", "alpha beta gamma ".repeat(200)));
+    oversized.extend(strings(&["    run();", "}"]));
+    let small = strings(&[
+        "#[test]",
+        "fn alpha_beta_small() {",
+        "    // alpha beta gamma",
+        "    run();",
+        "}",
+    ]);
+    let sources = BTreeMap::from([(
+        "tests/contract.rs".to_string(),
+        Source::new(joined(&[oversized, small])),
+    )]);
+
+    let selected = test_units(&sources, &alpha_beta_gamma());
+
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].0, "tests/contract.rs");
+    assert!(selected[0].1 > 4, "the oversized unit was not selected");
 }

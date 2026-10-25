@@ -57,7 +57,6 @@ const BRIEF_BOOST: f64 = 1.3;
 const MIN_UNIT_GROUPS: usize = 2;
 const MAX_TEST: usize = 3;
 const FAMILY: usize = 3;
-const TEST_CAP: usize = 12;
 const SOURCE_CAP: usize = 18;
 const TEST_BYTES: usize = 3_000;
 /// A unit in a file named after a group weighs one and a half.
@@ -143,9 +142,6 @@ static STRINGS_AND_COMMENTS: LazyLock<Regex> = LazyLock::new(|| {
 });
 static LITERAL_OPEN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"r#*"|"""|'''|`"#).expect("the literal-open pattern is a literal")
-});
-static ASSERTION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)ass.rt|expect|panic|should").expect("the assertion pattern is a literal")
 });
 static CONTROL_FLOW: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(?:return|throw|raise|break|continue)\b")
@@ -488,18 +484,17 @@ fn trim(source: &Source, a: usize, b: usize, groups: &[Group]) -> (usize, usize)
         lo = a.max(lo.saturating_sub(1));
         hi = b.min(hi + 1);
     }
-    focused_window(source, lo, hi, groups, SOURCE_CAP, false)
+    focused_window(source, lo, hi, groups, SOURCE_CAP)
 }
 
-/// The bounded window with the strongest word evidence in code, assertions or
-/// control flow; comments keep context without outweighing executable lines.
+/// The bounded window with the strongest word evidence; comments keep context
+/// without outweighing executable lines or control flow.
 fn focused_window(
     source: &Source,
     first: usize,
     last: usize,
     groups: &[Group],
     cap: usize,
-    assertions: bool,
 ) -> (usize, usize) {
     let size = (last - first + 1).min(cap);
     if size == last - first + 1 {
@@ -532,11 +527,7 @@ fn focused_window(
                         (count > 0).then(|| group.weight * (1.0 + (count as f64).ln()) * factor)
                     })
                     .sum();
-                words
-                    + f64::from(code && CONTROL_FLOW.is_match(text)) * max_group_weight * 2.0
-                    + f64::from(assertions && code && ASSERTION.is_match(text))
-                        * max_group_weight
-                        * 3.0
+                words + f64::from(code && CONTROL_FLOW.is_match(text)) * max_group_weight * 2.0
             })
             .sum::<f64>();
         if score.total_cmp(&best.2).is_gt() {
@@ -622,8 +613,10 @@ pub(super) fn run(ctx: &Ctx, out: &mut Outcome) {
     if groups.len() < MIN_GROUPS {
         return;
     }
-    let mut chosen = source_windows(ctx, &sources, &groups);
-    chosen.extend(small_callers(ctx, &sources, &groups, &chosen));
+    let selected = source_windows(ctx, &sources, &groups);
+    let discovery: Vec<Span> = selected.iter().map(|(_, window)| window.clone()).collect();
+    let mut chosen: Vec<Span> = selected.into_iter().map(|(excerpt, _)| excerpt).collect();
+    chosen.extend(small_callers(ctx, &sources, &groups, &discovery));
     if ASKS_TESTS.is_match(ctx.typed) {
         chosen.extend(test_units(&sources, &groups));
     }
@@ -681,7 +674,11 @@ fn read_sources(ctx: &Ctx) -> Option<BTreeMap<String, Source>> {
 }
 
 /// The best window of each of the best source files, within the byte budget.
-fn source_windows(ctx: &Ctx, sources: &BTreeMap<String, Source>, groups: &[Group]) -> Vec<Span> {
+fn source_windows(
+    ctx: &Ctx,
+    sources: &BTreeMap<String, Source>,
+    groups: &[Group],
+) -> Vec<(Span, Span)> {
     let mut rows: Vec<(f64, &str, usize, usize)> = Vec::new();
     for (path, source) in sources {
         if TEST_PATH.is_match(path) {
@@ -692,11 +689,8 @@ fn source_windows(ctx: &Ctx, sources: &BTreeMap<String, Source>, groups: &[Group
             continue;
         }
         let in_test = test_lines(path, &source.lines);
-        let stem = if named_after(path, groups) {
-            STEM_BOOST
-        } else {
-            1.0
-        };
+        let named = named_after(path, groups);
+        let stem = if named { STEM_BOOST } else { 1.0 };
         let brief = if ctx.near.contains(path) {
             BRIEF_BOOST
         } else {
@@ -714,26 +708,27 @@ fn source_windows(ctx: &Ctx, sources: &BTreeMap<String, Source>, groups: &[Group
             .then_with(|| x.1.cmp(y.1))
             .then(x.2.cmp(&y.2))
     });
-    let mut chosen: Vec<Span> = Vec::new();
+    let mut chosen: Vec<(Span, Span)> = Vec::new();
     let mut used = 0;
     for (_, path, first, last) in rows {
         if chosen.len() >= MAX_SRC {
             break;
         }
-        if chosen.iter().any(|(held, _, _)| held == path) {
+        if chosen.iter().any(|((held, _, _), _)| held == path) {
             continue;
         }
         let source = &sources[path];
         let (a, b) = recentre(source, first, last, groups);
         let (a, b) = trim(source, a, b, groups);
         let (a, b) = snap(source, a, b);
-        let (a, b) = focused_window(source, a, b, groups, SOURCE_CAP, false);
+        let discovery = (path.to_string(), a, b);
+        let (a, b) = focused_window(source, a, b, groups, SOURCE_CAP);
         let size = cost(source, a, b);
         if used + size > SRC_BYTES {
             continue;
         }
         used += size;
-        chosen.push((path.to_string(), a, b));
+        chosen.push(((path.to_string(), a, b), discovery));
     }
     chosen
 }
@@ -818,15 +813,16 @@ fn first_caller(ctx: &Ctx, sources: &BTreeMap<String, Source>, symbol: &SymbolHi
 fn test_units(sources: &BTreeMap<String, Source>, groups: &[Group]) -> Vec<Span> {
     let mut scored: Vec<(f64, &str, Unit)> = Vec::new();
     for (path, source) in sources {
-        let stem = if named_after(path, groups) {
-            STEM_BOOST
-        } else {
-            1.0
-        };
+        let named = named_after(path, groups);
+        let stem = if named { STEM_BOOST } else { 1.0 };
+        let dedicated = if named { DEDICATED_BOOST } else { 1.0 };
         for unit in units(path, &source.lines) {
+            if unit_cost(source, &unit) > TEST_BYTES {
+                continue;
+            }
             let (held, total) = unit_score(source, &unit, groups);
             if held >= MIN_UNIT_GROUPS {
-                scored.push((total * stem, path, unit));
+                scored.push((total * stem * dedicated, path, unit));
             }
         }
     }
@@ -835,61 +831,52 @@ fn test_units(sources: &BTreeMap<String, Source>, groups: &[Group]) -> Vec<Span>
             .then_with(|| x.1.cmp(y.1))
             .then(x.2.first.cmp(&y.2.first))
     });
-    // The units a file contributes: two in a file named after a group, else one,
-    // never two of one family.
-    let mut best: BTreeMap<&str, Vec<(f64, Unit, String)>> = BTreeMap::new();
-    for (total, path, unit) in scored {
-        let dedicated = named_after(path, groups);
-        let family = family_of(&unit.name);
-        let slot = best.entry(path).or_default();
-        let room = if dedicated { 2 } else { 1 };
-        if slot.len() < room && slot.iter().all(|held| held.2 != family) {
-            let weight = if dedicated { DEDICATED_BOOST } else { 1.0 };
-            slot.push((total * weight, unit, family));
-        }
-    }
-    let mut picks: Vec<(f64, &str, Unit, String)> = best
-        .into_iter()
-        .flat_map(|(path, slot)| {
-            slot.into_iter()
-                .map(move |(total, unit, family)| (total, path, unit, family))
-        })
-        .collect();
-    picks.sort_by(|x, y| {
-        y.0.total_cmp(&x.0)
-            .then_with(|| x.1.cmp(y.1))
-            .then(x.2.first.cmp(&y.2.first))
-    });
-    let mut files: Vec<&str> = Vec::new();
+    let mut files: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut families: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
     let mut used = 0;
     let mut out = Vec::new();
-    for (_, path, unit, family) in picks {
-        if !files.contains(&path) {
-            if files.len() >= MAX_TEST {
-                continue;
-            }
-            files.push(path);
-        }
+    for (_, path, unit) in scored {
         let source = &sources[path];
+        let family = family_of(&unit.name);
         let norm = digits_out(&unit.name);
+        let current_file_count = files.get(path).copied().unwrap_or_default();
+        let room = if named_after(path, groups) { 2 } else { 1 };
+        if current_file_count >= room
+            || families
+                .get(path)
+                .is_some_and(|held| held.contains(&family))
+        {
+            continue;
+        }
         let mut group: Vec<Unit> = Vec::new();
         if family != norm {
             group.extend(units(path, &source.lines).into_iter().filter(|other| {
                 digits_out(&other.name).starts_with(&format!("{family}_"))
                     && other.first != unit.first
+                    && !out
+                        .iter()
+                        .any(|(held_path, first, _)| held_path == path && *first == other.first)
             }));
             group.truncate(FAMILY - 1);
         }
-        group.push(unit);
-        group.sort_by_key(|other| other.first);
+        if used + unit_cost(source, &unit) > TEST_BYTES
+            || (current_file_count == 0 && files.len() >= MAX_TEST)
+        {
+            continue;
+        }
+        files.insert(path, current_file_count + 1);
+        families.entry(path).or_default().insert(family);
+        group.insert(0, unit);
         for member in group {
-            let (first, last) =
-                focused_window(source, member.first, member.last, groups, TEST_CAP, true);
-            let size: usize = source.lines[first - 1..last]
+            if out
                 .iter()
-                .filter(|line| !line.trim().is_empty())
-                .map(|line| line.chars().count() + 8)
-                .sum();
+                .any(|(held_path, first, _)| held_path == path && *first == member.first)
+            {
+                continue;
+            }
+            let first = member.first;
+            let last = member.last;
+            let size = unit_cost(source, &member);
             if used + size > TEST_BYTES {
                 continue;
             }
@@ -897,7 +884,16 @@ fn test_units(sources: &BTreeMap<String, Source>, groups: &[Group]) -> Vec<Span>
             out.push((path.to_string(), first, last));
         }
     }
+    out.sort();
     out
+}
+
+fn unit_cost(source: &Source, unit: &Unit) -> usize {
+    source.lines[unit.first - 1..unit.last]
+        .iter()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.chars().count() + 8)
+        .sum()
 }
 
 fn digits_out(name: &str) -> String {

@@ -1,1 +1,1 @@
-**brief:** Keep executable control flow and assertion-bearing test lines in bounded stop-cause excerpts under the existing CLI character cap.
+**brief:** Preserve executable control flow and complete assertion-bearing test units under the existing CLI character cap.
