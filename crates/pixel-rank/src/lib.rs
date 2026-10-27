@@ -841,6 +841,13 @@ pub const W_SEMANTIC: f64 = 1.5;
 /// Saturation of the per-keyword term frequency in the lexical score: a keyword's
 /// evidence stops adding weight once it is this strong (BM25's k, on the field mix).
 const LEXICAL_TF_SATURATION: f64 = 2.0;
+
+/// A path's per-keyword matches: keyword index to (weight, matched word).
+type KeywordMatches = BTreeMap<usize, (u32, String)>;
+/// A scored path with the keywords it matched and its IDF score.
+type ScoredPath = (String, Vec<String>, f64);
+/// A scored path with its per-keyword hit counts and its summed IDF.
+type ScoredContent = (String, Vec<(String, u32)>, f64);
 /// BM25 term-saturation parameter. 1.2 is the standard Robertson/Okapi
 /// default: term frequency saturates quickly, so the 20th occurrence of a
 /// term adds almost nothing over the 5th. This is the property raw match
@@ -1036,9 +1043,9 @@ fn filename_fields(
 }
 
 /// [`filename_rank`] with each path's IDF score, best first.
-fn filename_scored(all_paths: &[String], keywords: &[String]) -> Vec<(String, Vec<String>, f64)> {
+fn filename_scored(all_paths: &[String], keywords: &[String]) -> Vec<ScoredPath> {
     // Per path: the keywords it names, with the strongest weight of each match.
-    let mut per_path: Vec<(usize, BTreeMap<usize, (u32, String)>)> = Vec::new();
+    let mut per_path: Vec<(usize, KeywordMatches)> = Vec::new();
     let mut df = vec![0usize; keywords.len()];
     for (idx, path) in all_paths.iter().enumerate() {
         let components: Vec<&str> = path.split('/').collect();
@@ -1178,9 +1185,7 @@ fn content_rank(
 }
 
 /// [`content_rank`] with each path's summed keyword IDF, best first.
-fn content_scored(
-    content_hits: &BTreeMap<String, Vec<(String, u32)>>,
-) -> Vec<(String, Vec<(String, u32)>, f64)> {
+fn content_scored(content_hits: &BTreeMap<String, Vec<(String, u32)>>) -> Vec<ScoredContent> {
     type ScoredRow = (i64, u64, String, Vec<(String, u32)>);
     struct Acc {
         per_kw: Vec<(String, u32)>,
