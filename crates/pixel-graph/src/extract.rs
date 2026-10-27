@@ -751,12 +751,22 @@ fn walk_callee_fallbacks(w: &mut Walker, callee: Node, call: Node) {
     while let Some((n, in_chain)) = stack.pop() {
         match n.kind() {
             "parenthesized_expression" => {
-                stack.extend(each_child(n).into_iter().filter(Node::is_named).map(|c| (c, in_chain)));
+                stack.extend(
+                    each_child(n)
+                        .into_iter()
+                        .filter(Node::is_named)
+                        .map(|c| (c, in_chain)),
+                );
             }
             "binary_expression" => {
                 let op = n.child_by_field_name("operator").map(|o| w.text(o));
                 if matches!(op.as_deref(), Some("??" | "||" | "&&")) {
-                    stack.extend(each_child(n).into_iter().filter(Node::is_named).map(|c| (c, true)));
+                    stack.extend(
+                        each_child(n)
+                            .into_iter()
+                            .filter(Node::is_named)
+                            .map(|c| (c, true)),
+                    );
                 }
             }
             "identifier" if in_chain => {
